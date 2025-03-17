@@ -1,0 +1,45 @@
+name: Run Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [16.x, 18.x]
+      # Don't fail fast - continue with other versions even if one fails
+      fail-fast: false
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Run linting
+      run: npm run lint
+    
+    - name: Build
+      run: npm run build
+    
+    - name: Run unit tests (non-protocol)
+      run: npx jest --testPathIgnorePatterns=protocols
+      
+    - name: Run comprehensive CI-safe tests
+      run: npm run test:all-safe
+      timeout-minutes: 10
+      env:
+        SKIP_NETWORK_TESTS: true
+        NODE_ENV: test 
