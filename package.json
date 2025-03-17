@@ -1,6 +1,6 @@
 {
   "name": "@dignetwork/dig-nat-tools",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Decentralized P2P file transfer with NAT traversal",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
