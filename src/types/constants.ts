@@ -6,25 +6,31 @@
  * Connection types supported by the library
  */
 export enum CONNECTION_TYPE {
-  /**
-   * TCP direct connection
-   */
-  TCP = 'tcp',
+  // Direct connections
+  TCP = 'TCP',                     // Direct TCP connection
+  UDP = 'UDP',                     // Direct UDP connection
   
-  /**
-   * UDP direct connection
-   */
-  UDP = 'udp',
+  // NAT traversal methods (in order of reliability)
+  UPNP = 'UPNP',                   // UPnP port mapping
+  NAT_PMP = 'NAT_PMP',             // NAT-PMP/PCP port mapping
   
-  /**
-   * WebRTC connection using DataChannel
-   */
-  WEBRTC = 'webrtc',
+  // Hole punching methods
+  UDP_HOLE_PUNCH = 'UDP_HOLE_PUNCH', // Basic UDP hole punching
+  UDP_ADVANCED_HOLE_PUNCH = 'UDP_ADVANCED_HOLE_PUNCH', // Advanced predictive UDP hole punch
+  TCP_HOLE_PUNCH = 'TCP_HOLE_PUNCH', // TCP hole punching with Gun.js signaling
+  TCP_SIMULTANEOUS_OPEN = 'TCP_SIMULTANEOUS_OPEN', // Simultaneous TCP connection
   
-  /**
-   * Fallback Gun relay connection
-   */
-  GUN = 'gun'
+  // WebRTC related
+  WEBRTC = 'WEBRTC',               // WebRTC data channel
+  ICE = 'ICE',                     // Standalone ICE protocol
+  
+  // Relay methods (fallbacks)
+  TURN = 'TURN',                   // TURN relay
+  GUN = 'GUN',                     // Gun.js relay
+  
+  // IPv6 related
+  IPV6 = 'IPV6',                   // Native IPv6 connection
+  IPV6_TUNNEL = 'IPV6_TUNNEL'      // IPv6 tunneling (6to4, Teredo)
 }
 
 /**

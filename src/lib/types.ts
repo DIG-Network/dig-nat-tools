@@ -2,6 +2,9 @@
  * Type definitions for the dig-nat-tools library
  */
 
+// Import required types
+import { CONNECTION_TYPE } from '../types/constants';
+
 /**
  * Host configuration options
  */
@@ -62,8 +65,26 @@ export interface ClientOptions {
   /** Whether to use NAT-PMP/PCP for port mapping and IP discovery (enabled by default) */
   enableNATPMP?: boolean;
   
+  /** Lifetime of port mappings in seconds (default: 3600 = 1 hour) */
+  portMappingLifetime?: number;
+  
   /** Gun options for relay connection */
   gunOptions?: GunOptions;
+  
+  /** Existing Gun.js instance to use (if provided, gunOptions are ignored) */
+  gunInstance?: any;
+  
+  /** Existing socket from NAT traversal to use (net.Socket or dgram.Socket) */
+  existingSocket?: any;
+  
+  /** Connection type of the existing socket */
+  connectionType?: CONNECTION_TYPE;
+  
+  /** Remote peer address for the existing socket */
+  remoteAddress?: string;
+  
+  /** Remote peer port for the existing socket */
+  remotePort?: number;
 }
 
 /**

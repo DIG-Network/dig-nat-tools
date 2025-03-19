@@ -9,22 +9,26 @@ exports.DEFAULT_STUN_SERVERS = exports.DEFAULT_UDP_PORT = exports.DEFAULT_TCP_PO
  */
 var CONNECTION_TYPE;
 (function (CONNECTION_TYPE) {
-    /**
-     * TCP direct connection
-     */
-    CONNECTION_TYPE["TCP"] = "tcp";
-    /**
-     * UDP direct connection
-     */
-    CONNECTION_TYPE["UDP"] = "udp";
-    /**
-     * WebRTC connection using DataChannel
-     */
-    CONNECTION_TYPE["WEBRTC"] = "webrtc";
-    /**
-     * Fallback Gun relay connection
-     */
-    CONNECTION_TYPE["GUN"] = "gun";
+    // Direct connections
+    CONNECTION_TYPE["TCP"] = "TCP";
+    CONNECTION_TYPE["UDP"] = "UDP";
+    // NAT traversal methods (in order of reliability)
+    CONNECTION_TYPE["UPNP"] = "UPNP";
+    CONNECTION_TYPE["NAT_PMP"] = "NAT_PMP";
+    // Hole punching methods
+    CONNECTION_TYPE["UDP_HOLE_PUNCH"] = "UDP_HOLE_PUNCH";
+    CONNECTION_TYPE["UDP_ADVANCED_HOLE_PUNCH"] = "UDP_ADVANCED_HOLE_PUNCH";
+    CONNECTION_TYPE["TCP_HOLE_PUNCH"] = "TCP_HOLE_PUNCH";
+    CONNECTION_TYPE["TCP_SIMULTANEOUS_OPEN"] = "TCP_SIMULTANEOUS_OPEN";
+    // WebRTC related
+    CONNECTION_TYPE["WEBRTC"] = "WEBRTC";
+    CONNECTION_TYPE["ICE"] = "ICE";
+    // Relay methods (fallbacks)
+    CONNECTION_TYPE["TURN"] = "TURN";
+    CONNECTION_TYPE["GUN"] = "GUN";
+    // IPv6 related
+    CONNECTION_TYPE["IPV6"] = "IPV6";
+    CONNECTION_TYPE["IPV6_TUNNEL"] = "IPV6_TUNNEL"; // IPv6 tunneling (6to4, Teredo)
 })(CONNECTION_TYPE || (exports.CONNECTION_TYPE = CONNECTION_TYPE = {}));
 /**
  * Default chunk size for file transfers (1MB)

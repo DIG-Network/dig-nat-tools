@@ -8,6 +8,7 @@ import { HostOptions } from './types';
 export interface HostConfig {
     hostFileCallback: (sha256: string, startChunk: number, chunkSize: number) => Promise<Buffer[] | null>;
     gunOptions?: Record<string, any>;
+    gunInstance?: any;
     chunkSize?: number;
     stunServers?: string[];
     tcpPort?: number;
@@ -15,6 +16,8 @@ export interface HostConfig {
     enableTCP?: boolean;
     enableUDP?: boolean;
     enableWebRTC?: boolean;
+    enableNATPMP?: boolean;
+    portMappingLifetime?: number;
 }
 /**
  * FileHost class for serving files to peers
@@ -28,17 +31,21 @@ export default class FileHost {
     private enableTCP;
     private enableUDP;
     private enableWebRTC;
+    private enableNATPMP;
+    private portMappingLifetime;
     private tcpPort;
     private udpPort;
     private tcpServer;
     private udpSocket;
     private activeConnections;
-    private tcpConnections;
-    private udpConnections;
-    private webrtcConnections;
-    private dataChannels;
+    private tcpSockets;
+    private udpClients;
+    private webrtcPeerConnections;
+    private webrtcDataChannels;
     private connectionOptions;
     private isRunning;
+    private portMappings;
+    private externalIPv4;
     /**
      * Create a new FileHost instance
      * @param options Host configuration options
@@ -49,6 +56,16 @@ export default class FileHost {
      * @returns The host ID
      */
     getHostId(): string;
+    /**
+     * Get the TCP port
+     * @returns The TCP port number or 0 if TCP is not enabled
+     */
+    getTcpPort(): number;
+    /**
+     * Get the UDP port
+     * @returns The UDP port number or 0 if UDP is not enabled
+     */
+    getUdpPort(): number;
     /**
      * Start the file host
      */
@@ -103,19 +120,59 @@ export default class FileHost {
      */
     private _sendResponse;
     /**
-     * Send TCP response
+     * Create a TCP connection object
+     * @param clientId - Client identifier
+     * @param socket - TCP socket
+     * @returns TCP connection object
+     */
+    private _createTCPConnection;
+    /**
+     * Create a UDP connection object
+     * @param clientId - Client identifier
+     * @param remoteAddress - Remote address
+     * @param remotePort - Remote port
+     * @returns UDP connection object
+     */
+    private _createUDPConnection;
+    /**
+     * Create a WebRTC connection object
+     * @param clientId - Client identifier
+     * @param peerConnection - WebRTC peer connection
+     * @param dataChannel - WebRTC data channel
+     * @returns WebRTC connection object
+     */
+    private _createWebRTCConnection;
+    /**
+     * Create a Gun relay connection object
+     * @param clientId - Client identifier
+     * @returns Gun relay connection object
+     */
+    private _createGunConnection;
+    /**
+     * Send TCP response (fallback method)
      */
     private _sendTCPResponse;
     /**
-     * Send UDP response
+     * Send UDP response (fallback method)
      */
     private _sendUDPResponse;
     /**
-     * Send WebRTC response
+     * Send WebRTC response (fallback method)
      */
     private _sendWebRTCResponse;
     /**
-     * Send Gun relay response
+     * Send Gun relay response (fallback method)
      */
     private _sendGunResponse;
+    /**
+     * Handle a new TCP connection
+     * @param socket The TCP socket
+     */
+    private _handleTCPConnection;
+    /**
+     * Handle an incoming UDP message
+     * @param msg The UDP message
+     * @param rinfo The remote info (address and port)
+     */
+    private _handleUDPMessage;
 }

@@ -44,15 +44,20 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const gun_1 = __importDefault(require("gun"));
 const debug_1 = __importDefault(require("debug"));
+// We'll use dynamic imports for node-datachannel
 const dgram = __importStar(require("dgram"));
 const net = __importStar(require("net"));
 const os = __importStar(require("os"));
 const path = __importStar(require("path"));
 const uuid_1 = require("uuid");
-const dc = __importStar(require("node-datachannel"));
 // Import the CONNECTION_TYPE for use in the host
 const constants_1 = require("../types/constants");
+// Import NAT-PMP/PCP utilities
+const utils_1 = require("./utils");
 const debug = (0, debug_1.default)('dig-nat-tools:host');
+// We'll use any for now since we can't use dynamic imports directly in TypeScript
+// This will be initialized in the constructor if WebRTC is enabled
+let dc = null;
 /**
  * FileHost class for serving files to peers
  */
@@ -64,13 +69,16 @@ class FileHost {
     constructor(options) {
         this.tcpServer = null;
         this.udpSocket = null;
+        // Store the actual connection objects now
         this.activeConnections = new Map();
-        this.tcpConnections = new Map();
-        this.udpConnections = new Map();
-        this.webrtcConnections = new Map();
-        this.dataChannels = new Map();
+        this.tcpSockets = new Map();
+        this.udpClients = new Map();
+        this.webrtcPeerConnections = new Map();
+        this.webrtcDataChannels = new Map();
         this.connectionOptions = [];
         this.isRunning = false;
+        this.portMappings = [];
+        this.externalIPv4 = null;
         this.hostId = (0, uuid_1.v4)();
         this.hostFileCallback = options.hostFileCallback;
         this.chunkSize = options.chunkSize || 64 * 1024; // 64KB default
@@ -81,15 +89,28 @@ class FileHost {
         this.enableTCP = options.enableTCP !== false;
         this.enableUDP = options.enableUDP !== false;
         this.enableWebRTC = options.enableWebRTC !== false;
+        this.enableNATPMP = options.enableNATPMP !== false; // Default to enabled
+        this.portMappingLifetime = options.portMappingLifetime || 3600; // Default to 1 hour
         this.tcpPort = options.tcpPort || 0; // 0 = random available port
         this.udpPort = options.udpPort || 0; // 0 = random available port
         // Initialize Gun for signaling and fallback relay
         const gunOptions = options.gunOptions || {};
+        // Use type assertion to fix the constructor issue
         this.gun = new gun_1.default({
             peers: gunOptions.peers || ['https://gun-manhattan.herokuapp.com/gun'],
             file: gunOptions.file || path.join(os.tmpdir(), `gun-${this.hostId}`),
             ...gunOptions
         });
+        // Dynamically import node-datachannel if WebRTC is enabled
+        if (this.enableWebRTC) {
+            Promise.resolve().then(() => __importStar(require('node-datachannel'))).then(module => {
+                dc = module;
+                debug('node-datachannel module loaded');
+            }).catch(err => {
+                debug(`Error loading node-datachannel: ${err}`);
+                this.enableWebRTC = false;
+            });
+        }
     }
     /**
      * Get the host ID
@@ -97,6 +118,20 @@ class FileHost {
      */
     getHostId() {
         return this.hostId;
+    }
+    /**
+     * Get the TCP port
+     * @returns The TCP port number or 0 if TCP is not enabled
+     */
+    getTcpPort() {
+        return this.enableTCP ? this.tcpPort : 0;
+    }
+    /**
+     * Get the UDP port
+     * @returns The UDP port number or 0 if UDP is not enabled
+     */
+    getUdpPort() {
+        return this.enableUDP ? this.udpPort : 0;
     }
     /**
      * Start the file host
@@ -120,9 +155,28 @@ class FileHost {
         }
         // Initialize WebRTC if enabled
         if (this.enableWebRTC) {
-            // The LogLevel may not be directly available, use a string with as any type assertion
-            dc.initLogger('error');
-            this.connectionOptions.push({ type: constants_1.CONNECTION_TYPE.WEBRTC });
+            // Make sure node-datachannel is loaded
+            if (!dc) {
+                try {
+                    dc = await Promise.resolve().then(() => __importStar(require('node-datachannel')));
+                    debug('node-datachannel module loaded');
+                }
+                catch (err) {
+                    debug(`Error loading node-datachannel: ${err}`);
+                    this.enableWebRTC = false;
+                }
+            }
+            if (dc) {
+                try {
+                    dc.initLogger('error');
+                    this.connectionOptions.push({ type: constants_1.CONNECTION_TYPE.WEBRTC });
+                    debug('WebRTC initialized');
+                }
+                catch (err) {
+                    debug(`Error initializing WebRTC: ${err}`);
+                    this.enableWebRTC = false;
+                }
+            }
         }
         // Always add Gun relay as fallback
         this.connectionOptions.push({ type: constants_1.CONNECTION_TYPE.GUN });
@@ -145,34 +199,43 @@ class FileHost {
             debug('Host not running');
             return;
         }
-        debug(`Stopping file host with ID: ${this.hostId}`);
+        debug('Stopping file host');
         this.isRunning = false;
-        // Close TCP server and connections
+        // Close all active connections
+        for (const connection of this.activeConnections.values()) {
+            connection.close();
+        }
+        this.activeConnections.clear();
+        // Close TCP server if it exists
         if (this.tcpServer) {
             this.tcpServer.close();
-            for (const socket of this.tcpConnections.values()) {
-                socket.destroy();
-            }
-            this.tcpConnections.clear();
+            this.tcpServer = null;
         }
-        // Close UDP socket
+        // Close UDP socket if it exists
         if (this.udpSocket) {
             this.udpSocket.close();
-            this.udpConnections.clear();
+            this.udpSocket = null;
         }
-        // Close WebRTC connections
-        for (const dataChannel of this.dataChannels.values()) {
-            dataChannel.close();
+        // Remove port mappings if they exist
+        if (this.enableNATPMP && this.portMappings.length > 0) {
+            debug('Removing port mappings');
+            for (const mapping of this.portMappings) {
+                try {
+                    await (0, utils_1.deletePortMapping)({
+                        externalPort: mapping.externalPort,
+                        protocol: mapping.protocol
+                    });
+                    debug(`Removed port mapping for ${mapping.protocol} port ${mapping.externalPort}`);
+                }
+                catch (err) {
+                    debug(`Error removing port mapping: ${err.message}`);
+                }
+            }
+            this.portMappings = [];
         }
-        for (const peerConnection of this.webrtcConnections.values()) {
-            peerConnection.close();
-        }
-        this.dataChannels.clear();
-        this.webrtcConnections.clear();
-        // Remove host from Gun
+        // Unregister host from Gun
         this.gun.get('hosts').get(this.hostId).put(null);
-        // Clear all active connections
-        this.activeConnections.clear();
+        debug('Host unregistered');
     }
     /**
      * Get all local IP addresses
@@ -188,8 +251,14 @@ class FileHost {
                 continue;
             // Get IPv4 addresses that are not internal
             for (const iface of networkInterface) {
-                if (iface.family === 'IPv4' && !iface.internal) {
-                    addresses.push(iface.address);
+                // Support both string and number for the family property
+                // Different Node.js versions might return different types
+                const family = iface.family;
+                if ((typeof family === 'string' && family === 'IPv4') ||
+                    (typeof family === 'number' && family === 4)) {
+                    if (!iface.internal) {
+                        addresses.push(iface.address);
+                    }
                 }
             }
         }
@@ -200,37 +269,69 @@ class FileHost {
      */
     async _startTCPServer() {
         return new Promise((resolve, reject) => {
-            this.tcpServer = net.createServer((socket) => {
-                const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
-                debug(`New TCP connection from ${clientId}`);
-                this.tcpConnections.set(clientId, socket);
-                socket.on('data', (data) => {
-                    // Handle incoming TCP data
-                    this._handleIncomingMessage(data, clientId, constants_1.CONNECTION_TYPE.TCP);
-                });
-                socket.on('error', (err) => {
-                    debug(`TCP socket error for ${clientId}:`, err);
-                    this.tcpConnections.delete(clientId);
-                });
-                socket.on('close', () => {
-                    debug(`TCP connection closed for ${clientId}`);
-                    this.tcpConnections.delete(clientId);
-                });
-            });
+            this.tcpServer = net.createServer();
             this.tcpServer.on('error', (err) => {
-                debug('TCP server error:', err);
+                debug(`TCP server error: ${err}`);
                 reject(err);
             });
-            this.tcpServer.listen(this.tcpPort, () => {
-                const address = this.tcpServer.address();
+            this.tcpServer.on('connection', (socket) => {
+                this._handleTCPConnection(socket);
+            });
+            this.tcpServer.listen(this.tcpPort, async () => {
+                const address = this.tcpServer?.address();
                 this.tcpPort = address.port;
                 debug(`TCP server listening on port ${this.tcpPort}`);
-                // Add local addresses to connection options
-                const localAddresses = this._getLocalIPAddresses();
-                for (const addr of localAddresses) {
+                // Create port mapping if NAT-PMP/PCP is enabled
+                if (this.enableNATPMP) {
+                    try {
+                        const result = await (0, utils_1.createPortMapping)({
+                            internalPort: this.tcpPort,
+                            protocol: 'TCP',
+                            lifetime: this.portMappingLifetime
+                        });
+                        if (result.success) {
+                            debug(`Created TCP port mapping: internal ${this.tcpPort} -> external ${result.externalPort}`);
+                            // Store the external IP address if available
+                            if (result.externalAddress) {
+                                this.externalIPv4 = result.externalAddress;
+                                debug(`External IPv4 address: ${this.externalIPv4}`);
+                            }
+                            // Add to connection options with external port
+                            this.connectionOptions.push({
+                                type: constants_1.CONNECTION_TYPE.TCP,
+                                address: result.externalAddress || undefined,
+                                port: result.externalPort
+                            });
+                            // Store the mapping for cleanup
+                            if (result.externalPort) {
+                                this.portMappings.push({
+                                    protocol: 'TCP',
+                                    externalPort: result.externalPort
+                                });
+                            }
+                        }
+                        else {
+                            debug(`Failed to create TCP port mapping: ${result.error}`);
+                            // Fall back to local port
+                            this.connectionOptions.push({
+                                type: constants_1.CONNECTION_TYPE.TCP,
+                                port: this.tcpPort
+                            });
+                        }
+                    }
+                    catch (err) {
+                        debug(`Error creating TCP port mapping: ${err.message}`);
+                        // Fall back to local port
+                        this.connectionOptions.push({
+                            type: constants_1.CONNECTION_TYPE.TCP,
+                            port: this.tcpPort
+                        });
+                    }
+                }
+                else {
+                    // Just use local port if NAT-PMP/PCP is disabled
                     this.connectionOptions.push({
                         type: constants_1.CONNECTION_TYPE.TCP,
-                        address: addr,
                         port: this.tcpPort
                     });
                 }
@@ -245,36 +346,71 @@ class FileHost {
         return new Promise((resolve, reject) => {
             this.udpSocket = dgram.createSocket('udp4');
             this.udpSocket.on('error', (err) => {
-                debug('UDP socket error:', err);
+                debug(`UDP socket error: ${err}`);
                 reject(err);
             });
             this.udpSocket.on('message', (msg, rinfo) => {
-                const clientId = `${rinfo.address}:${rinfo.port}`;
-                debug(`Received UDP message from ${clientId}`);
-                // Store client info for sending responses
-                this.udpConnections.set(clientId, {
-                    address: rinfo.address,
-                    port: rinfo.port
-                });
-                // Handle incoming UDP data
-                this._handleIncomingMessage(msg, clientId, constants_1.CONNECTION_TYPE.UDP);
+                this._handleUDPMessage(msg, rinfo);
             });
-            this.udpSocket.on('listening', () => {
-                const address = this.udpSocket.address();
-                this.udpPort = address.port;
-                debug(`UDP server listening on port ${this.udpPort}`);
-                // Add local addresses to connection options
-                const localAddresses = this._getLocalIPAddresses();
-                for (const addr of localAddresses) {
+            this.udpSocket.bind(this.udpPort, async () => {
+                this.udpPort = this.udpSocket?.address().port || 0;
+                debug(`UDP socket listening on port ${this.udpPort}`);
+                // Create port mapping if NAT-PMP/PCP is enabled
+                if (this.enableNATPMP) {
+                    try {
+                        const result = await (0, utils_1.createPortMapping)({
+                            internalPort: this.udpPort,
+                            protocol: 'UDP',
+                            lifetime: this.portMappingLifetime
+                        });
+                        if (result.success) {
+                            debug(`Created UDP port mapping: internal ${this.udpPort} -> external ${result.externalPort}`);
+                            // Store the external IP address if available
+                            if (result.externalAddress && !this.externalIPv4) {
+                                this.externalIPv4 = result.externalAddress;
+                                debug(`External IPv4 address: ${this.externalIPv4}`);
+                            }
+                            // Add to connection options with external port
+                            this.connectionOptions.push({
+                                type: constants_1.CONNECTION_TYPE.UDP,
+                                address: result.externalAddress || undefined,
+                                port: result.externalPort
+                            });
+                            // Store the mapping for cleanup
+                            if (result.externalPort) {
+                                this.portMappings.push({
+                                    protocol: 'UDP',
+                                    externalPort: result.externalPort
+                                });
+                            }
+                        }
+                        else {
+                            debug(`Failed to create UDP port mapping: ${result.error}`);
+                            // Fall back to local port
+                            this.connectionOptions.push({
+                                type: constants_1.CONNECTION_TYPE.UDP,
+                                port: this.udpPort
+                            });
+                        }
+                    }
+                    catch (err) {
+                        debug(`Error creating UDP port mapping: ${err.message}`);
+                        // Fall back to local port
+                        this.connectionOptions.push({
+                            type: constants_1.CONNECTION_TYPE.UDP,
+                            port: this.udpPort
+                        });
+                    }
+                }
+                else {
+                    // Just use local port if NAT-PMP/PCP is disabled
                     this.connectionOptions.push({
                         type: constants_1.CONNECTION_TYPE.UDP,
-                        address: addr,
                         port: this.udpPort
                     });
                 }
                 resolve();
             });
-            this.udpSocket.bind(this.udpPort);
         });
     }
     /**
@@ -292,6 +428,12 @@ class FileHost {
                 if (!message || message.handled)
                     continue;
                 debug(`Received Gun message: ${message.type}`);
+                // Create GUN connection if it doesn't exist yet
+                const clientId = message.clientId;
+                if (clientId && !this.activeConnections.has(`gun:${clientId}`)) {
+                    const gunConnection = this._createGunConnection(clientId);
+                    this.activeConnections.set(`gun:${clientId}`, gunConnection);
+                }
                 // Mark message as handled
                 this.gun.get('hosts').get(this.hostId).get('messages').get(msgId).put({
                     ...message,
@@ -331,16 +473,17 @@ class FileHost {
      * Handle WebRTC signaling message
      */
     _handleWebRTCSignal(message) {
-        if (!this.enableWebRTC)
+        if (!this.enableWebRTC || !dc)
             return;
         const { clientId, signal } = message;
         // If we don't have a peer connection for this client yet, create one
-        if (!this.webrtcConnections.has(clientId)) {
+        if (!this.webrtcPeerConnections.has(clientId)) {
             debug(`Creating new WebRTC peer connection for ${clientId}`);
             // Configure the peer connection
             const config = {
                 iceServers: this.stunServers
             };
+            // Use any type for node-datachannel
             const peer = new dc.PeerConnection(clientId, config);
             // Set up event handlers for node-datachannel
             peer.onLocalDescription((sdp, type) => {
@@ -365,13 +508,19 @@ class FileHost {
                 this.gun.get('clients').get(clientId).get('signals').set(response);
                 debug(`Sent ICE candidate to ${clientId}`);
             });
+            // Use any for DataChannel for now
             peer.onDataChannel((channel) => {
                 debug(`New data channel from ${clientId}`);
+                // Create WebRTC connection object when data channel is established
+                const webrtcConnection = this._createWebRTCConnection(clientId, peer, channel);
+                this.activeConnections.set(`webrtc:${clientId}`, webrtcConnection);
+                // Store data channel for direct access if needed
+                this.webrtcDataChannels.set(clientId, channel);
                 channel.onMessage((msg) => {
                     if (typeof msg === 'string') {
                         try {
                             const data = JSON.parse(msg);
-                            this._handleIncomingMessage(data, clientId, constants_1.CONNECTION_TYPE.WEBRTC);
+                            this._handleIncomingMessage(data, `webrtc:${clientId}`, constants_1.CONNECTION_TYPE.WEBRTC);
                         }
                         catch (err) {
                             debug(`Error parsing WebRTC message: ${err}`);
@@ -384,13 +533,14 @@ class FileHost {
                 });
                 channel.onClosed(() => {
                     debug(`Data channel from ${clientId} closed`);
-                    this.dataChannels.delete(clientId);
+                    this.webrtcDataChannels.delete(clientId);
+                    this.activeConnections.delete(`webrtc:${clientId}`);
                 });
-                this.dataChannels.set(clientId, channel);
             });
-            this.webrtcConnections.set(clientId, peer);
+            // Store peer connection for direct access if needed
+            this.webrtcPeerConnections.set(clientId, peer);
         }
-        const peer = this.webrtcConnections.get(clientId);
+        const peer = this.webrtcPeerConnections.get(clientId);
         // Handle the signal
         if (signal.sdp && signal.type) {
             peer.setRemoteDescription(signal.sdp, signal.type);
@@ -532,29 +682,180 @@ class FileHost {
      */
     _sendResponse(response, clientId, msgId = null, connectionType = constants_1.CONNECTION_TYPE.GUN) {
         debug(`Sending ${response.type} to ${clientId} via ${connectionType}`);
-        // Send response based on connection type
-        switch (connectionType) {
-            case constants_1.CONNECTION_TYPE.TCP:
-                this._sendTCPResponse(response, clientId);
-                break;
-            case constants_1.CONNECTION_TYPE.UDP:
-                this._sendUDPResponse(response, clientId);
-                break;
-            case constants_1.CONNECTION_TYPE.WEBRTC:
-                this._sendWebRTCResponse(response, clientId);
-                break;
-            case constants_1.CONNECTION_TYPE.GUN:
-                this._sendGunResponse(response, clientId, msgId);
-                break;
-            default:
-                debug(`Unknown connection type: ${connectionType}`);
+        // Get connection object based on connection type prefix
+        let connectionIdPrefix = clientId;
+        // Adjust client ID for non-Gun connections which might have prefixes
+        if (connectionType === constants_1.CONNECTION_TYPE.WEBRTC && !clientId.startsWith('webrtc:')) {
+            connectionIdPrefix = `webrtc:${clientId}`;
+        }
+        else if (connectionType === constants_1.CONNECTION_TYPE.GUN && !clientId.startsWith('gun:')) {
+            connectionIdPrefix = `gun:${clientId}`;
+        }
+        // Get connection object
+        const connection = this.activeConnections.get(connectionIdPrefix);
+        if (connection) {
+            // If we have a proper connection object, use it to send the response
+            connection.send(response.type, response);
+        }
+        else {
+            // Fall back to direct sending methods if no connection object is available
+            switch (connectionType) {
+                case constants_1.CONNECTION_TYPE.TCP:
+                    this._sendTCPResponse(response, clientId);
+                    break;
+                case constants_1.CONNECTION_TYPE.UDP:
+                    this._sendUDPResponse(response, clientId);
+                    break;
+                case constants_1.CONNECTION_TYPE.WEBRTC:
+                    this._sendWebRTCResponse(response, clientId);
+                    break;
+                case constants_1.CONNECTION_TYPE.GUN:
+                    this._sendGunResponse(response, clientId, msgId);
+                    break;
+                default:
+                    debug(`Unknown connection type: ${connectionType}`);
+            }
         }
     }
     /**
-     * Send TCP response
+     * Create a TCP connection object
+     * @param clientId - Client identifier
+     * @param socket - TCP socket
+     * @returns TCP connection object
+     */
+    _createTCPConnection(clientId, socket) {
+        const connection = {
+            type: constants_1.CONNECTION_TYPE.TCP,
+            clientId,
+            socket,
+            messageHandlers: new Map(),
+            send: (messageType, data) => {
+                try {
+                    const message = JSON.stringify(data);
+                    socket.write(message);
+                }
+                catch (err) {
+                    debug(`Error sending TCP message: ${err}`);
+                }
+            },
+            on: (messageType, handler) => {
+                connection.messageHandlers.set(messageType, handler);
+            },
+            close: () => {
+                socket.destroy();
+                this.tcpSockets.delete(clientId);
+                this.activeConnections.delete(clientId);
+            }
+        };
+        return connection;
+    }
+    /**
+     * Create a UDP connection object
+     * @param clientId - Client identifier
+     * @param remoteAddress - Remote address
+     * @param remotePort - Remote port
+     * @returns UDP connection object
+     */
+    _createUDPConnection(clientId, remoteAddress, remotePort) {
+        const connection = {
+            type: constants_1.CONNECTION_TYPE.UDP,
+            clientId,
+            remoteAddress,
+            remotePort,
+            messageHandlers: new Map(),
+            send: (messageType, data) => {
+                if (!this.udpSocket) {
+                    debug('UDP socket not initialized');
+                    return;
+                }
+                try {
+                    const message = JSON.stringify(data);
+                    this.udpSocket.send(message, remotePort, remoteAddress);
+                }
+                catch (err) {
+                    debug(`Error sending UDP message: ${err}`);
+                }
+            },
+            on: (messageType, handler) => {
+                connection.messageHandlers.set(messageType, handler);
+            },
+            close: () => {
+                this.udpClients.delete(clientId);
+                this.activeConnections.delete(clientId);
+            }
+        };
+        return connection;
+    }
+    /**
+     * Create a WebRTC connection object
+     * @param clientId - Client identifier
+     * @param peerConnection - WebRTC peer connection
+     * @param dataChannel - WebRTC data channel
+     * @returns WebRTC connection object
+     */
+    _createWebRTCConnection(clientId, peerConnection, dataChannel) {
+        const connection = {
+            type: constants_1.CONNECTION_TYPE.WEBRTC,
+            clientId,
+            peerConnection,
+            dataChannel,
+            messageHandlers: new Map(),
+            send: (messageType, data) => {
+                try {
+                    const message = JSON.stringify(data);
+                    dataChannel.sendMessage(message);
+                }
+                catch (err) {
+                    debug(`Error sending WebRTC message: ${err}`);
+                }
+            },
+            on: (messageType, handler) => {
+                connection.messageHandlers.set(messageType, handler);
+            },
+            close: () => {
+                if (dataChannel) {
+                    dataChannel.close();
+                }
+                if (peerConnection) {
+                    peerConnection.close();
+                }
+                this.webrtcDataChannels.delete(clientId);
+                this.webrtcPeerConnections.delete(clientId);
+                this.activeConnections.delete(`webrtc:${clientId}`);
+            }
+        };
+        return connection;
+    }
+    /**
+     * Create a Gun relay connection object
+     * @param clientId - Client identifier
+     * @returns Gun relay connection object
+     */
+    _createGunConnection(clientId) {
+        const connection = {
+            type: constants_1.CONNECTION_TYPE.GUN,
+            clientId,
+            messageHandlers: new Map(),
+            send: (messageType, data) => {
+                // Note: For Gun, the actual message sending is done in _sendGunResponse
+                // because it needs the message ID, which isn't known here
+                // This is just a placeholder
+                debug(`(Gun send placeholder) Sending ${messageType} to ${clientId}`);
+            },
+            on: (messageType, handler) => {
+                connection.messageHandlers.set(messageType, handler);
+            },
+            close: () => {
+                this.activeConnections.delete(`gun:${clientId}`);
+            }
+        };
+        return connection;
+    }
+    /**
+     * Send TCP response (fallback method)
      */
     _sendTCPResponse(response, clientId) {
-        const socket = this.tcpConnections.get(clientId);
+        const socket = this.tcpSockets.get(clientId);
         if (!socket) {
             debug(`TCP socket for ${clientId} not found`);
             return;
@@ -568,10 +869,10 @@ class FileHost {
         }
     }
     /**
-     * Send UDP response
+     * Send UDP response (fallback method)
      */
     _sendUDPResponse(response, clientId) {
-        const client = this.udpConnections.get(clientId);
+        const client = this.udpClients.get(clientId);
         if (!client || !this.udpSocket) {
             debug(`UDP client ${clientId} not found or UDP socket not initialized`);
             return;
@@ -585,10 +886,10 @@ class FileHost {
         }
     }
     /**
-     * Send WebRTC response
+     * Send WebRTC response (fallback method)
      */
     _sendWebRTCResponse(response, clientId) {
-        const dataChannel = this.dataChannels.get(clientId);
+        const dataChannel = this.webrtcDataChannels.get(clientId);
         if (!dataChannel) {
             debug(`WebRTC data channel for ${clientId} not found`);
             return;
@@ -602,7 +903,7 @@ class FileHost {
         }
     }
     /**
-     * Send Gun relay response
+     * Send Gun relay response (fallback method)
      */
     _sendGunResponse(response, clientId, msgId) {
         if (!msgId) {
@@ -619,6 +920,55 @@ class FileHost {
         catch (err) {
             debug(`Error sending Gun response: ${err}`);
         }
+    }
+    /**
+     * Handle a new TCP connection
+     * @param socket The TCP socket
+     */
+    _handleTCPConnection(socket) {
+        const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
+        debug(`New TCP connection from ${clientId}`);
+        // Store socket for direct access if needed
+        this.tcpSockets.set(clientId, socket);
+        // Create TCP connection object
+        const tcpConnection = this._createTCPConnection(clientId, socket);
+        // Store connection
+        this.activeConnections.set(clientId, tcpConnection);
+        socket.on('data', (data) => {
+            // Handle incoming TCP data
+            this._handleIncomingMessage(data, clientId, constants_1.CONNECTION_TYPE.TCP);
+        });
+        socket.on('error', (err) => {
+            debug(`TCP socket error for ${clientId}: ${err.message}`);
+            this.tcpSockets.delete(clientId);
+            this.activeConnections.delete(clientId);
+        });
+        socket.on('close', () => {
+            debug(`TCP connection closed for ${clientId}`);
+            this.tcpSockets.delete(clientId);
+            this.activeConnections.delete(clientId);
+        });
+    }
+    /**
+     * Handle an incoming UDP message
+     * @param msg The UDP message
+     * @param rinfo The remote info (address and port)
+     */
+    _handleUDPMessage(msg, rinfo) {
+        const clientId = `${rinfo.address}:${rinfo.port}`;
+        debug(`Received UDP message from ${clientId}`);
+        // Store client info for direct access if needed
+        this.udpClients.set(clientId, {
+            address: rinfo.address,
+            port: rinfo.port
+        });
+        // Create UDP connection if it doesn't exist yet
+        if (!this.activeConnections.has(clientId)) {
+            const udpConnection = this._createUDPConnection(clientId, rinfo.address, rinfo.port);
+            this.activeConnections.set(clientId, udpConnection);
+        }
+        // Handle incoming UDP data
+        this._handleIncomingMessage(msg, clientId, constants_1.CONNECTION_TYPE.UDP);
     }
 }
 exports.default = FileHost;

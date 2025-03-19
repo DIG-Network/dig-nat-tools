@@ -20,6 +20,8 @@ import { ClientOptions, DownloadOptions } from './types';
 import { CONNECTION_TYPE } from '../types/constants';
 // Import NAT-PMP/PCP utilities
 import { discoverPublicIPs, createPortMapping, deletePortMapping } from './utils';
+// Import crypto utilities for hash verification
+import { calculateSHA256 } from './utils/crypto';
 
 const debug = Debug('dig-nat-tools:client');
 
@@ -56,6 +58,10 @@ interface ActiveDownload {
   chunkSize: number;
   onProgress?: (receivedBytes: number, totalBytes: number) => void;
   aborted: boolean;
+  // Add a hash object to calculate SHA-256 on the fly
+  hashCalculator: crypto.Hash;
+  // Add port mappings for NAT traversal
+  portMappings: { protocol: 'TCP' | 'UDP', externalPort: number }[];
 }
 
 /**
@@ -74,6 +80,14 @@ export default class FileClient {
   private enableNATPMP: boolean;
   private externalIPv4: string | null = null;
   private externalIPv6: string | null = null;
+  private portMappingLifetime: number;
+  private portMappings: { protocol: 'TCP' | 'UDP', externalPort: number }[] = [];
+  // New fields for established connection from NAT traversal
+  private existingSocket: net.Socket | dgram.Socket | null = null;
+  private connectionType: CONNECTION_TYPE | null = null;
+  private remoteAddress: string | null = null;
+  private remotePort: number | null = null;
+  private hasEstablishedConnection: boolean = false;
   
   /**
    * Create a new file client instance
@@ -85,19 +99,35 @@ export default class FileClient {
     this.requestTimeout = config.requestTimeout || 30000; // 30 seconds
     this.enableWebRTC = config.enableWebRTC !== false;
     this.enableNATPMP = config.enableNATPMP !== false; // Default to enabled
+    this.portMappingLifetime = config.portMappingLifetime || 3600; // Default to 1 hour
     
     this.clientId = uuidv4();
     this.initialized = false;
     this.activeDownloads = new Map();
     this.initPromise = null;
     
-    // Initialize Gun for peer discovery
-    const gunOptions = config.gunOptions || {};
-    this.gun = Gun({
-      peers: gunOptions.peers || ['https://gun-manhattan.herokuapp.com/gun'],
-      file: gunOptions.file || path.join(process.env.TEMP || process.env.TMP || '/tmp', `gun-${this.clientId}`),
-      ...gunOptions
-    });
+    // Store the existing socket from NAT traversal if provided
+    if (config.existingSocket) {
+      this.existingSocket = config.existingSocket;
+      this.connectionType = config.connectionType || CONNECTION_TYPE.TCP; // Default to TCP if not specified
+      this.remoteAddress = config.remoteAddress || null;
+      this.remotePort = config.remotePort || null;
+      this.hasEstablishedConnection = true;
+      debug(`Using established ${this.connectionType} connection to ${this.remoteAddress}:${this.remotePort}`);
+    }
+    
+    // Use provided Gun instance or initialize a new one
+    if (config.gunInstance) {
+      this.gun = config.gunInstance;
+    } else {
+      // Initialize Gun for peer discovery
+      const gunOptions = config.gunOptions || {};
+      this.gun = Gun({
+        peers: gunOptions.peers || ['https://gun-manhattan.herokuapp.com/gun'],
+        file: gunOptions.file || path.join(process.env.TEMP || process.env.TMP || '/tmp', `gun-${this.clientId}`),
+        ...gunOptions
+      });
+    }
     
     debug(`Created client with ID: ${this.clientId}`);
   }
@@ -141,6 +171,9 @@ export default class FileClient {
           if (ipv4) {
             this.externalIPv4 = ipv4;
             debug(`Discovered external IPv4 address: ${ipv4}`);
+            
+            // Create port mappings for TCP and UDP protocols
+            await this._createPortMappings();
           }
           
           if (ipv6) {
@@ -157,6 +190,76 @@ export default class FileClient {
     });
     
     return this.initPromise;
+  }
+
+  /**
+   * Create port mappings for NAT traversal
+   * @private
+   */
+  private async _createPortMappings(): Promise<void> {
+    if (!this.enableNATPMP) return;
+    
+    try {
+      // Create a random port for TCP connections
+      const tcpPort = Math.floor(Math.random() * (65535 - 10000)) + 10000;
+      
+      // Create TCP port mapping
+      const tcpMapping = await createPortMapping({
+        internalPort: tcpPort,
+        protocol: 'TCP',
+        lifetime: this.portMappingLifetime
+      });
+      
+      if (tcpMapping.success && tcpMapping.externalPort) {
+        debug(`Created TCP port mapping: internal ${tcpPort} -> external ${tcpMapping.externalPort}`);
+        this.portMappings.push({
+          protocol: 'TCP',
+          externalPort: tcpMapping.externalPort
+        });
+      }
+      
+      // Create a random port for UDP connections
+      const udpPort = Math.floor(Math.random() * (65535 - 10000)) + 10000;
+      
+      // Create UDP port mapping
+      const udpMapping = await createPortMapping({
+        internalPort: udpPort,
+        protocol: 'UDP',
+        lifetime: this.portMappingLifetime
+      });
+      
+      if (udpMapping.success && udpMapping.externalPort) {
+        debug(`Created UDP port mapping: internal ${udpPort} -> external ${udpMapping.externalPort}`);
+        this.portMappings.push({
+          protocol: 'UDP',
+          externalPort: udpMapping.externalPort
+        });
+      }
+    } catch (err) {
+      debug(`Error creating port mappings: ${(err as Error).message}`);
+    }
+  }
+  
+  /**
+   * Delete all port mappings
+   * @private
+   */
+  private async _deletePortMappings(): Promise<void> {
+    if (!this.enableNATPMP || this.portMappings.length === 0) return;
+    
+    for (const mapping of this.portMappings) {
+      try {
+        await deletePortMapping({
+          externalPort: mapping.externalPort,
+          protocol: mapping.protocol
+        });
+        debug(`Deleted ${mapping.protocol} port mapping for port ${mapping.externalPort}`);
+      } catch (err) {
+        debug(`Error deleting port mapping: ${(err as Error).message}`);
+      }
+    }
+    
+    this.portMappings = [];
   }
 
   /**
@@ -230,6 +333,9 @@ export default class FileClient {
     // Download ID to track this download
     const downloadId = `${hostId}-${sha256}-${Date.now()}`;
     
+    // Create a hash object to calculate SHA-256 on the fly
+    const hashCalculator = crypto.createHash('sha256');
+    
     // Create active download record
     const activeDownload: ActiveDownload = {
       hostId,
@@ -243,7 +349,9 @@ export default class FileClient {
       receivedBytes: existingChunks.length * this.chunkSize, // approximate
       chunkSize: this.chunkSize,
       onProgress,
-      aborted: false
+      aborted: false,
+      hashCalculator, // Add hash calculator
+      portMappings: [] // Add empty port mappings array
     };
     
     this.activeDownloads.set(downloadId, activeDownload);
@@ -282,6 +390,9 @@ export default class FileClient {
               for (const buffer of buffers) {
                 await fileHandle.write(buffer, 0, buffer.length, position);
                 position += buffer.length;
+                
+                // Update hash calculation with this chunk
+                activeDownload.hashCalculator.update(buffer);
                 
                 // Update progress
                 activeDownload.receivedBytes += buffer.length;
@@ -334,6 +445,15 @@ export default class FileClient {
         await fileHandle.close();
       }
       
+      // Verify file hash
+      const calculatedHash = activeDownload.hashCalculator.digest('hex');
+      
+      if (calculatedHash !== sha256) {
+        debug(`Hash verification failed: expected ${sha256}, got ${calculatedHash}`);
+        throw new Error(`File integrity verification failed: hash mismatch`);
+      }
+      
+      debug(`Hash verification successful: ${calculatedHash}`);
       debug(`Download of file ${sha256} completed successfully`);
       return savePath;
     } catch (error) {
@@ -351,18 +471,50 @@ export default class FileClient {
   }
 
   /**
+   * Stop the client and clean up resources
+   */
+  async stop(): Promise<void> {
+    debug('Stopping client');
+    
+    // Cancel all active downloads
+    for (const downloadId of this.activeDownloads.keys()) {
+      this.cancelDownload(downloadId);
+    }
+    
+    // Delete all port mappings
+    await this._deletePortMappings();
+    
+    this.initialized = false;
+    this.initPromise = null;
+    
+    debug('Client stopped');
+  }
+
+  /**
    * Connect to a peer
    * @param peerId - Peer identifier
    * @param connectionOptions - Connection options
    * @returns Promise that resolves to a connection object
    */
   private async _connectToPeer(peerId: string, connectionOptions: { type: CONNECTION_TYPE, address?: string, port?: number }[]): Promise<Connection> {
+    // If we already have an established socket from NAT traversal, use it
+    if (this.hasEstablishedConnection && this.existingSocket && this.connectionType) {
+      debug(`Using existing ${this.connectionType} connection from NAT traversal`);
+      
+      if (this.connectionType === CONNECTION_TYPE.TCP) {
+        return this._createConnectionFromExistingTCPSocket(peerId, this.existingSocket as net.Socket);
+      } else if (this.connectionType === CONNECTION_TYPE.UDP ||
+                this.connectionType === CONNECTION_TYPE.UDP_HOLE_PUNCH) {
+        return this._createConnectionFromExistingUDPSocket(peerId, this.existingSocket as dgram.Socket);
+      }
+    }
+    
+    // Continue with normal connection options
     if (!connectionOptions || connectionOptions.length === 0) {
       throw new Error(`No connection options available for peer ${peerId}`);
     }
     
-    // Prioritize connection options based on NAT-PMP/PCP availability
-    // If the peer has NAT-PMP/PCP mapped ports, try those first
+    // Original connection logic...
     const natPmpOptions = connectionOptions.filter(opt => 
       (opt.type === CONNECTION_TYPE.TCP || opt.type === CONNECTION_TYPE.UDP) && 
       opt.address && opt.port
@@ -378,14 +530,15 @@ export default class FileClient {
           return await this._createUDPConnection(peerId, option.address, option.port);
         }
       } catch (err) {
-        debug(`NAT-PMP/PCP connection failed: ${(err as Error).message}, trying other methods`);
+        debug(`NAT-PMP/PCP connection failed: ${(err as Error).message}`);
       }
     }
     
-    // If NAT-PMP/PCP connection failed or wasn't available, try other methods
-    // Try all connection methods in order
+    // Try the original WebRTC option if available
     for (const option of connectionOptions) {
       try {
+        debug(`Trying connection type: ${option.type}`);
+        
         switch (option.type) {
           case CONNECTION_TYPE.TCP:
             if (option.address && typeof option.port === 'number') {
@@ -400,23 +553,158 @@ export default class FileClient {
             break;
             
           case CONNECTION_TYPE.WEBRTC:
-            if (this.enableWebRTC) {
-              return await this._createWebRTCConnection(peerId);
-            }
-            break;
+            return await this._createWebRTCConnection(peerId);
             
           case CONNECTION_TYPE.GUN:
             return this._createGunRelayConnection(peerId);
         }
       } catch (err) {
-        debug(`Connection attempt using ${option.type} failed: ${(err as Error).message}`);
-        continue;
+        debug(`Connection attempt failed with type ${option.type}: ${(err as Error).message}`);
       }
     }
     
-    // If all else fails, use Gun relay as fallback
-    debug(`All direct connection methods failed, falling back to Gun relay`);
-    return this._createGunRelayConnection(peerId);
+    // If all else fails, use Gun as a fallback
+    try {
+      debug('Falling back to Gun relay connection');
+      return this._createGunRelayConnection(peerId);
+    } catch (err) {
+      throw new Error(`All connection methods failed: ${(err as Error).message}`);
+    }
+  }
+  
+  /**
+   * Create connection from an existing TCP socket from NAT traversal
+   * @param peerId - Peer identifier
+   * @param socket - Existing TCP socket
+   * @returns Connection object
+   */
+  private _createConnectionFromExistingTCPSocket(peerId: string, socket: net.Socket): Connection {
+    debug(`Creating connection from existing TCP socket to ${socket.remoteAddress}:${socket.remotePort}`);
+    
+    const connection: Connection = {
+      type: this.connectionType!,
+      peerId,
+      messageHandlers: new Map(),
+      
+      send: async (messageType, data) => {
+        return new Promise<void>((resolveSend, rejectSend) => {
+          const message = {
+            type: messageType,
+            clientId: this.clientId,
+            ...data
+          };
+          
+          socket.write(JSON.stringify(message), (err) => {
+            if (err) {
+              rejectSend(err);
+            } else {
+              resolveSend();
+            }
+          });
+        });
+      },
+      
+      on: (messageType, handler) => {
+        connection.messageHandlers.set(messageType, handler);
+      },
+      
+      close: () => {
+        socket.destroy();
+      }
+    };
+    
+    // Handle incoming data
+    socket.on('data', (data) => {
+      try {
+        const message = JSON.parse(data.toString('utf8'));
+        const handler = connection.messageHandlers.get(message.type);
+        if (handler) {
+          handler(message);
+        }
+      } catch (err) {
+        debug(`Error parsing TCP message: ${err}`);
+      }
+    });
+    
+    socket.on('error', (err) => {
+      debug(`TCP socket error: ${err.message}`);
+    });
+    
+    socket.on('close', () => {
+      debug('TCP connection closed');
+    });
+    
+    return connection;
+  }
+
+  /**
+   * Create connection from an existing UDP socket from NAT traversal
+   * @param peerId - Peer identifier
+   * @param socket - Existing UDP socket
+   * @returns Connection object
+   */
+  private _createConnectionFromExistingUDPSocket(peerId: string, socket: dgram.Socket): Connection {
+    if (!this.remoteAddress || !this.remotePort) {
+      throw new Error('Remote address and port are required for UDP connections');
+    }
+    
+    debug(`Creating connection from existing UDP socket to ${this.remoteAddress}:${this.remotePort}`);
+    
+    // Create the connection object
+    const connection: Connection = {
+      type: this.connectionType!,
+      peerId,
+      messageHandlers: new Map(),
+      
+      send: async (messageType, data) => {
+        return new Promise<void>((resolveSend, rejectSend) => {
+          const message = {
+            type: messageType,
+            clientId: this.clientId,
+            ...data
+          };
+          
+          const buffer = Buffer.from(JSON.stringify(message));
+          socket.send(buffer, this.remotePort!, this.remoteAddress!, (err) => {
+            if (err) {
+              rejectSend(err);
+            } else {
+              resolveSend();
+            }
+          });
+        });
+      },
+      
+      on: (messageType, handler) => {
+        connection.messageHandlers.set(messageType, handler);
+      },
+      
+      close: () => {
+        socket.close();
+      }
+    };
+    
+    // Set up message handler for the UDP socket
+    socket.on('message', (msg, rinfo) => {
+      // Only process messages from the expected remote peer
+      if (rinfo.address === this.remoteAddress && rinfo.port === this.remotePort) {
+        try {
+          const message = JSON.parse(msg.toString('utf8'));
+          const handler = connection.messageHandlers.get(message.type);
+          if (handler) {
+            handler(message);
+          }
+        } catch (err) {
+          debug(`Error parsing UDP message: ${err}`);
+        }
+      }
+    });
+    
+    socket.on('error', (err) => {
+      debug(`UDP socket error: ${err.message}`);
+    });
+    
+    return connection;
   }
   
   /**

@@ -13,6 +13,14 @@ import NetworkManager from './lib/network-manager';
 import { CONNECTION_TYPE } from './types/constants';
 import { discoverPublicIPs } from './lib/utils';
 
+// Import NAT traversal utilities
+import { upnpClient, createUPnPMapping, deleteUPnPMapping, getExternalAddressUPnP } from './lib/utils/upnp';
+import { connectionRegistry } from './lib/utils/connection-registry';
+import { performUDPHolePunch, performTCPHolePunch, performTCPSimultaneousOpen } from './lib/utils/hole-punch';
+import { connectWithICE } from './lib/utils/ice';
+import { turnClient, createTURNAllocation, connectViaTURN } from './lib/utils/turn';
+import { connectWithNATTraversal, NATTraversalManager } from './lib/utils/nat-traversal-manager';
+
 export { FileHost, FileClient, NetworkManager };
 
 // Export utility functions
@@ -32,6 +40,35 @@ export {
   promiseWithTimeout,
   discoverPublicIPs
 } from './lib/utils';
+
+// Export NAT traversal utilities
+export {
+  // UPnP
+  upnpClient,
+  createUPnPMapping,
+  deleteUPnPMapping,
+  getExternalAddressUPnP,
+  
+  // Connection Registry
+  connectionRegistry,
+  
+  // Hole Punching
+  performUDPHolePunch,
+  performTCPHolePunch,
+  performTCPSimultaneousOpen,
+  
+  // ICE Protocol
+  connectWithICE,
+  
+  // TURN Relay
+  turnClient,
+  createTURNAllocation,
+  connectViaTURN,
+  
+  // NAT Traversal Manager
+  NATTraversalManager,
+  connectWithNATTraversal
+};
 
 /**
  * Create a new FileHost instance with default settings
@@ -97,6 +134,28 @@ export async function downloadFile(
   await networkManager.downloadFile(peers, fileHash, downloadOptions);
 }
 
+/**
+ * Helper function for establishing NAT traversal connections
+ * @param localId - Local peer identifier
+ * @param remoteId - Remote peer identifier
+ * @param gunInstance - Gun.js instance for signaling
+ * @param options - NAT traversal options
+ * @returns Promise that resolves with the connection result
+ */
+export async function connectToPeer(
+  localId: string,
+  remoteId: string,
+  gunInstance: any,
+  options: any = {}
+) {
+  return connectWithNATTraversal({
+    localId,
+    remoteId,
+    gun: gunInstance,
+    ...options
+  });
+}
+
 // Export connection types
 export const ConnectionTypes = CONNECTION_TYPE;
 
@@ -109,6 +168,23 @@ export default {
   createClient,
   createNetworkManager,
   downloadFile,
+  connectToPeer,
   ConnectionTypes,
-  discoverPublicIPs: discoverPublicIPs
+  discoverPublicIPs,
+  
+  // NAT traversal exports
+  upnpClient,
+  createUPnPMapping,
+  deleteUPnPMapping,
+  getExternalAddressUPnP,
+  connectionRegistry,
+  performUDPHolePunch,
+  performTCPHolePunch,
+  performTCPSimultaneousOpen,
+  connectWithICE,
+  turnClient,
+  createTURNAllocation,
+  connectViaTURN,
+  NATTraversalManager,
+  connectWithNATTraversal
 }; 

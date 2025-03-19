@@ -11,12 +11,16 @@ export interface HostOptions {
     chunkSize?: number;
     /** Array of STUN server URLs for NAT traversal */
     stunServers?: string[];
-    /** Whether to enable direct TCP connections (default: true) */
+    /** Whether to enable direct TCP connections (enabled by default) */
     enableTCP?: boolean;
-    /** Whether to enable direct UDP connections (default: true) */
+    /** Whether to enable direct UDP connections (enabled by default) */
     enableUDP?: boolean;
-    /** Whether to enable WebRTC connections (default: true) */
+    /** Whether to enable WebRTC connections (enabled by default) */
     enableWebRTC?: boolean;
+    /** Whether to use NAT-PMP/PCP for port mapping (enabled by default) */
+    enableNATPMP?: boolean;
+    /** Lifetime of port mappings in seconds (default: 3600 = 1 hour) */
+    portMappingLifetime?: number;
     /** TCP port to listen on (default: random available port) */
     tcpPort?: number;
     /** UDP port to listen on (default: random available port) */
@@ -36,10 +40,24 @@ export interface ClientOptions {
     stunServers?: string[];
     /** Request timeout in milliseconds (default: 30000) */
     requestTimeout?: number;
-    /** Whether to enable WebRTC connections (default: true) */
+    /** Whether to enable WebRTC connections (enabled by default) */
     enableWebRTC?: boolean;
+    /** Whether to use NAT-PMP/PCP for port mapping and IP discovery (enabled by default) */
+    enableNATPMP?: boolean;
+    /** Lifetime of port mappings in seconds (default: 3600 = 1 hour) */
+    portMappingLifetime?: number;
     /** Gun options for relay connection */
     gunOptions?: GunOptions;
+    /** Existing Gun.js instance to use (if provided, gunOptions are ignored) */
+    gunInstance?: any;
+    /** Existing socket from NAT traversal to use (net.Socket or dgram.Socket) */
+    existingSocket?: any;
+    /** Connection type of the existing socket */
+    connectionType?: number;
+    /** Remote peer address for the existing socket */
+    remoteAddress?: string;
+    /** Remote peer port for the existing socket */
+    remotePort?: number;
 }
 /**
  * Network manager configuration options
@@ -110,14 +128,4 @@ export interface GunOptions {
     file?: string;
     /** Additional Gun options */
     [key: string]: any;
-}
-/**
- * Available connection types in order of preference
- * NOTE: This enum is deprecated. Please use the CONNECTION_TYPE from ../types/constants.ts
- */
-export declare enum CONNECTION_TYPE {
-    TCP = "tcp",
-    UDP = "udp",
-    WEBRTC = "webrtc",
-    GUN = "gun"
 }

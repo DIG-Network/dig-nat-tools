@@ -32,6 +32,7 @@ let dc: any = null;
 export interface HostConfig {
   hostFileCallback: (sha256: string, startChunk: number, chunkSize: number) => Promise<Buffer[] | null>;
   gunOptions?: Record<string, any>;
+  gunInstance?: any; // Add support for existing Gun instance
   chunkSize?: number;
   stunServers?: string[];
   tcpPort?: number;

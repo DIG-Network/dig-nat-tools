@@ -1,19 +1,25 @@
 /**
- * NetworkManager - Handles multi-peer file downloads
- * 
- * Coordinates downloading files from multiple peers simultaneously,
- * with automatic peer selection and load balancing.
+ * Network Manager that handles connections and file transfers
  */
 
+import * as crypto from 'crypto';
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import * as crypto from 'crypto';
-import Debug from 'debug';
+import Gun from 'gun';
 
 import FileClient from './client';
+import { connectWithNATTraversal, NATTraversalOptions, NATTraversalResult } from './utils/nat-traversal-manager';
+import { CONNECTION_TYPE } from '../types/constants';
+import Debug from 'debug';
 import { MultiDownloadOptions } from './types';
+import { connectionRegistry } from './utils/connection-registry';
 
 const debug = Debug('dig-nat-tools:network-manager');
+
+// Helper function to generate a random port
+function getRandomPort() {
+  return Math.floor(Math.random() * (65535 - 49152)) + 49152;
+}
 
 /**
  * Configuration for the NetworkManager
@@ -24,6 +30,13 @@ interface NetworkManagerConfig {
   peerTimeout?: number;
   gunOptions?: Record<string, any>;
   stunServers?: string[];
+  // New options for NAT traversal
+  localId?: string;
+  localTCPPort?: number;
+  localUDPPort?: number;
+  turnServer?: string;
+  turnUsername?: string;
+  turnPassword?: string;
   // New options for adaptive downloads
   maxConcurrency?: number;
   minConcurrency?: number;
@@ -54,6 +67,8 @@ interface DownloadResult {
   peerStats: Record<string, PeerStats>;
   averageSpeed: number; // average download speed in bytes per second
   totalTime: number; // total download time in milliseconds
+  // New field for connection types used
+  connectionTypes: Record<string, CONNECTION_TYPE>;
 }
 
 class NetworkManager {
@@ -62,6 +77,14 @@ class NetworkManager {
   private peerTimeout: number;
   private gunOptions: Record<string, any>;
   private stunServers: string[];
+  // New properties for NAT traversal
+  private localId: string;
+  private localTCPPort: number;
+  private localUDPPort: number;
+  private turnServer?: string;
+  private turnUsername?: string;
+  private turnPassword?: string;
+  private gunInstance: any; // Gun instance for signaling
   // New properties for adaptive downloads
   private maxConcurrency: number;
   private minConcurrency: number;
@@ -70,6 +93,8 @@ class NetworkManager {
   private connections: Map<string, any>; // peer connections
   private downloadStartTime: number;
   private _speedHistory: number[] = []; // Array to store recent download speeds
+  // New properties for connection tracking
+  private connectionTypes: Record<string, CONNECTION_TYPE> = {};
   
   /**
    * Create a new NetworkManager instance
@@ -81,6 +106,22 @@ class NetworkManager {
     this.peerTimeout = config.peerTimeout || 30000; // 30 seconds
     this.gunOptions = config.gunOptions || {};
     this.stunServers = config.stunServers || ['stun:stun.l.google.com:19302'];
+    
+    // Initialize NAT traversal properties
+    this.localId = config.localId || crypto.randomBytes(16).toString('hex');
+    this.localTCPPort = config.localTCPPort || getRandomPort();
+    this.localUDPPort = config.localUDPPort || getRandomPort();
+    this.turnServer = config.turnServer;
+    this.turnUsername = config.turnUsername;
+    this.turnPassword = config.turnPassword;
+    
+    // Initialize Gun instance for signaling if not provided
+    if (this.gunOptions.instance) {
+      this.gunInstance = this.gunOptions.instance;
+    } else {
+      // Use type assertion for Gun instantiation
+      this.gunInstance = new (Gun as any)(this.gunOptions);
+    }
     
     // New adaptive download settings
     this.maxConcurrency = config.maxConcurrency || 10;
@@ -263,16 +304,24 @@ class NetworkManager {
         throw new Error(`Not all chunks were downloaded. Expected ${totalChunks}, got ${completedChunks.size}`);
       }
       
-      // Merge chunks into final file and verify hash
-      await this._mergeChunksAndVerify(tempDir, savePath, totalChunks, fileHash);
+      // Finalize download by combining chunks and verifying integrity
+      debug(`All chunks downloaded. Combining into final file: ${savePath}`);
+      const verificationSuccess = await this._combineChunksAndVerify(tempDir, totalChunks, savePath, fileHash);
       
-      // Clean up temp files
+      if (!verificationSuccess) {
+        throw new Error('File integrity verification failed: hash mismatch');
+      }
+      
+      // Remove temp directory after successful combination
       await fs.remove(tempDir);
       
-      const totalTime = Date.now() - this.downloadStartTime;
+      const endTime = Date.now();
+      const totalTime = (endTime - this.downloadStartTime) / 1000;
+      
+      debug(`Download completed in ${totalTime.toFixed(2)} seconds`);
+      
       const averageSpeed = totalBytes / (totalTime / 1000); // bytes per second
       
-      debug(`Successfully downloaded file ${fileHash} to ${savePath}`);
       debug(`Average download speed: ${(averageSpeed / (1024 * 1024)).toFixed(2)} MB/s`);
       
       // Return download result with performance metrics
@@ -280,7 +329,8 @@ class NetworkManager {
         path: savePath,
         peerStats,
         averageSpeed,
-        totalTime
+        totalTime,
+        connectionTypes: this.connectionTypes
       };
     } catch (error) {
       debug(`Error during multi-peer download: ${(error as Error).message}`);
@@ -307,20 +357,11 @@ class NetworkManager {
     const connectCount = Math.min(peers.length, 3);
     const priorityPeers = this._getShuffledPeers(peers).slice(0, connectCount);
     
-    // Connect to priority peers first
+    // Connect to priority peers first using promise.all for parallel connections
     await Promise.all(
       priorityPeers.map(async peerId => {
         try {
-          const client = new FileClient({
-            // Use properties that match the ClientOptions type
-            gunOptions: this.gunOptions,
-            stunServers: this.stunServers
-          });
-          
-          // Since client doesn't have initialize method, simulate connection
-          await this._simulateClientConnection(client, peerId);
-          this.connections.set(peerId, client);
-          
+          await this._connectToPeer(peerId);
           debug(`Connected to priority peer ${peerId}`);
         } catch (err) {
           debug(`Failed to connect to priority peer ${peerId}: ${(err as Error).message}`);
@@ -344,24 +385,7 @@ class NetworkManager {
   }
   
   /**
-   * Simulate establishing a connection with a client
-   * 
-   * @private
-   * @param client - FileClient instance
-   * @param peerId - Peer ID to connect to
-   */
-  private async _simulateClientConnection(client: FileClient, peerId: string): Promise<void> {
-    // Simulate the connection process with a delay
-    await new Promise<void>(resolve => {
-      setTimeout(() => {
-        debug(`Simulated connection established to peer ${peerId}`);
-        resolve();
-      }, 100);
-    });
-  }
-  
-  /**
-   * Connect to a single peer
+   * Connect to a single peer using NAT traversal
    * 
    * @private
    * @param peerId - Peer ID to connect to
@@ -371,16 +395,82 @@ class NetworkManager {
       return; // Already connected
     }
     
-    const client = new FileClient({
-      // Use properties that match the ClientOptions type
-      gunOptions: this.gunOptions,
-      stunServers: this.stunServers
-    });
-    
-    // Since client doesn't have initialize method, simulate connection
-    await this._simulateClientConnection(client, peerId);
-    this.connections.set(peerId, client);
-    debug(`Connected to peer ${peerId}`);
+    try {
+      // For now, assume connectionRegistry.getSuccessfulMethods exists and returns an array of CONNECTION_TYPE
+      // We would need to implement this method in the actual ConnectionRegistry class
+      const previousMethods = connectionRegistry.getSuccessfulMethods ? 
+        connectionRegistry.getSuccessfulMethods(peerId) : [];
+      
+      let natOptions: NATTraversalOptions = {
+        localId: this.localId,
+        remoteId: peerId,
+        gun: this.gunInstance,
+        localTCPPort: this.localTCPPort,
+        localUDPPort: this.localUDPPort,
+        timeout: this.peerTimeout,
+        saveToRegistry: true,
+        iceOptions: {
+          stunServers: this.stunServers,
+          turnServer: this.turnServer,
+          turnUsername: this.turnUsername,
+          turnPassword: this.turnPassword
+        },
+        turnOptions: {
+          turnServer: this.turnServer,
+          turnUsername: this.turnUsername,
+          turnPassword: this.turnPassword
+        }
+      };
+      
+      // If we have previously successful methods and the NATTraversalOptions interface supports it,
+      // add them as an additional property (this would require extending the interface)
+      if (previousMethods.length > 0) {
+        debug(`Using previously successful connection methods for ${peerId}: ${previousMethods.join(', ')}`);
+        // Note: This would need to be properly typed in the NATTraversalOptions interface
+        (natOptions as any).preferredMethods = previousMethods;
+      }
+      
+      // Use NAT traversal manager to establish connection
+      const traversalResult = await connectWithNATTraversal(natOptions);
+      
+      if (!traversalResult.success || !traversalResult.socket || !traversalResult.connectionType) {
+        throw new Error(`Failed to connect to peer: ${traversalResult.error || 'Unknown error'}`);
+      }
+      
+      // Create client with the established socket
+      const client = new FileClient({
+        gunOptions: this.gunOptions,
+        stunServers: this.stunServers,
+        existingSocket: traversalResult.socket,
+        connectionType: traversalResult.connectionType,
+        remoteAddress: traversalResult.address,
+        remotePort: traversalResult.port
+      });
+      
+      // Store the connection
+      this.connections.set(peerId, client);
+      
+      // Store the connection type used
+      if (traversalResult.connectionType) {
+        // Use type assertion to ensure it's treated as CONNECTION_TYPE
+        this.connectionTypes[peerId] = traversalResult.connectionType as CONNECTION_TYPE;
+      }
+      
+      debug(`Connected to peer ${peerId} using ${traversalResult.connectionType}`);
+    } catch (err) {
+      debug(`Failed to connect to peer ${peerId}: ${(err as Error).message}`);
+      throw err;
+    }
+  }
+  
+  /**
+   * Get the connection type used for a specific peer
+   * 
+   * @param peerId - Peer ID
+   * @returns The connection type or undefined if not connected
+   */
+  public getConnectionType(peerId: string): CONNECTION_TYPE | undefined {
+    return this.connectionTypes[peerId];
   }
   
   /**
@@ -773,74 +863,57 @@ class NetworkManager {
   }
   
   /**
-   * Merge downloaded chunks into a single file and verify integrity
-   * 
-   * @private
-   * @param tempDir - Directory containing the chunks
-   * @param savePath - Path to save the final file
-   * @param totalChunks - Total number of chunks to merge
-   * @param expectedSha256 - Expected SHA-256 hash of the final file
+   * Combine downloaded chunks into the final file and verify integrity
+   * @param tempDir - Directory containing chunk files
+   * @param totalChunks - Total number of chunks
+   * @param savePath - Final file path
+   * @param fileHash - Expected file hash
+   * @returns True if verification succeeds
    */
-  private async _mergeChunksAndVerify(
+  private async _combineChunksAndVerify(
     tempDir: string,
-    savePath: string,
     totalChunks: number,
-    expectedSha256: string
-  ): Promise<void> {
-    debug(`Merging ${totalChunks} chunks into ${savePath}`);
+    savePath: string,
+    fileHash: string
+  ): Promise<boolean> {
+    debug(`Combining ${totalChunks} chunks into final file: ${savePath}`);
+
+    // Create output file
+    const outputFile = await fs.open(savePath, 'w');
     
-    // Create write stream for the final file
-    const writeStream = fs.createWriteStream(savePath);
-    
-    // Create hash stream to verify file integrity
-    const hashStream = crypto.createHash('sha256');
-    
-    // Process each chunk in order
-    for (let i = 0; i < totalChunks; i++) {
-      const chunkPath = path.join(tempDir, `chunk-${i}`);
-      
-      try {
-        // Check if chunk exists
-        await fs.access(chunkPath);
-        
-        // Read chunk data
+    // Create hash calculator for integrity verification
+    const hashCalculator = crypto.createHash('sha256');
+
+    try {
+      // Combine chunks in order
+      for (let i = 0; i < totalChunks; i++) {
+        const chunkPath = path.join(tempDir, `chunk_${i}`);
         const chunkData = await fs.readFile(chunkPath);
         
-        // Write to output file
-        writeStream.write(chunkData);
+        // Write chunk to final file
+        await fs.write(outputFile, chunkData, 0, chunkData.length, i * this.chunkSize);
         
         // Update hash calculation
-        hashStream.update(chunkData);
+        hashCalculator.update(chunkData);
         
-      } catch (error) {
-        writeStream.close();
-        throw new Error(`Error processing chunk ${i}: ${(error as Error).message}`);
-      }
-    }
-    
-    // Close the write stream and wait for finish
-    await new Promise<void>((resolve, reject) => {
-      writeStream.on('finish', resolve);
-      writeStream.on('error', reject);
-      writeStream.end();
-    });
-    
-    // Get the file hash
-    const fileHash = hashStream.digest('hex');
-    
-    // Verify the hash
-    if (fileHash !== expectedSha256) {
-      // If hash verification fails, delete the file and throw error
-      try {
-        await fs.remove(savePath);
-      } catch (error) {
-        debug(`Failed to delete corrupted file: ${savePath}`);
+        // Remove chunk file after writing to save space
+        await fs.unlink(chunkPath);
       }
       
-      throw new Error(`File integrity verification failed. Expected hash: ${expectedSha256}, actual hash: ${fileHash}`);
+      // Get final calculated hash
+      const calculatedHash = hashCalculator.digest('hex');
+      
+      // Verify file integrity
+      if (calculatedHash !== fileHash) {
+        debug(`File integrity verification failed. Expected: ${fileHash}, got: ${calculatedHash}`);
+        return false;
+      }
+      
+      debug(`File integrity verified successfully: ${calculatedHash}`);
+      return true;
+    } finally {
+      await fs.close(outputFile);
     }
-    
-    debug(`Successfully merged chunks and verified integrity of file ${savePath}`);
   }
   
   /**

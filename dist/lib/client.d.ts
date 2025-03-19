@@ -18,6 +18,16 @@ export default class FileClient {
     private activeDownloads;
     private initPromise;
     private enableWebRTC;
+    private enableNATPMP;
+    private externalIPv4;
+    private externalIPv6;
+    private portMappingLifetime;
+    private portMappings;
+    private existingSocket;
+    private connectionType;
+    private remoteAddress;
+    private remotePort;
+    private hasEstablishedConnection;
     /**
      * Create a new file client instance
      * @param config - Client configuration
@@ -28,6 +38,16 @@ export default class FileClient {
      * @returns Promise that resolves when initialization is complete
      */
     private _initialize;
+    /**
+     * Create port mappings for NAT traversal
+     * @private
+     */
+    private _createPortMappings;
+    /**
+     * Delete all port mappings
+     * @private
+     */
+    private _deletePortMappings;
     /**
      * Discover available hosts in the network
      * @returns Promise that resolves to an array of host IDs
@@ -42,12 +62,30 @@ export default class FileClient {
      */
     downloadFile(hostId: string, sha256: string, options: DownloadOptions): Promise<string>;
     /**
+     * Stop the client and clean up resources
+     */
+    stop(): Promise<void>;
+    /**
      * Connect to a peer
      * @param peerId - Peer identifier
      * @param connectionOptions - Connection options
      * @returns Promise that resolves to a connection object
      */
     private _connectToPeer;
+    /**
+     * Create connection from an existing TCP socket from NAT traversal
+     * @param peerId - Peer identifier
+     * @param socket - Existing TCP socket
+     * @returns Connection object
+     */
+    private _createConnectionFromExistingTCPSocket;
+    /**
+     * Create connection from an existing UDP socket from NAT traversal
+     * @param peerId - Peer identifier
+     * @param socket - Existing UDP socket
+     * @returns Connection object
+     */
+    private _createConnectionFromExistingUDPSocket;
     /**
      * Try direct connection to a peer
      * @param peerId - Peer identifier
@@ -82,6 +120,12 @@ export default class FileClient {
      * @returns Promise that resolves to a connection object
      */
     private _createWebRTCConnection;
+    /**
+     * Listen for WebRTC signals from a peer
+     * @param peerId - Peer identifier
+     * @param peer - WebRTC peer connection
+     */
+    private _listenForWebRTCSignals;
     /**
      * Create a Gun relay connection
      * @param peerId - Peer identifier

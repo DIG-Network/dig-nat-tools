@@ -44,14 +44,21 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 const gun_1 = __importDefault(require("gun"));
 const fs = __importStar(require("fs-extra"));
+const crypto = __importStar(require("crypto"));
 const path = __importStar(require("path"));
 const debug_1 = __importDefault(require("debug"));
-const dc = __importStar(require("node-datachannel"));
+// Use dynamic import for node-datachannel
+// import * as dc from 'node-datachannel';
 const dgram = __importStar(require("dgram"));
 const net = __importStar(require("net"));
 const uuid_1 = require("uuid");
 const constants_1 = require("../types/constants");
+// Import NAT-PMP/PCP utilities
+const utils_1 = require("./utils");
 const debug = (0, debug_1.default)('dig-nat-tools:client');
+// We'll use any for now since we can't use dynamic imports directly in TypeScript
+// This will be initialized in the _initialize method if WebRTC is enabled
+let dc = null;
 /**
  * FileClient class for downloading files from peers
  */
@@ -61,21 +68,47 @@ class FileClient {
      * @param config - Client configuration
      */
     constructor(config = {}) {
+        this.externalIPv4 = null;
+        this.externalIPv6 = null;
+        this.portMappings = [];
+        // New fields for established connection from NAT traversal
+        this.existingSocket = null;
+        this.connectionType = null;
+        this.remoteAddress = null;
+        this.remotePort = null;
+        this.hasEstablishedConnection = false;
         this.chunkSize = config.chunkSize || 64 * 1024; // 64KB default
         this.stunServers = config.stunServers || ['stun:stun.l.google.com:19302'];
         this.requestTimeout = config.requestTimeout || 30000; // 30 seconds
-        this.enableWebRTC = config.enableWebRTC || false;
+        this.enableWebRTC = config.enableWebRTC !== false;
+        this.enableNATPMP = config.enableNATPMP !== false; // Default to enabled
+        this.portMappingLifetime = config.portMappingLifetime || 3600; // Default to 1 hour
         this.clientId = (0, uuid_1.v4)();
         this.initialized = false;
         this.activeDownloads = new Map();
         this.initPromise = null;
-        // Initialize Gun for peer discovery
-        const gunOptions = config.gunOptions || {};
-        this.gun = (0, gun_1.default)({
-            peers: gunOptions.peers || ['https://gun-manhattan.herokuapp.com/gun'],
-            file: gunOptions.file || path.join(process.env.TEMP || process.env.TMP || '/tmp', `gun-${this.clientId}`),
-            ...gunOptions
-        });
+        // Store the existing socket from NAT traversal if provided
+        if (config.existingSocket) {
+            this.existingSocket = config.existingSocket;
+            this.connectionType = config.connectionType || null;
+            this.remoteAddress = config.remoteAddress || null;
+            this.remotePort = config.remotePort || null;
+            this.hasEstablishedConnection = true;
+            debug(`Using established ${this.connectionType} connection to ${this.remoteAddress}:${this.remotePort}`);
+        }
+        // Use provided Gun instance or initialize a new one
+        if (config.gunInstance) {
+            this.gun = config.gunInstance;
+        }
+        else {
+            // Initialize Gun for peer discovery
+            const gunOptions = config.gunOptions || {};
+            this.gun = (0, gun_1.default)({
+                peers: gunOptions.peers || ['https://gun-manhattan.herokuapp.com/gun'],
+                file: gunOptions.file || path.join(process.env.TEMP || process.env.TMP || '/tmp', `gun-${this.clientId}`),
+                ...gunOptions
+            });
+        }
         debug(`Created client with ID: ${this.clientId}`);
     }
     /**
@@ -89,18 +122,111 @@ class FileClient {
         if (this.initPromise) {
             return this.initPromise;
         }
-        this.initPromise = new Promise((resolve) => {
-            // Initialize node-datachannel
-            dc.initLogger('error');
-            // Initialize WebRTC if enabled
+        this.initPromise = new Promise(async (resolve) => {
+            // Initialize node-datachannel if WebRTC is enabled
             if (this.enableWebRTC) {
-                // The LogLevel may not be directly available, use a string with as any type assertion
-                dc.initLogger('error');
+                try {
+                    dc = await Promise.resolve().then(() => __importStar(require('node-datachannel')));
+                    dc.initLogger('error');
+                    debug('node-datachannel module loaded');
+                }
+                catch (err) {
+                    debug(`Error loading node-datachannel: ${err}`);
+                    this.enableWebRTC = false;
+                }
+            }
+            // Discover public IP addresses using NAT-PMP/PCP if enabled
+            if (this.enableNATPMP) {
+                try {
+                    debug('Discovering public IP addresses using NAT-PMP/PCP');
+                    const { ipv4, ipv6 } = await (0, utils_1.discoverPublicIPs)({
+                        stunServers: this.stunServers,
+                        timeout: this.requestTimeout,
+                        useNATPMP: true
+                    });
+                    if (ipv4) {
+                        this.externalIPv4 = ipv4;
+                        debug(`Discovered external IPv4 address: ${ipv4}`);
+                        // Create port mappings for TCP and UDP protocols
+                        await this._createPortMappings();
+                    }
+                    if (ipv6) {
+                        this.externalIPv6 = ipv6;
+                        debug(`Discovered external IPv6 address: ${ipv6}`);
+                    }
+                }
+                catch (err) {
+                    debug(`Error discovering public IPs: ${err.message}`);
+                }
             }
             this.initialized = true;
             resolve();
         });
         return this.initPromise;
+    }
+    /**
+     * Create port mappings for NAT traversal
+     * @private
+     */
+    async _createPortMappings() {
+        if (!this.enableNATPMP)
+            return;
+        try {
+            // Create a random port for TCP connections
+            const tcpPort = Math.floor(Math.random() * (65535 - 10000)) + 10000;
+            // Create TCP port mapping
+            const tcpMapping = await (0, utils_1.createPortMapping)({
+                internalPort: tcpPort,
+                protocol: 'TCP',
+                lifetime: this.portMappingLifetime
+            });
+            if (tcpMapping.success && tcpMapping.externalPort) {
+                debug(`Created TCP port mapping: internal ${tcpPort} -> external ${tcpMapping.externalPort}`);
+                this.portMappings.push({
+                    protocol: 'TCP',
+                    externalPort: tcpMapping.externalPort
+                });
+            }
+            // Create a random port for UDP connections
+            const udpPort = Math.floor(Math.random() * (65535 - 10000)) + 10000;
+            // Create UDP port mapping
+            const udpMapping = await (0, utils_1.createPortMapping)({
+                internalPort: udpPort,
+                protocol: 'UDP',
+                lifetime: this.portMappingLifetime
+            });
+            if (udpMapping.success && udpMapping.externalPort) {
+                debug(`Created UDP port mapping: internal ${udpPort} -> external ${udpMapping.externalPort}`);
+                this.portMappings.push({
+                    protocol: 'UDP',
+                    externalPort: udpMapping.externalPort
+                });
+            }
+        }
+        catch (err) {
+            debug(`Error creating port mappings: ${err.message}`);
+        }
+    }
+    /**
+     * Delete all port mappings
+     * @private
+     */
+    async _deletePortMappings() {
+        if (!this.enableNATPMP || this.portMappings.length === 0)
+            return;
+        for (const mapping of this.portMappings) {
+            try {
+                await (0, utils_1.deletePortMapping)({
+                    externalPort: mapping.externalPort,
+                    protocol: mapping.protocol
+                });
+                debug(`Deleted ${mapping.protocol} port mapping for port ${mapping.externalPort}`);
+            }
+            catch (err) {
+                debug(`Error deleting port mapping: ${err.message}`);
+            }
+        }
+        this.portMappings = [];
     }
     /**
      * Discover available hosts in the network
@@ -155,6 +281,8 @@ class FileClient {
         const { fileHandle, existingChunks } = await this._setupOutputFile(savePath, startChunk, this.chunkSize);
         // Download ID to track this download
         const downloadId = `${hostId}-${sha256}-${Date.now()}`;
+        // Create a hash object to calculate SHA-256 on the fly
+        const hashCalculator = crypto.createHash('sha256');
         // Create active download record
         const activeDownload = {
             hostId,
@@ -168,7 +296,9 @@ class FileClient {
             receivedBytes: existingChunks.length * this.chunkSize, // approximate
             chunkSize: this.chunkSize,
             onProgress,
-            aborted: false
+            aborted: false,
+            hashCalculator, // Add hash calculator
+            portMappings: [] // Add empty port mappings array
         };
         this.activeDownloads.set(downloadId, activeDownload);
         try {
@@ -200,6 +330,8 @@ class FileClient {
                             for (const buffer of buffers) {
                                 await fileHandle.write(buffer, 0, buffer.length, position);
                                 position += buffer.length;
+                                // Update hash calculation with this chunk
+                                activeDownload.hashCalculator.update(buffer);
                                 // Update progress
                                 activeDownload.receivedBytes += buffer.length;
                                 if (activeDownload.onProgress) {
@@ -243,6 +375,13 @@ class FileClient {
             if (fileHandle) {
                 await fileHandle.close();
             }
+            // Verify file hash
+            const calculatedHash = activeDownload.hashCalculator.digest('hex');
+            if (calculatedHash !== sha256) {
+                debug(`Hash verification failed: expected ${sha256}, got ${calculatedHash}`);
+                throw new Error(`File integrity verification failed: hash mismatch`);
+            }
+            debug(`Hash verification successful: ${calculatedHash}`);
             debug(`Download of file ${sha256} completed successfully`);
             return savePath;
         }
@@ -259,43 +398,212 @@ class FileClient {
         }
     }
     /**
+     * Stop the client and clean up resources
+     */
+    async stop() {
+        debug('Stopping client');
+        // Cancel all active downloads
+        for (const downloadId of this.activeDownloads.keys()) {
+            this.cancelDownload(downloadId);
+        }
+        // Delete all port mappings
+        await this._deletePortMappings();
+        this.initialized = false;
+        this.initPromise = null;
+        debug('Client stopped');
+    }
+    /**
      * Connect to a peer
      * @param peerId - Peer identifier
      * @param connectionOptions - Connection options
      * @returns Promise that resolves to a connection object
      */
     async _connectToPeer(peerId, connectionOptions) {
+        // If we already have an established socket from NAT traversal, use it
+        if (this.hasEstablishedConnection && this.existingSocket && this.connectionType) {
+            debug(`Using existing ${this.connectionType} connection from NAT traversal`);
+            if (this.connectionType === constants_1.CONNECTION_TYPE.TCP) {
+                return this._createConnectionFromExistingTCPSocket(peerId, this.existingSocket);
+            }
+            else if (this.connectionType === constants_1.CONNECTION_TYPE.UDP ||
+                this.connectionType === constants_1.CONNECTION_TYPE.UDP_HOLE_PUNCH) {
+                return this._createConnectionFromExistingUDPSocket(peerId, this.existingSocket);
+            }
+        }
+        // Continue with normal connection options
         if (!connectionOptions || connectionOptions.length === 0) {
             throw new Error(`No connection options available for peer ${peerId}`);
         }
-        // Try all connection methods in parallel
-        const option = connectionOptions[0];
-        switch (option.type) {
-            case constants_1.CONNECTION_TYPE.TCP:
-                // Type assertion to tell TypeScript that we've checked these values
-                if (option.address && typeof option.port === 'number') {
-                    // Use type casting to tell TypeScript these are defined
-                    const address = option.address;
-                    const port = option.port;
-                    return await this._createTCPConnection(peerId, address, port);
+        // Original connection logic...
+        const natPmpOptions = connectionOptions.filter(opt => (opt.type === constants_1.CONNECTION_TYPE.TCP || opt.type === constants_1.CONNECTION_TYPE.UDP) &&
+            opt.address && opt.port);
+        if (natPmpOptions.length > 0) {
+            debug(`Attempting to connect using NAT-PMP/PCP mapped ports`);
+            try {
+                const option = natPmpOptions[0];
+                if (option.type === constants_1.CONNECTION_TYPE.TCP && option.address && typeof option.port === 'number') {
+                    return await this._createTCPConnection(peerId, option.address, option.port);
                 }
-                throw new Error(`Missing address or port for TCP connection to peer ${peerId}`);
-            case constants_1.CONNECTION_TYPE.UDP:
-                // Type assertion to tell TypeScript that we've checked these values
-                if (option.address && typeof option.port === 'number') {
-                    // Use type casting to tell TypeScript these are defined
-                    const address = option.address;
-                    const port = option.port;
-                    return await this._createUDPConnection(peerId, address, port);
+                else if (option.type === constants_1.CONNECTION_TYPE.UDP && option.address && typeof option.port === 'number') {
+                    return await this._createUDPConnection(peerId, option.address, option.port);
                 }
-                throw new Error(`Missing address or port for UDP connection to peer ${peerId}`);
-            case constants_1.CONNECTION_TYPE.WEBRTC:
-                return await this._createWebRTCConnection(peerId);
-            case constants_1.CONNECTION_TYPE.GUN:
-                return this._createGunRelayConnection(peerId);
-            default:
-                throw new Error(`Unsupported connection type: ${option.type}`);
+            }
+            catch (err) {
+                debug(`NAT-PMP/PCP connection failed: ${err.message}`);
+            }
         }
+        // Try the original WebRTC option if available
+        for (const option of connectionOptions) {
+            try {
+                debug(`Trying connection type: ${option.type}`);
+                switch (option.type) {
+                    case constants_1.CONNECTION_TYPE.TCP:
+                        if (option.address && typeof option.port === 'number') {
+                            return await this._createTCPConnection(peerId, option.address, option.port);
+                        }
+                        break;
+                    case constants_1.CONNECTION_TYPE.UDP:
+                        if (option.address && typeof option.port === 'number') {
+                            return await this._createUDPConnection(peerId, option.address, option.port);
+                        }
+                        break;
+                    case constants_1.CONNECTION_TYPE.WEBRTC:
+                        return await this._createWebRTCConnection(peerId);
+                    case constants_1.CONNECTION_TYPE.GUN:
+                        return this._createGunRelayConnection(peerId);
+                }
+            }
+            catch (err) {
+                debug(`Connection attempt failed with type ${option.type}: ${err.message}`);
+            }
+        }
+        // If all else fails, use Gun as a fallback
+        try {
+            debug('Falling back to Gun relay connection');
+            return this._createGunRelayConnection(peerId);
+        }
+        catch (err) {
+            throw new Error(`All connection methods failed: ${err.message}`);
+        }
+    }
+    /**
+     * Create connection from an existing TCP socket from NAT traversal
+     * @param peerId - Peer identifier
+     * @param socket - Existing TCP socket
+     * @returns Connection object
+     */
+    _createConnectionFromExistingTCPSocket(peerId, socket) {
+        debug(`Creating connection from existing TCP socket to ${socket.remoteAddress}:${socket.remotePort}`);
+        const connection = {
+            type: this.connectionType,
+            peerId,
+            messageHandlers: new Map(),
+            send: async (messageType, data) => {
+                return new Promise((resolveSend, rejectSend) => {
+                    const message = {
+                        type: messageType,
+                        clientId: this.clientId,
+                        ...data
+                    };
+                    socket.write(JSON.stringify(message), (err) => {
+                        if (err) {
+                            rejectSend(err);
+                        }
+                        else {
+                            resolveSend();
+                        }
+                    });
+                });
+            },
+            on: (messageType, handler) => {
+                connection.messageHandlers.set(messageType, handler);
+            },
+            close: () => {
+                socket.destroy();
+            }
+        };
+        // Handle incoming data
+        socket.on('data', (data) => {
+            try {
+                const message = JSON.parse(data.toString('utf8'));
+                const handler = connection.messageHandlers.get(message.type);
+                if (handler) {
+                    handler(message);
+                }
+            }
+            catch (err) {
+                debug(`Error parsing TCP message: ${err}`);
+            }
+        });
+        socket.on('error', (err) => {
+            debug(`TCP socket error: ${err.message}`);
+        });
+        socket.on('close', () => {
+            debug('TCP connection closed');
+        });
+        return connection;
+    }
+    /**
+     * Create connection from an existing UDP socket from NAT traversal
+     * @param peerId - Peer identifier
+     * @param socket - Existing UDP socket
+     * @returns Connection object
+     */
+    _createConnectionFromExistingUDPSocket(peerId, socket) {
+        if (!this.remoteAddress || !this.remotePort) {
+            throw new Error('Remote address and port are required for UDP connections');
+        }
+        debug(`Creating connection from existing UDP socket to ${this.remoteAddress}:${this.remotePort}`);
+        // Create the connection object
+        const connection = {
+            type: this.connectionType,
+            peerId,
+            messageHandlers: new Map(),
+            send: async (messageType, data) => {
+                return new Promise((resolveSend, rejectSend) => {
+                    const message = {
+                        type: messageType,
+                        clientId: this.clientId,
+                        ...data
+                    };
+                    const buffer = Buffer.from(JSON.stringify(message));
+                    socket.send(buffer, this.remotePort, this.remoteAddress, (err) => {
+                        if (err) {
+                            rejectSend(err);
+                        }
+                        else {
+                            resolveSend();
+                        }
+                    });
+                });
+            },
+            on: (messageType, handler) => {
+                connection.messageHandlers.set(messageType, handler);
+            },
+            close: () => {
+                socket.close();
+            }
+        };
+        // Set up message handler for the UDP socket
+        socket.on('message', (msg, rinfo) => {
+            // Only process messages from the expected remote peer
+            if (rinfo.address === this.remoteAddress && rinfo.port === this.remotePort) {
+                try {
+                    const message = JSON.parse(msg.toString('utf8'));
+                    const handler = connection.messageHandlers.get(message.type);
+                    if (handler) {
+                        handler(message);
+                    }
+                }
+                catch (err) {
+                    debug(`Error parsing UDP message: ${err}`);
+                }
+            }
+        });
+        socket.on('error', (err) => {
+            debug(`UDP socket error: ${err.message}`);
+        });
+        return connection;
     }
     /**
      * Try direct connection to a peer
@@ -512,119 +820,138 @@ class FileClient {
      * @returns Promise that resolves to a connection object
      */
     async _createWebRTCConnection(peerId) {
-        return new Promise((resolve, reject) => {
+        return new Promise(async (resolve, reject) => {
+            // Make sure node-datachannel is loaded
+            if (!dc) {
+                try {
+                    dc = await Promise.resolve().then(() => __importStar(require('node-datachannel')));
+                    dc.initLogger('error');
+                    debug('node-datachannel module loaded');
+                }
+                catch (err) {
+                    debug(`Error loading node-datachannel: ${err}`);
+                    reject(new Error(`WebRTC not available: ${err}`));
+                    return;
+                }
+            }
             // Configure the peer connection
-            // Fix the PeerConnectionOptions type issue
             const config = {
                 iceServers: this.stunServers
             };
-            const peer = new dc.PeerConnection(peerId, config);
-            const dataChannel = peer.createDataChannel('data');
-            let connected = false;
-            // Set up event handlers
-            dataChannel.onMessage((msg) => {
-                try {
-                    const message = JSON.parse(msg);
-                    // Handle the message if we have a registered handler
-                    if (connection.messageHandlers.has(message.type)) {
-                        const handler = connection.messageHandlers.get(message.type);
-                        if (handler) {
-                            handler(message);
-                        }
-                    }
-                }
-                catch (err) {
-                    debug(`Error parsing WebRTC message: ${err}`);
-                }
-            });
-            dataChannel.onClosed(() => {
-                debug(`WebRTC data channel closed for peer ${peerId}`);
-            });
-            peer.onLocalDescription((sdp, type) => {
-                // Send the SDP to the peer via Gun
-                this.gun.get('hosts').get(peerId).get('messages').set({
-                    type: 'webrtc-signal',
-                    clientId: this.clientId,
-                    signal: { sdp, type },
-                    timestamp: Date.now()
-                });
-            });
-            peer.onLocalCandidate((candidate, mid) => {
-                // Send the ICE candidate to the peer via Gun
-                this.gun.get('hosts').get(peerId).get('messages').set({
-                    type: 'webrtc-signal',
-                    clientId: this.clientId,
-                    signal: { candidate, mid },
-                    timestamp: Date.now()
-                });
-            });
-            // Create the connection object
-            const connection = {
-                type: constants_1.CONNECTION_TYPE.WEBRTC,
-                peerId,
-                messageHandlers: new Map(),
-                send: async (messageType, data) => {
-                    return new Promise((resolveSend, rejectSend) => {
-                        if (!connected) {
-                            rejectSend(new Error('WebRTC data channel not connected'));
-                            return;
-                        }
-                        try {
-                            const message = {
-                                type: messageType,
-                                clientId: this.clientId,
-                                ...data
-                            };
-                            dataChannel.sendMessage(JSON.stringify(message));
-                            resolveSend();
-                        }
-                        catch (err) {
-                            rejectSend(err);
-                        }
-                    });
-                },
-                on: (messageType, handler) => {
-                    connection.messageHandlers.set(messageType, handler);
-                },
-                close: () => {
-                    dataChannel.close();
-                    peer.close();
-                }
-            };
-            // Listen for signal messages from the peer
-            this.gun.get('clients').get(this.clientId).get('signals').map().once((signal) => {
-                if (!signal)
-                    return;
-                if (signal.signal.sdp && signal.signal.type) {
-                    peer.setRemoteDescription(signal.signal.sdp, signal.signal.type);
-                    debug(`Set remote description from peer ${peerId}`);
-                    if (signal.signal.type === 'answer') {
-                        // Connection should be established soon
-                        setTimeout(() => {
+            try {
+                const peer = new dc.PeerConnection(peerId, config);
+                const dataChannel = peer.createDataChannel('data');
+                let connected = false;
+                // Create the connection object
+                const connection = {
+                    type: constants_1.CONNECTION_TYPE.WEBRTC,
+                    peerId,
+                    messageHandlers: new Map(),
+                    send: async (messageType, data) => {
+                        return new Promise((resolveSend, rejectSend) => {
                             if (!connected) {
-                                reject(new Error('WebRTC connection timeout'));
+                                rejectSend(new Error('WebRTC data channel not connected'));
+                                return;
                             }
-                        }, this.requestTimeout);
+                            try {
+                                const message = {
+                                    type: messageType,
+                                    clientId: this.clientId,
+                                    ...data
+                                };
+                                dataChannel.sendMessage(JSON.stringify(message));
+                                resolveSend();
+                            }
+                            catch (err) {
+                                rejectSend(err);
+                            }
+                        });
+                    },
+                    on: (messageType, handler) => {
+                        connection.messageHandlers.set(messageType, handler);
+                    },
+                    close: () => {
+                        dataChannel.close();
+                        peer.close();
                     }
-                }
-                else if (signal.signal.candidate && signal.signal.mid) {
-                    peer.addRemoteCandidate(signal.signal.candidate, signal.signal.mid);
-                    debug(`Added remote ICE candidate from peer ${peerId}`);
-                }
-                // For simplicity in this implementation, assume connection is established
-                // when we receive any signal from the peer
-                // In a real implementation, we'd wait for the data channel to be open
-                setTimeout(() => {
+                };
+                // Set up event handlers
+                dataChannel.onMessage((msg) => {
+                    try {
+                        const message = JSON.parse(msg);
+                        // Handle the message if we have a registered handler
+                        if (connection.messageHandlers.has(message.type)) {
+                            const handler = connection.messageHandlers.get(message.type);
+                            if (handler) {
+                                handler(message);
+                            }
+                        }
+                    }
+                    catch (err) {
+                        debug(`Error parsing WebRTC message: ${err}`);
+                    }
+                });
+                dataChannel.onClosed(() => {
+                    debug(`WebRTC data channel closed for peer ${peerId}`);
+                });
+                dataChannel.onOpen(() => {
+                    debug(`WebRTC data channel opened for peer ${peerId}`);
                     connected = true;
                     resolve(connection);
-                }, 1000);
-            });
-            // Set a timeout for the entire connection attempt
-            setTimeout(() => {
-                if (!connected) {
-                    reject(new Error('WebRTC connection timeout'));
-                }
-            }, this.requestTimeout);
+                });
+                peer.onLocalDescription((sdp, type) => {
+                    // Send the SDP to the peer via Gun
+                    this.gun.get('hosts').get(peerId).get('messages').set({
+                        type: 'webrtc-signal',
+                        clientId: this.clientId,
+                        signal: { sdp, type },
+                        timestamp: Date.now()
+                    });
+                });
+                peer.onLocalCandidate((candidate, mid) => {
+                    // Send the ICE candidate to the peer via Gun
+                    this.gun.get('hosts').get(peerId).get('messages').set({
+                        type: 'webrtc-signal',
+                        clientId: this.clientId,
+                        signal: { candidate, mid },
+                        timestamp: Date.now()
+                    });
+                });
+                // Listen for signals from the peer
+                this._listenForWebRTCSignals(peerId, peer);
+                // Set a timeout for the connection
+                setTimeout(() => {
+                    if (!connected) {
+                        debug(`WebRTC connection to ${peerId} timed out`);
+                        dataChannel.close();
+                        peer.close();
+                        reject(new Error('WebRTC connection timed out'));
+                    }
+                }, this.requestTimeout);
+            }
+            catch (err) {
+                debug(`Error creating WebRTC connection: ${err}`);
+                reject(err);
+            }
+        });
+    }
+    /**
+     * Listen for WebRTC signals from a peer
+     * @param peerId - Peer identifier
+     * @param peer - WebRTC peer connection
+     */
+    _listenForWebRTCSignals(peerId, peer) {
+        this.gun.get('clients').get(this.clientId).get('signals').map().once((signal) => {
+            if (!signal)
+                return;
+            if (signal.signal.sdp && signal.signal.type) {
+                peer.setRemoteDescription(signal.signal.sdp, signal.signal.type);
+                debug(`Set remote description from peer ${peerId}`);
+            }
+            else if (signal.signal.candidate && signal.signal.mid) {
+                peer.addRemoteCandidate(signal.signal.candidate, signal.signal.mid);
+                debug(`Added remote ICE candidate from peer ${peerId}`);
+            }
         });
     }
     /**
