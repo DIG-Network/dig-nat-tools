@@ -46,6 +46,12 @@ export default class FileHost {
     private isRunning;
     private portMappings;
     private externalIPv4;
+    private _peerContributions;
+    private _chokedPeers;
+    private _maxUnchokedPeers;
+    private _lastChokeUpdateTime;
+    private _chokeUpdateInterval;
+    private _superSeedMode;
     /**
      * Create a new FileHost instance
      * @param options Host configuration options
@@ -175,4 +181,63 @@ export default class FileHost {
      * @param rinfo The remote info (address and port)
      */
     private _handleUDPMessage;
+    /**
+     * Record a contribution from a peer (upload or other useful activity)
+     * @param peerId - ID of the peer
+     * @param bytes - Number of bytes contributed
+     */
+    recordPeerContribution(peerId: string, bytes: number): void;
+    /**
+     * Update the choked status of peers based on their contributions
+     * This implements a tit-for-tat strategy to incentivize uploads
+     */
+    private _updatePeerChoking;
+    /**
+     * Special choking algorithm for super seed mode
+     * In super seed mode, we want to:
+     * 1. Ensure each peer gets unique pieces to spread them around
+     * 2. Prioritize peers that share pieces with others
+     * 3. Cycle through peers to ensure wide distribution
+     */
+    private _updateChokingForSuperSeed;
+    /**
+     * Consider unchoking a peer that has recently contributed
+     * @private
+     * @param peerId - ID of the peer to potentially unchoke
+     */
+    private _considerUnchokingPeer;
+    /**
+     * Choke a peer (restrict their download speed)
+     * @private
+     * @param peerId - ID of the peer to choke
+     */
+    private _chokePeer;
+    /**
+     * Unchoke a peer (allow normal download speed)
+     * @private
+     * @param peerId - ID of the peer to unchoke
+     */
+    private _unchokePeer;
+    /**
+     * Send a choke or unchoke message to a peer
+     * @private
+     * @param peerId - ID of the peer
+     * @param choked - Whether the peer is choked
+     */
+    private _sendChokeToPeer;
+    /**
+     * Check if a peer is currently choked
+     * @param peerId - ID of the peer
+     * @returns true if the peer is choked, false otherwise
+     */
+    isPeerChoked(peerId: string): boolean;
+    /**
+     * Enable super seed mode for efficient initial file distribution
+     * In super seed mode, this node will:
+     * 1. Only send each peer very limited pieces
+     * 2. Unchoke peers in a pattern that maximizes piece distribution
+     * 3. Focus on new peers to ensure wide distribution
+     * @param enable - Whether to enable or disable super seed mode
+     */
+    enableSuperSeedMode(enable?: boolean): void;
 }

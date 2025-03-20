@@ -1,11 +1,8 @@
 /**
- * NetworkManager - Handles multi-peer file downloads
- *
- * Coordinates downloading files from multiple peers simultaneously,
- * with automatic peer selection and load balancing.
+ * Network Manager that handles connections and file transfers
  */
-import { MultiDownloadOptions } from './types';
 import { CONNECTION_TYPE } from '../types/constants';
+import { MultiDownloadOptions } from './types';
 /**
  * Configuration for the NetworkManager
  */
@@ -70,6 +67,9 @@ declare class NetworkManager {
     private downloadStartTime;
     private _speedHistory;
     private connectionTypes;
+    private _pieceRarityMap;
+    private _isInEndgameMode;
+    private _endgameModeThreshold;
     /**
      * Create a new NetworkManager instance
      * @param config - Configuration options
@@ -191,5 +191,49 @@ declare class NetworkManager {
      * @returns Shuffled copy of the peers array
      */
     private _getShuffledPeers;
+    /**
+     * Initialize piece rarity tracking for a file
+     * @private
+     * @param peers - Array of peer IDs
+     * @param fileHash - Hash of the file
+     * @param totalPieces - Total number of pieces in the file
+     */
+    private _initializePieceRarity;
+    /**
+     * Select the next piece to download using rarest-first algorithm
+     * @private
+     * @param completedChunks - Set of already completed chunks
+     * @returns The index of the rarest piece or null if no pieces available
+     */
+    private _selectNextPieceRarestFirst;
+    /**
+     * Check if we should enter endgame mode and handle accordingly
+     * @private
+     * @param completedChunks - Set of already completed chunks
+     * @param inProgressChunks - Set of chunks currently being downloaded
+     * @param totalPieces - Total number of pieces in the file
+     * @param fileHash - Hash of the file
+     * @param tempDir - Directory for temporary files
+     * @param peerStats - Statistics for each peer
+     */
+    private _checkAndEnableEndgameMode;
+    /**
+     * Request a piece from multiple peers for endgame mode
+     * @private
+     * @param pieceIndex - Index of the piece to request
+     * @param peers - Array of peer IDs
+     * @param fileHash - Hash of the file
+     * @param tempDir - Directory for temporary files
+     * @param peerStats - Statistics for each peer
+     */
+    private _requestPieceFromMultiplePeers;
+    /**
+     * Select a random subset of peers
+     * @private
+     * @param peers - Array of peer IDs
+     * @param count - Number of peers to select
+     * @returns Array of selected peer IDs
+     */
+    private _selectRandomPeers;
 }
 export default NetworkManager;

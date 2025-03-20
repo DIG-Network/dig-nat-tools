@@ -1,9 +1,6 @@
 "use strict";
 /**
- * NetworkManager - Handles multi-peer file downloads
- *
- * Coordinates downloading files from multiple peers simultaneously,
- * with automatic peer selection and load balancing.
+ * Network Manager that handles connections and file transfers
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -42,16 +39,19 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+const crypto = __importStar(require("crypto"));
 const fs = __importStar(require("fs-extra"));
 const path = __importStar(require("path"));
-const crypto = __importStar(require("crypto"));
-const debug_1 = __importDefault(require("debug"));
-const gun_1 = __importDefault(require("gun")); // Import Gun properly
+const gun_1 = __importDefault(require("gun"));
 const client_1 = __importDefault(require("./client"));
 const nat_traversal_manager_1 = require("./utils/nat-traversal-manager");
+const debug_1 = __importDefault(require("debug"));
 const connection_registry_1 = require("./utils/connection-registry");
-const utils_1 = require("./utils");
 const debug = (0, debug_1.default)('dig-nat-tools:network-manager');
+// Helper function to generate a random port
+function getRandomPort() {
+    return Math.floor(Math.random() * (65535 - 49152)) + 49152;
+}
 class NetworkManager {
     /**
      * Create a new NetworkManager instance
@@ -61,6 +61,10 @@ class NetworkManager {
         this._speedHistory = []; // Array to store recent download speeds
         // New properties for connection tracking
         this.connectionTypes = {};
+        // Add these properties to the NetworkManager class
+        this._pieceRarityMap = new Map(); // piece index -> count of peers who have it
+        this._isInEndgameMode = false;
+        this._endgameModeThreshold = 0.95; // Start endgame when 95% complete
         this.chunkSize = config.chunkSize || 64 * 1024; // 64KB default
         this.concurrency = config.concurrency || 3; // Default concurrent downloads
         this.peerTimeout = config.peerTimeout || 30000; // 30 seconds
@@ -68,8 +72,8 @@ class NetworkManager {
         this.stunServers = config.stunServers || ['stun:stun.l.google.com:19302'];
         // Initialize NAT traversal properties
         this.localId = config.localId || crypto.randomBytes(16).toString('hex');
-        this.localTCPPort = config.localTCPPort || (0, utils_1.getRandomPort)();
-        this.localUDPPort = config.localUDPPort || (0, utils_1.getRandomPort)();
+        this.localTCPPort = config.localTCPPort || getRandomPort();
+        this.localUDPPort = config.localUDPPort || getRandomPort();
         this.turnServer = config.turnServer;
         this.turnUsername = config.turnUsername;
         this.turnPassword = config.turnPassword;
@@ -78,6 +82,7 @@ class NetworkManager {
             this.gunInstance = this.gunOptions.instance;
         }
         else {
+            // Use type assertion for Gun instantiation
             this.gunInstance = new gun_1.default(this.gunOptions);
         }
         // New adaptive download settings
@@ -114,6 +119,8 @@ class NetworkManager {
         const fileSizeAndMetadata = await this._getFileMetadata(peers, fileHash);
         const { totalChunks, totalBytes } = fileSizeAndMetadata;
         debug(`File has ${totalChunks} chunks, total size: ${totalBytes} bytes`);
+        // Initialize piece rarity tracking
+        await this._initializePieceRarity(peers, fileHash, totalChunks);
         // Set initial concurrency based on file size
         this._adjustConcurrencyForFileSize(totalBytes);
         // Setup temporary directory for chunks
@@ -160,9 +167,35 @@ class NetworkManager {
                 this._adjustConcurrencyBasedOnBandwidth(receivedBytes, lastProgressBytes, Date.now() - lastProgressUpdate);
                 lastProgressUpdate = Date.now();
                 lastProgressBytes = receivedBytes;
+                // Check if we should enter endgame mode
+                this._checkAndEnableEndgameMode(completedChunks, inProgressChunks, totalChunks, fileHash, tempDir, peerStats);
                 // If active downloads are less than concurrency and we have chunks to download, start more
                 while (inProgressChunks.size < this.concurrency && chunksToDownload.length > 0) {
-                    const chunkIndex = chunksToDownload.shift();
+                    let chunkIndex;
+                    // Use rarest-first if not in endgame mode and we have rarity data
+                    if (!this._isInEndgameMode) {
+                        const rarestPiece = this._selectNextPieceRarestFirst(completedChunks);
+                        if (rarestPiece !== null) {
+                            // Find and remove from chunksToDownload
+                            const index = chunksToDownload.findIndex(idx => idx === rarestPiece);
+                            if (index !== -1) {
+                                chunksToDownload.splice(index, 1);
+                                chunkIndex = rarestPiece;
+                            }
+                            else {
+                                // If not in chunksToDownload, use the next one
+                                chunkIndex = chunksToDownload.shift();
+                            }
+                        }
+                        else {
+                            // Fall back to sequential if no rarity data available
+                            chunkIndex = chunksToDownload.shift();
+                        }
+                    }
+                    else {
+                        // In endgame mode, just take the next one
+                        chunkIndex = chunksToDownload.shift();
+                    }
                     inProgressChunks.add(chunkIndex);
                     // Select the best peer for this chunk
                     const selectedPeer = this._selectBestPeer(peerStats);
@@ -249,6 +282,9 @@ class NetworkManager {
             throw error;
         }
         finally {
+            // Reset endgame flag for future downloads
+            this._isInEndgameMode = false;
+            this._pieceRarityMap.clear();
             // Close all peer connections
             this._closeAllConnections();
         }
@@ -346,6 +382,7 @@ class NetworkManager {
             this.connections.set(peerId, client);
             // Store the connection type used
             if (traversalResult.connectionType) {
+                // Use type assertion to ensure it's treated as CONNECTION_TYPE
                 this.connectionTypes[peerId] = traversalResult.connectionType;
             }
             debug(`Connected to peer ${peerId} using ${traversalResult.connectionType}`);
@@ -754,6 +791,160 @@ class NetworkManager {
             [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
         }
         return shuffled;
+    }
+    /**
+     * Initialize piece rarity tracking for a file
+     * @private
+     * @param peers - Array of peer IDs
+     * @param fileHash - Hash of the file
+     * @param totalPieces - Total number of pieces in the file
+     */
+    async _initializePieceRarity(peers, fileHash, totalPieces) {
+        debug(`Initializing piece rarity tracking for ${totalPieces} pieces`);
+        // Initialize all pieces with 0 peers having them
+        for (let i = 0; i < totalPieces; i++) {
+            this._pieceRarityMap.set(i, 0);
+        }
+        // Query all peers for their piece availability and update rarity map
+        const availabilityPromises = peers.map(async (peerId) => {
+            try {
+                const client = this.connections.get(peerId);
+                if (!client)
+                    return;
+                // Check if client has getAvailablePieces method
+                if (typeof client.getAvailablePieces === 'function') {
+                    const pieces = await client.getAvailablePieces(fileHash);
+                    if (Array.isArray(pieces)) {
+                        pieces.forEach(pieceIndex => {
+                            const currentCount = this._pieceRarityMap.get(pieceIndex) || 0;
+                            this._pieceRarityMap.set(pieceIndex, currentCount + 1);
+                        });
+                    }
+                }
+                else {
+                    // If not available, assume peer has all pieces
+                    // This ensures backward compatibility
+                    for (let i = 0; i < totalPieces; i++) {
+                        const currentCount = this._pieceRarityMap.get(i) || 0;
+                        this._pieceRarityMap.set(i, currentCount + 1);
+                    }
+                }
+            }
+            catch (err) {
+                debug(`Error getting piece availability from peer ${peerId}: ${err.message}`);
+            }
+        });
+        // Wait for all queries to complete
+        await Promise.all(availabilityPromises);
+        debug(`Piece rarity map initialized with ${this._pieceRarityMap.size} pieces`);
+    }
+    /**
+     * Select the next piece to download using rarest-first algorithm
+     * @private
+     * @param completedChunks - Set of already completed chunks
+     * @returns The index of the rarest piece or null if no pieces available
+     */
+    _selectNextPieceRarestFirst(completedChunks) {
+        // Find the rarest pieces that we still need to download
+        const neededPieces = Array.from(this._pieceRarityMap.entries())
+            .filter(([pieceIndex]) => !completedChunks.has(pieceIndex))
+            .sort(([, rarityA], [, rarityB]) => rarityA - rarityB);
+        return neededPieces.length > 0 ? neededPieces[0][0] : null;
+    }
+    /**
+     * Check if we should enter endgame mode and handle accordingly
+     * @private
+     * @param completedChunks - Set of already completed chunks
+     * @param inProgressChunks - Set of chunks currently being downloaded
+     * @param totalPieces - Total number of pieces in the file
+     * @param fileHash - Hash of the file
+     * @param tempDir - Directory for temporary files
+     * @param peerStats - Statistics for each peer
+     */
+    _checkAndEnableEndgameMode(completedChunks, inProgressChunks, totalPieces, fileHash, tempDir, peerStats) {
+        if (this._isInEndgameMode)
+            return;
+        const completionRatio = completedChunks.size / totalPieces;
+        if (completionRatio >= this._endgameModeThreshold) {
+            debug(`Entering endgame mode at ${(completionRatio * 100).toFixed(2)}% completion`);
+            this._isInEndgameMode = true;
+            // Request all remaining pieces from multiple peers
+            const remainingPieces = Array.from(Array(totalPieces).keys())
+                .filter(pieceIndex => !completedChunks.has(pieceIndex) && !inProgressChunks.has(pieceIndex));
+            if (remainingPieces.length === 0) {
+                debug('No remaining pieces to request in endgame mode');
+                return;
+            }
+            debug(`Requesting ${remainingPieces.length} remaining pieces from multiple peers in endgame mode`);
+            // Get a list of active peers
+            const activePeers = Object.entries(peerStats)
+                .filter(([_, stats]) => stats.active)
+                .map(([peerId]) => peerId);
+            if (activePeers.length === 0) {
+                debug('No active peers available for endgame mode');
+                return;
+            }
+            // Request each remaining piece from multiple peers
+            remainingPieces.forEach(pieceIndex => {
+                this._requestPieceFromMultiplePeers(pieceIndex, activePeers, fileHash, tempDir, peerStats);
+            });
+        }
+    }
+    /**
+     * Request a piece from multiple peers for endgame mode
+     * @private
+     * @param pieceIndex - Index of the piece to request
+     * @param peers - Array of peer IDs
+     * @param fileHash - Hash of the file
+     * @param tempDir - Directory for temporary files
+     * @param peerStats - Statistics for each peer
+     */
+    _requestPieceFromMultiplePeers(pieceIndex, peers, fileHash, tempDir, peerStats) {
+        // Use a subset of peers to avoid overloading
+        const maxPeersPerPiece = Math.min(3, peers.length);
+        const selectedPeers = this._selectRandomPeers(peers, maxPeersPerPiece);
+        debug(`Requesting piece ${pieceIndex} from ${selectedPeers.length} peers in endgame mode`);
+        // Create a way to track which peers have responded
+        const respondedPeers = new Set();
+        selectedPeers.forEach(peerId => {
+            this._downloadChunkFromPeer(peerId, fileHash, pieceIndex, peerStats, tempDir)
+                .then(({ bytes }) => {
+                debug(`Got piece ${pieceIndex} from peer ${peerId} in endgame mode`);
+                respondedPeers.add(peerId);
+                // Cancel requests to other peers if we've already got the piece
+                if (respondedPeers.size === 1) {
+                    selectedPeers.forEach(otherPeerId => {
+                        if (otherPeerId !== peerId) {
+                            const client = this.connections.get(otherPeerId);
+                            if (client && typeof client.cancelRequest === 'function') {
+                                client.cancelRequest(fileHash, pieceIndex)
+                                    .catch((err) => debug(`Error canceling request to peer ${otherPeerId}: ${err.message}`));
+                            }
+                        }
+                    });
+                }
+            })
+                .catch((err) => {
+                debug(`Failed to get piece ${pieceIndex} from peer ${peerId} in endgame mode: ${err.message}`);
+            });
+        });
+    }
+    /**
+     * Select a random subset of peers
+     * @private
+     * @param peers - Array of peer IDs
+     * @param count - Number of peers to select
+     * @returns Array of selected peer IDs
+     */
+    _selectRandomPeers(peers, count) {
+        if (peers.length <= count)
+            return [...peers];
+        const shuffled = [...peers];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        return shuffled.slice(0, count);
     }
 }
 exports.default = NetworkManager;

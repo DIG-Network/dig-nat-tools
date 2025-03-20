@@ -77,6 +77,12 @@ class FileClient {
         this.remoteAddress = null;
         this.remotePort = null;
         this.hasEstablishedConnection = false;
+        this.availablePieces = new Map(); // fileHash -> Set of available piece indices
+        this.activeRequests = new Map(); // fileHash -> Set of requested piece indices
+        // Add a connections property to track connections by file hash
+        this.connections = new Map(); // fileHash -> array of connections
+        // Add property for managing pipelined requests
+        this._maxOutstandingRequests = 5; // Maximum number of simultaneous requests per peer
         this.chunkSize = config.chunkSize || 64 * 1024; // 64KB default
         this.stunServers = config.stunServers || ['stun:stun.l.google.com:19302'];
         this.requestTimeout = config.requestTimeout || 30000; // 30 seconds
@@ -90,7 +96,7 @@ class FileClient {
         // Store the existing socket from NAT traversal if provided
         if (config.existingSocket) {
             this.existingSocket = config.existingSocket;
-            this.connectionType = config.connectionType || null;
+            this.connectionType = config.connectionType || constants_1.CONNECTION_TYPE.TCP; // Default to TCP if not specified
             this.remoteAddress = config.remoteAddress || null;
             this.remotePort = config.remotePort || null;
             this.hasEstablishedConnection = true;
@@ -1093,6 +1099,189 @@ class FileClient {
         this.activeDownloads.delete(downloadId);
         debug(`Download ${downloadId} cancelled`);
         return true;
+    }
+    /**
+     * Add pieces to the available pieces set for a file
+     * @param fileHash - Hash of the file
+     * @param pieces - Array of piece indices
+     */
+    addAvailablePieces(fileHash, pieces) {
+        if (!this.availablePieces.has(fileHash)) {
+            this.availablePieces.set(fileHash, new Set());
+        }
+        const pieceSet = this.availablePieces.get(fileHash);
+        pieces.forEach(piece => pieceSet.add(piece));
+        debug(`Added ${pieces.length} pieces to available pieces for file ${fileHash}`);
+    }
+    /**
+     * Get the list of available pieces for a file
+     * @param fileHash - Hash of the file
+     * @returns Array of available piece indices or empty array if none
+     */
+    getAvailablePieces(fileHash) {
+        return new Promise((resolve) => {
+            const pieces = this.availablePieces.get(fileHash);
+            if (pieces) {
+                resolve(Array.from(pieces));
+            }
+            else {
+                resolve([]);
+            }
+        });
+    }
+    /**
+     * Track a request for a piece
+     * @param fileHash - Hash of the file
+     * @param pieceIndex - Index of the requested piece
+     */
+    _trackRequest(fileHash, pieceIndex) {
+        if (!this.activeRequests.has(fileHash)) {
+            this.activeRequests.set(fileHash, new Set());
+        }
+        const requests = this.activeRequests.get(fileHash);
+        requests.add(pieceIndex);
+    }
+    /**
+     * Cancel a request for a piece
+     * @param fileHash - Hash of the file
+     * @param pieceIndex - Index of the piece to cancel
+     */
+    async cancelRequest(fileHash, pieceIndex) {
+        const requests = this.activeRequests.get(fileHash);
+        if (requests && requests.has(pieceIndex)) {
+            requests.delete(pieceIndex);
+            debug(`Canceled request for piece ${pieceIndex} of file ${fileHash}`);
+            // If we have a connection, send a cancel message
+            const connections = this.connections.get(fileHash);
+            if (connections && connections.length > 0) {
+                // Try to send cancel message to all connections
+                const cancelPromises = connections.map((connection) => connection.send('cancel', { fileHash, pieceIndex })
+                    .catch((err) => debug(`Error sending cancel message: ${err.message}`)));
+                await Promise.all(cancelPromises);
+            }
+        }
+    }
+    /**
+     * Download multiple chunks in a pipelined manner for improved performance
+     * @param sha256 - SHA-256 hash of the file
+     * @param pieceIndices - Array of piece indices to download
+     * @param options - Download options
+     * @returns Promise with array of downloaded chunks
+     */
+    async pipelineRequests(sha256, pieceIndices, options = {}) {
+        if (!this.initialized) {
+            await this._initialize();
+        }
+        const timeout = options.timeout || this.requestTimeout;
+        const results = new Array(pieceIndices.length).fill(null);
+        const pendingIndices = new Set();
+        let nextIndexPosition = 0;
+        debug(`Starting pipelined download of ${pieceIndices.length} chunks for file ${sha256}`);
+        // Find or create connections for this file
+        let connections = this.connections.get(sha256);
+        if (!connections || connections.length === 0) {
+            // Create a new connection for this file if needed
+            // This would typically be handled by your connection management system
+            debug(`No existing connections for file ${sha256}, creating new connection`);
+            const connection = await this._createFileConnection(sha256);
+            this.connections.set(sha256, [connection]);
+            connections = [connection];
+        }
+        // Need at least one connection
+        if (!connections || connections.length === 0) {
+            throw new Error('Failed to establish connection for file transfer');
+        }
+        // Use the first connection for this example (could be enhanced to use multiple)
+        const connection = connections[0];
+        return new Promise((resolve, reject) => {
+            let completedCount = 0;
+            let timeoutId = null;
+            // Function to handle received pieces
+            const handlePieceReceived = (data) => {
+                const { index, data: pieceData } = data;
+                // Check if this is one of our requested pieces
+                const resultIndex = pieceIndices.indexOf(index);
+                if (resultIndex >= 0 && pendingIndices.has(index)) {
+                    debug(`Received piece ${index} (${pieceData.length} bytes)`);
+                    // Save the piece data
+                    results[resultIndex] = pieceData;
+                    pendingIndices.delete(index);
+                    completedCount++;
+                    // Request next piece if available
+                    if (nextIndexPosition < pieceIndices.length) {
+                        requestNextPiece();
+                    }
+                    // If all pieces received, resolve the promise
+                    if (completedCount === pieceIndices.length) {
+                        cleanup();
+                        resolve(results);
+                    }
+                }
+            };
+            // Function to request the next piece
+            const requestNextPiece = () => {
+                if (nextIndexPosition >= pieceIndices.length)
+                    return;
+                const pieceIndex = pieceIndices[nextIndexPosition++];
+                pendingIndices.add(pieceIndex);
+                // Track this request
+                this._trackRequest(sha256, pieceIndex);
+                // Send request
+                connection.send('request', {
+                    fileHash: sha256,
+                    pieceIndex,
+                    timestamp: Date.now()
+                }).catch((err) => {
+                    debug(`Error requesting piece ${pieceIndex}: ${err.message}`);
+                    if (pendingIndices.has(pieceIndex)) {
+                        pendingIndices.delete(pieceIndex);
+                        // Put back in the queue at the beginning
+                        pieceIndices.splice(nextIndexPosition, 0, pieceIndex);
+                        nextIndexPosition++;
+                    }
+                });
+                debug(`Requested piece ${pieceIndex} (${pendingIndices.size} pending)`);
+            };
+            // Function to clean up event listeners
+            const cleanup = () => {
+                if (timeoutId)
+                    clearTimeout(timeoutId);
+                connection.removeListener('piece', handlePieceReceived);
+            };
+            // Set up timeout
+            timeoutId = setTimeout(() => {
+                cleanup();
+                reject(new Error(`Pipelined request timed out after ${timeout}ms`));
+            }, timeout * 2); // Give extra time for pipelined requests
+            // Listen for piece events
+            connection.on('piece', handlePieceReceived);
+            // Start requesting pieces up to the limit
+            for (let i = 0; i < Math.min(this._maxOutstandingRequests, pieceIndices.length); i++) {
+                requestNextPiece();
+            }
+        });
+    }
+    /**
+     * Create a connection specifically for file transfers
+     * @private
+     * @param fileHash - Hash of the file to download
+     * @returns Promise with a Connection object
+     */
+    async _createFileConnection(fileHash) {
+        // This is a placeholder that should be replaced with your actual connection logic
+        // It should return a Connection object that implements the Connection interface
+        // If you already have an established connection, use it
+        if (this.hasEstablishedConnection && this.existingSocket) {
+            if (this.connectionType === constants_1.CONNECTION_TYPE.TCP) {
+                return this._createConnectionFromExistingTCPSocket('file-' + fileHash, this.existingSocket);
+            }
+            else if (this.connectionType === constants_1.CONNECTION_TYPE.UDP) {
+                return this._createConnectionFromExistingUDPSocket('file-' + fileHash, this.existingSocket);
+            }
+        }
+        // Otherwise, create a new connection
+        // This would call your existing connection methods
+        throw new Error('Need an established connection for file transfer');
     }
 }
 exports.default = FileClient;

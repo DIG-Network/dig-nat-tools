@@ -13,6 +13,7 @@ import { CONNECTION_TYPE } from '../types/constants';
 import Debug from 'debug';
 import { MultiDownloadOptions } from './types';
 import { connectionRegistry } from './utils/connection-registry';
+import { PeerDiscoveryManager, DiscoveredPeer } from './utils/peer-discovery-manager';
 
 const debug = Debug('dig-nat-tools:network-manager');
 
@@ -42,6 +43,13 @@ interface NetworkManagerConfig {
   minConcurrency?: number;
   bandwidthCheckInterval?: number;
   slowPeerThreshold?: number;
+  // New options for peer discovery
+  enableDHT?: boolean;
+  enableLocal?: boolean;
+  enablePEX?: boolean;
+  enableIPv6?: boolean;
+  maxPeers?: number;
+  announcePort?: number;
 }
 
 /**
@@ -71,6 +79,26 @@ interface DownloadResult {
   connectionTypes: Record<string, CONNECTION_TYPE>;
 }
 
+/**
+ * Options for configuring the NetworkManager
+ */
+export interface NetworkManagerOptions {
+  /** Enable DHT peer discovery */
+  enableDHT?: boolean;
+  /** Enable local network peer discovery */
+  enableLocal?: boolean;
+  /** Enable peer exchange (PEX) */
+  enablePEX?: boolean;
+  /** Enable IPv6 support */
+  enableIPv6?: boolean;
+  /** Enable logging */
+  enableLogging?: boolean;
+  /** Maximum number of simultaneous peer connections */
+  maxPeers?: number;
+  /** Port to announce for receiving connections */
+  announcePort?: number;
+}
+
 class NetworkManager {
   private chunkSize: number;
   private concurrency: number;
@@ -95,6 +123,14 @@ class NetworkManager {
   private _speedHistory: number[] = []; // Array to store recent download speeds
   // New properties for connection tracking
   private connectionTypes: Record<string, CONNECTION_TYPE> = {};
+  // Add these properties to the NetworkManager class
+  private _pieceRarityMap: Map<number, number> = new Map(); // piece index -> count of peers who have it
+  private _isInEndgameMode: boolean = false;
+  private _endgameModeThreshold: number = 0.95; // Start endgame when 95% complete
+  private _discoveryManager: PeerDiscoveryManager;
+  private _options: NetworkManagerOptions;
+  private _infoHash: string | null = null;
+  private _isStarted = false;
   
   /**
    * Create a new NetworkManager instance
@@ -130,6 +166,25 @@ class NetworkManager {
     this.slowPeerThreshold = config.slowPeerThreshold || 0.5; // 50% of average speed
     this.connections = new Map();
     this.downloadStartTime = 0;
+
+    // Initialize peer discovery manager
+    this._options = {
+      enableDHT: config.enableDHT !== undefined ? config.enableDHT : true,
+      enableLocal: config.enableLocal !== undefined ? config.enableLocal : true,
+      enablePEX: config.enablePEX !== undefined ? config.enablePEX : true,
+      enableIPv6: config.enableIPv6 !== undefined ? config.enableIPv6 : false,
+      maxPeers: config.maxPeers || 5,
+      announcePort: config.announcePort || 0,
+      enableLogging: false
+    };
+
+    this._discoveryManager = new PeerDiscoveryManager({
+      enableDHT: this._options.enableDHT,
+      enableLocal: this._options.enableLocal,
+      enablePEX: this._options.enablePEX,
+      enableIPv6: this._options.enableIPv6,
+      announcePort: this._options.announcePort
+    });
   }
   
   /**
@@ -170,6 +225,9 @@ class NetworkManager {
     const { totalChunks, totalBytes } = fileSizeAndMetadata;
     
     debug(`File has ${totalChunks} chunks, total size: ${totalBytes} bytes`);
+    
+    // Initialize piece rarity tracking
+    await this._initializePieceRarity(peers, fileHash, totalChunks);
     
     // Set initial concurrency based on file size
     this._adjustConcurrencyForFileSize(totalBytes);
@@ -226,9 +284,35 @@ class NetworkManager {
         lastProgressUpdate = Date.now();
         lastProgressBytes = receivedBytes;
         
+        // Check if we should enter endgame mode
+        this._checkAndEnableEndgameMode(completedChunks, inProgressChunks, totalChunks, fileHash, tempDir, peerStats);
+        
         // If active downloads are less than concurrency and we have chunks to download, start more
         while (inProgressChunks.size < this.concurrency && chunksToDownload.length > 0) {
-          const chunkIndex = chunksToDownload.shift()!;
+          let chunkIndex: number;
+          
+          // Use rarest-first if not in endgame mode and we have rarity data
+          if (!this._isInEndgameMode) {
+            const rarestPiece = this._selectNextPieceRarestFirst(completedChunks);
+            if (rarestPiece !== null) {
+              // Find and remove from chunksToDownload
+              const index = chunksToDownload.findIndex(idx => idx === rarestPiece);
+              if (index !== -1) {
+                chunksToDownload.splice(index, 1);
+                chunkIndex = rarestPiece;
+              } else {
+                // If not in chunksToDownload, use the next one
+                chunkIndex = chunksToDownload.shift()!;
+              }
+            } else {
+              // Fall back to sequential if no rarity data available
+              chunkIndex = chunksToDownload.shift()!;
+            }
+          } else {
+            // In endgame mode, just take the next one
+            chunkIndex = chunksToDownload.shift()!;
+          }
+          
           inProgressChunks.add(chunkIndex);
           
           // Select the best peer for this chunk
@@ -339,6 +423,10 @@ class NetworkManager {
       // for potential retry/resume later
       throw error;
     } finally {
+      // Reset endgame flag for future downloads
+      this._isInEndgameMode = false;
+      this._pieceRarityMap.clear();
+      
       // Close all peer connections
       this._closeAllConnections();
     }
@@ -931,6 +1019,192 @@ class NetworkManager {
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
     return shuffled;
+  }
+
+  /**
+   * Initialize piece rarity tracking for a file
+   * @private
+   * @param peers - Array of peer IDs
+   * @param fileHash - Hash of the file
+   * @param totalPieces - Total number of pieces in the file
+   */
+  private async _initializePieceRarity(peers: string[], fileHash: string, totalPieces: number): Promise<void> {
+    debug(`Initializing piece rarity tracking for ${totalPieces} pieces`);
+    
+    // Initialize all pieces with 0 peers having them
+    for (let i = 0; i < totalPieces; i++) {
+      this._pieceRarityMap.set(i, 0);
+    }
+    
+    // Query all peers for their piece availability and update rarity map
+    const availabilityPromises = peers.map(async peerId => {
+      try {
+        const client = this.connections.get(peerId);
+        if (!client) return;
+        
+        // Check if client has getAvailablePieces method
+        if (typeof client.getAvailablePieces === 'function') {
+          const pieces = await client.getAvailablePieces(fileHash);
+          if (Array.isArray(pieces)) {
+            pieces.forEach(pieceIndex => {
+              const currentCount = this._pieceRarityMap.get(pieceIndex) || 0;
+              this._pieceRarityMap.set(pieceIndex, currentCount + 1);
+            });
+          }
+        } else {
+          // If not available, assume peer has all pieces
+          // This ensures backward compatibility
+          for (let i = 0; i < totalPieces; i++) {
+            const currentCount = this._pieceRarityMap.get(i) || 0;
+            this._pieceRarityMap.set(i, currentCount + 1);
+          }
+        }
+      } catch (err) {
+        debug(`Error getting piece availability from peer ${peerId}: ${(err as Error).message}`);
+      }
+    });
+    
+    // Wait for all queries to complete
+    await Promise.all(availabilityPromises);
+    
+    debug(`Piece rarity map initialized with ${this._pieceRarityMap.size} pieces`);
+  }
+
+  /**
+   * Select the next piece to download using rarest-first algorithm
+   * @private
+   * @param completedChunks - Set of already completed chunks
+   * @returns The index of the rarest piece or null if no pieces available
+   */
+  private _selectNextPieceRarestFirst(completedChunks: Set<number>): number | null {
+    // Find the rarest pieces that we still need to download
+    const neededPieces = Array.from(this._pieceRarityMap.entries())
+      .filter(([pieceIndex]) => !completedChunks.has(pieceIndex))
+      .sort(([, rarityA], [, rarityB]) => rarityA - rarityB);
+    
+    return neededPieces.length > 0 ? neededPieces[0][0] : null;
+  }
+
+  /**
+   * Check if we should enter endgame mode and handle accordingly
+   * @private
+   * @param completedChunks - Set of already completed chunks
+   * @param inProgressChunks - Set of chunks currently being downloaded
+   * @param totalPieces - Total number of pieces in the file
+   * @param fileHash - Hash of the file
+   * @param tempDir - Directory for temporary files
+   * @param peerStats - Statistics for each peer
+   */
+  private _checkAndEnableEndgameMode(
+    completedChunks: Set<number>, 
+    inProgressChunks: Set<number>,
+    totalPieces: number,
+    fileHash: string,
+    tempDir: string,
+    peerStats: Record<string, PeerStats>
+  ): void {
+    if (this._isInEndgameMode) return;
+    
+    const completionRatio = completedChunks.size / totalPieces;
+    if (completionRatio >= this._endgameModeThreshold) {
+      debug(`Entering endgame mode at ${(completionRatio * 100).toFixed(2)}% completion`);
+      this._isInEndgameMode = true;
+      
+      // Request all remaining pieces from multiple peers
+      const remainingPieces = Array.from(Array(totalPieces).keys())
+        .filter(pieceIndex => !completedChunks.has(pieceIndex) && !inProgressChunks.has(pieceIndex));
+      
+      if (remainingPieces.length === 0) {
+        debug('No remaining pieces to request in endgame mode');
+        return;
+      }
+      
+      debug(`Requesting ${remainingPieces.length} remaining pieces from multiple peers in endgame mode`);
+      
+      // Get a list of active peers
+      const activePeers = Object.entries(peerStats)
+        .filter(([_, stats]) => stats.active)
+        .map(([peerId]) => peerId);
+      
+      if (activePeers.length === 0) {
+        debug('No active peers available for endgame mode');
+        return;
+      }
+      
+      // Request each remaining piece from multiple peers
+      remainingPieces.forEach(pieceIndex => {
+        this._requestPieceFromMultiplePeers(pieceIndex, activePeers, fileHash, tempDir, peerStats);
+      });
+    }
+  }
+
+  /**
+   * Request a piece from multiple peers for endgame mode
+   * @private
+   * @param pieceIndex - Index of the piece to request
+   * @param peers - Array of peer IDs
+   * @param fileHash - Hash of the file
+   * @param tempDir - Directory for temporary files
+   * @param peerStats - Statistics for each peer
+   */
+  private _requestPieceFromMultiplePeers(
+    pieceIndex: number,
+    peers: string[],
+    fileHash: string,
+    tempDir: string,
+    peerStats: Record<string, PeerStats>
+  ): void {
+    // Use a subset of peers to avoid overloading
+    const maxPeersPerPiece = Math.min(3, peers.length);
+    const selectedPeers = this._selectRandomPeers(peers, maxPeersPerPiece);
+    
+    debug(`Requesting piece ${pieceIndex} from ${selectedPeers.length} peers in endgame mode`);
+    
+    // Create a way to track which peers have responded
+    const respondedPeers = new Set<string>();
+    
+    selectedPeers.forEach(peerId => {
+      this._downloadChunkFromPeer(peerId, fileHash, pieceIndex, peerStats, tempDir)
+        .then(({ bytes }) => {
+          debug(`Got piece ${pieceIndex} from peer ${peerId} in endgame mode`);
+          respondedPeers.add(peerId);
+          
+          // Cancel requests to other peers if we've already got the piece
+          if (respondedPeers.size === 1) {
+            selectedPeers.forEach(otherPeerId => {
+              if (otherPeerId !== peerId) {
+                const client = this.connections.get(otherPeerId);
+                if (client && typeof client.cancelRequest === 'function') {
+                  client.cancelRequest(fileHash, pieceIndex)
+                    .catch((err: Error) => debug(`Error canceling request to peer ${otherPeerId}: ${err.message}`));
+                }
+              }
+            });
+          }
+        })
+        .catch((err: Error) => {
+          debug(`Failed to get piece ${pieceIndex} from peer ${peerId} in endgame mode: ${err.message}`);
+        });
+    });
+  }
+
+  /**
+   * Select a random subset of peers
+   * @private
+   * @param peers - Array of peer IDs
+   * @param count - Number of peers to select
+   * @returns Array of selected peer IDs
+   */
+  private _selectRandomPeers(peers: string[], count: number): string[] {
+    if (peers.length <= count) return [...peers];
+    
+    const shuffled = [...peers];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    
+    return shuffled.slice(0, count);
   }
 }
 

@@ -1,6 +1,7 @@
 /**
  * Type definitions for the dig-nat-tools library
  */
+import { CONNECTION_TYPE } from '../types/constants';
 /**
  * Host configuration options
  */
@@ -53,7 +54,7 @@ export interface ClientOptions {
     /** Existing socket from NAT traversal to use (net.Socket or dgram.Socket) */
     existingSocket?: any;
     /** Connection type of the existing socket */
-    connectionType?: number;
+    connectionType?: CONNECTION_TYPE;
     /** Remote peer address for the existing socket */
     remoteAddress?: string;
     /** Remote peer port for the existing socket */

@@ -7,6 +7,11 @@ import * as ip from 'ip';
 import Debug from 'debug';
 import * as stun from 'stun';
 import { natPmpClient } from './nat-pmp';
+import * as dgram from 'dgram';
+// Import our dual-stack utilities for network interface handling
+import { isPrivateIP } from './dual-stack';
+// Import our new IP helper utils
+import { getPreferredIPs } from './ip-helper';
 
 const debug = Debug('dig-nat-tools:utils:network');
 
@@ -85,19 +90,14 @@ export function isPrivateIP(ipAddress: string): boolean {
 }
 
 /**
- * Discover public IP addresses (both IPv4 and IPv6)
- * 
- * This function attempts to discover the user's public IP addresses using
- * only decentralized methods:
- * 1. NAT-PMP/PCP (preferred)
- * 2. STUN servers (for NAT traversal)
- * 3. Local network interface analysis
- * 
+ * Discover public IP addresses using STUN, NAT-PMP/PCP, and local interfaces
  * @param options Configuration options
- * @param options.stunServers Array of STUN server URLs (defaults to a list of public STUN servers)
- * @param options.timeout Timeout in milliseconds (default: 5000)
- * @param options.tryMultipleServers Whether to try multiple STUN servers (enabled by default)
+ * @param options.stunServers STUN servers to use
+ * @param options.timeout Timeout for STUN and NAT-PMP/PCP requests
+ * @param options.tryMultipleServers Whether to try multiple STUN servers
  * @param options.useNATPMP Whether to use NAT-PMP/PCP for IP discovery (enabled by default)
+ * @param options.enableIPv6 Whether to enable IPv6 discovery (disabled by default)
+ * @param options.preferIPv6 Whether to prefer IPv6 over IPv4 when both are available
  * @returns Promise that resolves to an object with IPv4 and IPv6 addresses
  */
 export async function discoverPublicIPs(options: {
@@ -105,254 +105,367 @@ export async function discoverPublicIPs(options: {
   timeout?: number;
   tryMultipleServers?: boolean;
   useNATPMP?: boolean;
+  enableIPv6?: boolean;
+  preferIPv6?: boolean;
 } = {}): Promise<{ ipv4: string | null; ipv6: string | null }> {
   const stunServers = options.stunServers || [
     'stun:stun.l.google.com:19302',
     'stun:stun1.l.google.com:19302',
-    'stun:stun2.l.google.com:19302',
-    'stun:stun3.l.google.com:19302',
-    'stun:stun4.l.google.com:19302',
-    'stun:stun.stunprotocol.org:3478',
-    'stun:stun.voip.blackberry.com:3478',
-    'stun:stun.sip.us:3478'
+    'stun:stun.ekiga.net'
   ];
+  
   const timeout = options.timeout || 5000; // 5 seconds default
-  const tryMultipleServers = options.tryMultipleServers !== false;
+  const tryMultipleServers = options.tryMultipleServers !== false; // Default to true
   const useNATPMP = options.useNATPMP !== false; // Default to true
+  const enableIPv6 = options.enableIPv6 === true; // Default to false for backward compatibility
+  const preferIPv6 = options.preferIPv6 === true; // Default to false for backward compatibility
   
-  const debug = Debug('dig-nat-tools:utils:discover-ip');
+  const ipDiscoveryDebug = Debug('dig-nat-tools:utils:discover-ip');
+  ipDiscoveryDebug(`Starting IP discovery with options: enableIPv6=${enableIPv6}, preferIPv6=${preferIPv6}`);
   
-  // Initialize result
-  const result = {
-    ipv4: null as string | null,
-    ipv6: null as string | null
+  // Result object
+  const result: { ipv4: string | null; ipv6: string | null } = {
+    ipv4: null,
+    ipv6: null
   };
   
-  debug('Starting public IP discovery using decentralized methods');
+  // Try all methods in parallel for speed
+  const stunPromise = discoverIPsViaSTUN(stunServers, timeout, tryMultipleServers, enableIPv6)
+    .catch(err => {
+      ipDiscoveryDebug(`STUN discovery error: ${err.message}`);
+      return { ipv4: null, ipv6: null };
+    });
   
-  // Try NAT-PMP/PCP first (preferred method)
-  if (useNATPMP) {
-    try {
-      debug('Attempting to discover IP using NAT-PMP/PCP');
-      
-      // Discover gateway
-      const gatewayIP = await natPmpClient.discoverGateway();
-      if (gatewayIP) {
-        debug(`Found gateway IP: ${gatewayIP}`);
-        
-        // Try to get external IP address using NAT-PMP
-        const externalIP = await natPmpClient.getExternalAddress(timeout);
-        if (externalIP) {
-          debug(`Found IPv4 address via NAT-PMP: ${externalIP}`);
-          result.ipv4 = externalIP;
-          
-          // NAT-PMP/PCP only provides IPv4, so we still need to try other methods for IPv6
-        }
+  // NAT-PMP/PCP
+  const natpmpPromise = useNATPMP
+    ? discoverIPsViaNATPMP(timeout)
+      .catch(err => {
+        ipDiscoveryDebug(`NAT-PMP/PCP discovery error: ${err.message}`);
+        return { ipv4: null, ipv6: null };
+      })
+    : Promise.resolve({ ipv4: null, ipv6: null });
+  
+  // Local interfaces
+  const localInterfacesPromise = Promise.resolve()
+    .then(() => {
+      try {
+        ipDiscoveryDebug('Analyzing local network interfaces');
+        return getPreferredIPs({
+          enableIPv6,
+          preferIPv6,
+          includeInternal: false,
+          includePrivate: false
+        });
+      } catch (err) {
+        ipDiscoveryDebug(`Local interfaces analysis error: ${err}`);
+        return { ipv4: null, ipv6: null };
       }
-    } catch (err) {
-      debug(`NAT-PMP/PCP discovery failed: ${(err as Error).message}`);
+    });
+  
+  // Wait for all methods to complete
+  const [stunResult, natpmpResult, localResult] = await Promise.all([
+    stunPromise,
+    natpmpPromise,
+    localInterfacesPromise
+  ]);
+  
+  // Prioritize results: NAT-PMP/PCP > STUN > Local Interfaces
+  if (natpmpResult.ipv4) {
+    result.ipv4 = natpmpResult.ipv4;
+    ipDiscoveryDebug(`Using NAT-PMP/PCP IPv4: ${natpmpResult.ipv4}`);
+  } else if (stunResult.ipv4) {
+    result.ipv4 = stunResult.ipv4;
+    ipDiscoveryDebug(`Using STUN IPv4: ${stunResult.ipv4}`);
+  } else if (localResult.ipv4) {
+    result.ipv4 = localResult.ipv4;
+    ipDiscoveryDebug(`Using local interface IPv4: ${localResult.ipv4}`);
+  }
+  
+  // Similar for IPv6
+  if (enableIPv6) {
+    if (natpmpResult.ipv6) {
+      result.ipv6 = natpmpResult.ipv6;
+      ipDiscoveryDebug(`Using NAT-PMP/PCP IPv6: ${natpmpResult.ipv6}`);
+    } else if (stunResult.ipv6) {
+      result.ipv6 = stunResult.ipv6;
+      ipDiscoveryDebug(`Using STUN IPv6: ${stunResult.ipv6}`);
+    } else if (localResult.ipv6) {
+      result.ipv6 = localResult.ipv6;
+      ipDiscoveryDebug(`Using local interface IPv6: ${localResult.ipv6}`);
     }
   }
   
-  // If we don't have both addresses, try STUN next
-  if (!result.ipv4 || !result.ipv6) {
-    try {
-      debug('Attempting to discover IPs using STUN');
-      const stunResult = await discoverIPsViaSTUN(stunServers, timeout, tryMultipleServers);
-      
-      // Only use STUN results for addresses we don't already have
-      if (!result.ipv4 && stunResult.ipv4) {
-        result.ipv4 = stunResult.ipv4;
-        debug(`Found IPv4 (${result.ipv4}) via STUN`);
-      }
-      
-      if (!result.ipv6 && stunResult.ipv6) {
-        result.ipv6 = stunResult.ipv6;
-        debug(`Found IPv6 (${result.ipv6}) via STUN`);
-      }
-      
-      // If we got both addresses, return early
-      if (result.ipv4 && result.ipv6) {
-        debug(`Found both IPv4 (${result.ipv4}) and IPv6 (${result.ipv6})`);
-        return result;
-      }
-    } catch (err) {
-      debug(`STUN discovery failed: ${(err as Error).message}`);
-    }
+  // If we have both IPv4 and IPv6 and prefer IPv6, make sure IPv6 is preferred
+  if (preferIPv6 && enableIPv6 && result.ipv4 && result.ipv6) {
+    ipDiscoveryDebug('IPv6 is preferred over IPv4');
   }
   
-  // If we still don't have both addresses, try to analyze local network interfaces
-  // This is less reliable but can provide hints in some cases
-  if (!result.ipv4 || !result.ipv6) {
-    try {
-      debug('Attempting to analyze local network interfaces');
-      const localResult = analyzeLocalNetworkInterfaces();
-      
-      // Only use these results if other methods didn't provide them
-      if (!result.ipv4 && localResult.ipv4) {
-        result.ipv4 = localResult.ipv4;
-        debug(`Found potential IPv4 (${result.ipv4}) via local network analysis`);
-      }
-      
-      if (!result.ipv6 && localResult.ipv6) {
-        result.ipv6 = localResult.ipv6;
-        debug(`Found potential IPv6 (${result.ipv6}) via local network analysis`);
-      }
-    } catch (err) {
-      debug(`Local network analysis failed: ${(err as Error).message}`);
-    }
-  }
-  
-  // Log the final result
-  debug(`Discovery complete. IPv4: ${result.ipv4 || 'not found'}, IPv6: ${result.ipv6 || 'not found'}`);
-  
+  ipDiscoveryDebug(`IP discovery completed. IPv4: ${result.ipv4}, IPv6: ${result.ipv6}`);
   return result;
 }
 
 /**
- * Discover public IPs using STUN servers
- * 
- * @param stunServers Array of STUN server URLs
- * @param timeout Timeout in milliseconds
- * @param tryMultipleServers Whether to try multiple STUN servers
+ * Discover public IP addresses using STUN
+ * @param servers - STUN server URLs
+ * @param timeout - Timeout in milliseconds
+ * @param tryMultiple - Whether to try multiple servers
+ * @param enableIPv6 - Whether to try IPv6 as well
  * @returns Promise that resolves to an object with IPv4 and IPv6 addresses
  */
-export async function discoverIPsViaSTUN(
-  stunServers: string[],
+async function discoverIPsViaSTUN(
+  servers: string[],
   timeout: number,
-  tryMultipleServers: boolean
+  tryMultiple: boolean,
+  enableIPv6: boolean
 ): Promise<{ ipv4: string | null; ipv6: string | null }> {
-  const result = {
-    ipv4: null as string | null,
-    ipv6: null as string | null
+  const stunDebug = Debug('dig-nat-tools:utils:stun');
+  const result: { ipv4: string | null; ipv6: string | null } = {
+    ipv4: null,
+    ipv6: null
   };
   
-  // Try each STUN server until we get a result or run out of servers
-  for (const stunServer of stunServers) {
+  // Extract hosts and ports from STUN URLs
+  const stunServers = servers.map(url => {
+    // Remove stun: prefix and split host:port
+    const hostPort = url.replace(/^stun:/, '');
+    const [host, port] = hostPort.split(':');
+    return {
+      host,
+      port: port ? parseInt(port, 10) : 3478 // Default STUN port
+    };
+  });
+  
+  // Try IPv4 STUN
+  for (const server of stunServers) {
     try {
-      // Parse the STUN server URL
-      const stunUrl = new URL(stunServer);
-      const host = stunUrl.hostname;
-      const port = parseInt(stunUrl.port || '3478', 10);
+      stunDebug(`Trying STUN IPv4 with server ${server.host}:${server.port}`);
       
-      debug(`Trying STUN server: ${host}:${port}`);
-      
-      // Create a promise that resolves with the STUN response
-      const stunPromise = new Promise<{ ipv4?: string; ipv6?: string }>((resolve, reject) => {
-        const client = new stun.StunClient(host, port);
-        
-        client.on('response', (res: any) => {
-          try {
-            const { address, family } = res.getXorMappedAddressAttribute();
-            debug(`STUN response from ${host}:${port}: ${address} (${family})`);
-            
-            if (family === 'IPv4') {
-              resolve({ ipv4: address });
-            } else if (family === 'IPv6') {
-              resolve({ ipv6: address });
+      // Create a promise with timeout
+      const stunResponse = await Promise.race([
+        new Promise<string>((resolve, reject) => {
+          // Create STUN client
+          const client = stun.createClient();
+          
+          // Create UDP socket
+          const socket = dgram.createSocket('udp4');
+          
+          // Wait for response
+          client.once('response', (response: any) => {
+            const address = response.getXorMappedAddressAttribute()?.address;
+            if (address) {
+              resolve(address);
             } else {
-              reject(new Error(`Unknown address family: ${family}`));
+              reject(new Error('No XOR-MAPPED-ADDRESS in response'));
             }
-          } catch (err) {
-            reject(new Error(`Error processing STUN response: ${(err as Error).message}`));
-          }
-        });
+            socket.close();
+          });
+          
+          // Handle errors
+          client.once('error', (err: Error) => {
+            reject(err);
+            socket.close();
+          });
+          
+          // Send request
+          client.sendBindingRequest(socket, {
+            host: server.host,
+            port: server.port
+          });
+        }),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => {
+            reject(new Error(`STUN request timed out after ${timeout}ms`));
+          }, timeout);
+        })
+      ]);
+      
+      if (stunResponse) {
+        result.ipv4 = stunResponse;
+        stunDebug(`STUN server ${server.host}:${server.port} returned IPv4: ${stunResponse}`);
         
-        client.on('error', (err: Error) => {
-          debug(`STUN client error with ${host}:${port}: ${err.message}`);
-          reject(err);
-        });
-        
-        // Send STUN binding request
-        client.sendBindingRequest();
-      });
-      
-      // Add timeout
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => {
-          reject(new Error(`STUN request to ${stunServer} timed out after ${timeout}ms`));
-        }, timeout);
-      });
-      
-      // Race the STUN request against the timeout
-      const stunResult = await Promise.race([stunPromise, timeoutPromise]);
-      
-      // Update our result with any new information
-      if (stunResult.ipv4) result.ipv4 = stunResult.ipv4;
-      if (stunResult.ipv6) result.ipv6 = stunResult.ipv6;
-      
-      // If we have both IPv4 and IPv6 or we're not trying multiple servers, we can stop
-      if ((result.ipv4 && result.ipv6) || !tryMultipleServers) break;
-      
+        // If we got a successful response and don't need to try multiple servers, break
+        if (!tryMultiple) break;
+      }
     } catch (err) {
-      debug(`Error with STUN server ${stunServer}: ${(err as Error).message}`);
-      // Continue to the next STUN server on error
+      stunDebug(`STUN IPv4 request to ${server.host}:${server.port} failed: ${(err as Error).message}`);
+      
+      // Continue to next server
       continue;
     }
   }
   
-  return result;
-}
-
-/**
- * Analyze local network interfaces to find potential public IPs
- * This is less reliable than STUN but can provide hints in some cases
- * 
- * @returns Object with potential public IPv4 and IPv6 addresses
- */
-export function analyzeLocalNetworkInterfaces(): { ipv4: string | null; ipv6: string | null } {
-  const interfaces = os.networkInterfaces();
-  const result = {
-    ipv4: null as string | null,
-    ipv6: null as string | null
-  };
-  
-  // Collect all external addresses
-  const externalIPv4: string[] = [];
-  const externalIPv6: string[] = [];
-  
-  // Iterate over network interfaces
-  for (const interfaceName in interfaces) {
-    const networkInterface = interfaces[interfaceName];
-    if (!networkInterface) continue;
-    
-    // Iterate over each interface address
-    for (let i = 0; i < networkInterface.length; i++) {
-      // Use type assertion to tell TypeScript about the structure
-      const addrInfo = networkInterface[i] as NetworkInterfaceInfo;
-      
-      // Skip internal addresses
-      if (addrInfo.internal) continue;
-      
-      // Check for IPv4 address
-      if (addrInfo.family === 'IPv4' || (typeof addrInfo.family === 'number' && addrInfo.family === 4)) {
-        // Skip private addresses
-        if (!isPrivateIP(addrInfo.address)) {
-          externalIPv4.push(addrInfo.address);
+  // Try IPv6 STUN if enabled
+  if (enableIPv6) {
+    for (const server of stunServers) {
+      try {
+        stunDebug(`Trying STUN IPv6 with server ${server.host}:${server.port}`);
+        
+        // Create a promise with timeout
+        const stunResponse = await Promise.race([
+          new Promise<string>((resolve, reject) => {
+            // Create STUN client
+            const client = stun.createClient();
+            
+            // Create UDP socket
+            const socket = dgram.createSocket('udp6');
+            
+            // Wait for response
+            client.once('response', (response: any) => {
+              const address = response.getXorMappedAddressAttribute()?.address;
+              if (address) {
+                resolve(address);
+              } else {
+                reject(new Error('No XOR-MAPPED-ADDRESS in response'));
+              }
+              socket.close();
+            });
+            
+            // Handle errors
+            client.once('error', (err: Error) => {
+              reject(err);
+              socket.close();
+            });
+            
+            // Send request
+            client.sendBindingRequest(socket, {
+              host: server.host,
+              port: server.port
+            });
+          }),
+          new Promise<never>((_, reject) => {
+            setTimeout(() => {
+              reject(new Error(`STUN IPv6 request timed out after ${timeout}ms`));
+            }, timeout);
+          })
+        ]);
+        
+        if (stunResponse) {
+          result.ipv6 = stunResponse;
+          stunDebug(`STUN server ${server.host}:${server.port} returned IPv6: ${stunResponse}`);
+          
+          // If we got a successful response and don't need to try multiple servers, break
+          if (!tryMultiple) break;
         }
-      } 
-      // Check for IPv6 address
-      else if (addrInfo.family === 'IPv6' || (typeof addrInfo.family === 'number' && addrInfo.family === 6)) {
-        // Skip link-local IPv6 addresses (fe80::)
-        if (!addrInfo.address.startsWith('fe80:')) {
-          // Skip private/local IPv6 addresses
-          // Global unicast addresses typically start with 2 or 3
-          if (addrInfo.address.match(/^[23]/)) {
-            externalIPv6.push(addrInfo.address);
-          }
-        }
+      } catch (err) {
+        stunDebug(`STUN IPv6 request to ${server.host}:${server.port} failed: ${(err as Error).message}`);
+        
+        // Continue to next server
+        continue;
       }
     }
   }
   
-  // Use the first external address found for each type
-  if (externalIPv4.length > 0) {
-    result.ipv4 = externalIPv4[0];
+  return result;
+}
+
+/**
+ * Discover public IP addresses using NAT-PMP/PCP
+ * @param timeout - Timeout in milliseconds
+ * @returns Promise that resolves to an object with IPv4 and IPv6 addresses
+ */
+async function discoverIPsViaNATPMP(
+  timeout: number
+): Promise<{ ipv4: string | null; ipv6: string | null }> {
+  const natpmpDebug = Debug('dig-nat-tools:utils:natpmp');
+  const result: { ipv4: string | null; ipv6: string | null } = {
+    ipv4: null,
+    ipv6: null
+  };
+  
+  try {
+    natpmpDebug('Requesting public IP via NAT-PMP/PCP');
+    
+    // Use the NAT-PMP client with timeout
+    const client = natPmpClient({
+      timeout
+    });
+    
+    // Request external address
+    const externalAddress = await client.externalIp();
+    
+    if (externalAddress && externalAddress.ip) {
+      // Convert IP bytes to string
+      const ipBytes = externalAddress.ip;
+      result.ipv4 = `${ipBytes[0]}.${ipBytes[1]}.${ipBytes[2]}.${ipBytes[3]}`;
+      natpmpDebug(`NAT-PMP/PCP returned IPv4: ${result.ipv4}`);
+    }
+    
+    // TODO: Add IPv6 support when NAT-PMP client supports it
+    
+  } catch (err) {
+    natpmpDebug(`NAT-PMP/PCP error: ${(err as Error).message}`);
+    // Ignore errors - we'll fall back to other methods
   }
   
-  if (externalIPv6.length > 0) {
-    result.ipv6 = externalIPv6[0];
+  return result;
+}
+
+/**
+ * Analyze local network interfaces for IP addresses
+ * Will attempt to find non-internal, non-private IP addresses
+ * @param enableIPv6 - Whether to include IPv6 addresses (default: false)
+ * @param preferIPv6 - Whether to prefer IPv6 addresses over IPv4 when both are available (default: false)
+ * @returns Object with IPv4 and IPv6 addresses
+ */
+function analyzeLocalNetworkInterfaces(
+  enableIPv6: boolean = false,
+  preferIPv6: boolean = false
+): { ipv4: string | null; ipv6: string | null } {
+  const debug = Debug('dig-nat-tools:utils:network-interfaces');
+  const result = { ipv4: null as string | null, ipv6: null as string | null };
+  
+  const interfaces = os.networkInterfaces();
+  
+  // Collect candidate addresses for IPv4 and IPv6
+  const ipv4Candidates: string[] = [];
+  const ipv6Candidates: string[] = [];
+
+  for (const name in interfaces) {
+    const networkInterface = interfaces[name];
+    if (!networkInterface) continue;
+
+    for (const iface of networkInterface) {
+      if (!iface) continue;
+      
+      // Skip internal interfaces - we're looking for public-facing ones
+      if (iface.internal) continue;
+      
+      // Handle IPv4 addresses
+      if (iface.family === 'IPv4' || iface.family === '4' || iface.family === 4) {
+        // Skip private IP ranges like 10.x.x.x, 192.168.x.x, etc.
+        if (!isPrivateIP(iface.address)) {
+          ipv4Candidates.push(iface.address);
+          debug(`Found candidate public IPv4: ${iface.address}`);
+        }
+      } 
+      // Handle IPv6 addresses if enabled
+      else if (enableIPv6 && (iface.family === 'IPv6' || iface.family === '6' || iface.family === 6)) {
+        // Skip link-local addresses (fe80::)
+        if (!iface.address.startsWith('fe80:')) {
+          ipv6Candidates.push(iface.address);
+          debug(`Found candidate public IPv6: ${iface.address}`);
+        }
+      }
+    }
+  }
+
+  // Choose the best candidates - prioritize IPv6 if enabled and preferred
+  if (preferIPv6 && enableIPv6 && ipv6Candidates.length > 0) {
+    result.ipv6 = ipv6Candidates[0];
+    // Still set IPv4 as fallback
+    if (ipv4Candidates.length > 0) {
+      result.ipv4 = ipv4Candidates[0];
+    }
+  } else {
+    // Default prioritization: IPv4 first, then IPv6 if available
+    if (ipv4Candidates.length > 0) {
+      result.ipv4 = ipv4Candidates[0];
+    }
+    if (enableIPv6 && ipv6Candidates.length > 0) {
+      result.ipv6 = ipv6Candidates[0];
+    }
   }
   
+  debug(`Selected IPv4: ${result.ipv4}, IPv6: ${result.ipv6}`);
   return result;
 } 

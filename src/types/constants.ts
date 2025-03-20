@@ -34,6 +34,15 @@ export enum CONNECTION_TYPE {
 }
 
 /**
+ * Node types for DHT participation and resource allocation
+ */
+export enum NODE_TYPE {
+  LIGHT = 'light',     // Minimal resource usage, limited DHT participation
+  STANDARD = 'standard', // Default resource allocation, full DHT participation 
+  SUPER = 'super'      // High resource allocation, extensive caching, potential relay
+}
+
+/**
  * Default chunk size for file transfers (1MB)
  */
 export const DEFAULT_CHUNK_SIZE = 1024 * 1024;

@@ -1,0 +1,1 @@
+This would be a binary image in a real example

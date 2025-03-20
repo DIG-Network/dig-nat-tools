@@ -18,9 +18,14 @@ import { v4 as uuidv4 } from 'uuid';
 
 import { HostOptions } from './types';
 // Import the CONNECTION_TYPE for use in the host
-import { CONNECTION_TYPE } from '../types/constants';
+import { CONNECTION_TYPE, NODE_TYPE } from '../types/constants';
 // Import NAT-PMP/PCP utilities
 import { createPortMapping, deletePortMapping, PortMappingResult } from './utils';
+// Import DirectoryWatcher for auto-announcing files
+import { DirectoryWatcher, FileDiscoveredEvent, FileRemovedEvent } from './utils/directory-watcher';
+// Import PeerDiscoveryManager for announcing files
+import { PeerDiscoveryManager } from './utils/peer-discovery-manager';
+import { AnnouncePriority } from './utils/peer-discovery-manager';
 
 const debug = Debug('dig-nat-tools:host');
 
@@ -28,23 +33,7 @@ const debug = Debug('dig-nat-tools:host');
 // This will be initialized in the constructor if WebRTC is enabled
 let dc: any = null;
 
-// Interface for host configuration
-export interface HostConfig {
-  hostFileCallback: (sha256: string, startChunk: number, chunkSize: number) => Promise<Buffer[] | null>;
-  gunOptions?: Record<string, any>;
-  gunInstance?: any; // Add support for existing Gun instance
-  chunkSize?: number;
-  stunServers?: string[];
-  tcpPort?: number;
-  udpPort?: number;
-  enableTCP?: boolean;
-  enableUDP?: boolean;
-  enableWebRTC?: boolean;
-  enableNATPMP?: boolean; // Whether to use NAT-PMP/PCP for port mapping
-  portMappingLifetime?: number; // Lifetime of port mappings in seconds
-}
-
-// Interface for a message handler
+// Interface for message handler functions
 interface MessageHandler {
   (data: any): void;
 }
@@ -128,6 +117,31 @@ export default class FileHost {
   private portMappings: { protocol: 'TCP' | 'UDP', externalPort: number }[] = [];
   private externalIPv4: string | null = null;
 
+  // Add these properties to the FileHost class
+  private _peerContributions: Map<string, number> = new Map(); // peerId -> bytes contributed
+  private _chokedPeers: Set<string> = new Set(); // Peers that are currently choked
+  private _maxUnchokedPeers: number = 4; // Maximum number of peers that can be unchoked at once
+  private _lastChokeUpdateTime: number = 0;
+  private _chokeUpdateInterval: number = 10000; // 10 seconds
+  private _superSeedMode: boolean = false; // Whether super seed mode is enabled
+  
+  // Directory watcher properties
+  private directoryWatcher: DirectoryWatcher | null = null;
+  private peerDiscoveryManager: PeerDiscoveryManager | null = null;
+  private announcedFiles: Map<string, boolean> = new Map(); // hash -> announced status
+  private watchDir: string | null = null;
+  private watchOptions: {
+    recursive: boolean;
+    includeExtensions: string[] | undefined;
+    excludeExtensions: string[] | undefined;
+    maxFileSize: number | undefined;
+    persistHashes: boolean;
+    priority: AnnouncePriority;
+  } | null = null;
+
+  // New properties for shared host
+  private dhtOptions: Record<string, any> = {};
+
   /**
    * Create a new FileHost instance
    * @param options Host configuration options
@@ -147,6 +161,59 @@ export default class FileHost {
     this.portMappingLifetime = options.portMappingLifetime || 3600; // Default to 1 hour
     this.tcpPort = options.tcpPort || 0; // 0 = random available port
     this.udpPort = options.udpPort || 0; // 0 = random available port
+    
+    // Store watch directory options if provided
+    if (options.watchDir) {
+      this.watchDir = options.watchDir;
+      this.watchOptions = {
+        recursive: options.watchRecursive !== false,
+        includeExtensions: options.watchIncludeExtensions,
+        excludeExtensions: options.watchExcludeExtensions,
+        maxFileSize: options.watchMaxFileSize,
+        persistHashes: options.watchPersistHashes !== false,
+        priority: options.watchAnnouncePriority === 'high' 
+          ? AnnouncePriority.HIGH 
+          : (options.watchAnnouncePriority === 'low' 
+            ? AnnouncePriority.LOW 
+            : AnnouncePriority.MEDIUM)
+      };
+    }
+
+    // Prepare DHT options
+    let dhtOptions = options.dhtOptions || {};
+    
+    // Handle shared host with random shard prefixes
+    if (options.isShardHost) {
+      // Generate random shard prefixes if not provided
+      if (!dhtOptions.shardPrefixes || dhtOptions.shardPrefixes.length === 0) {
+        const numPrefixes = dhtOptions.numShardPrefixes || 3;
+        const prefixLength = dhtOptions.shardPrefixLength || 2;
+        
+        // Generate the specified number of random hex prefixes
+        const shardPrefixes: string[] = [];
+        const hexChars = '0123456789abcdef';
+        
+        // Track prefixes to ensure uniqueness
+        const prefixSet = new Set<string>();
+        
+        // Generate unique prefixes
+        while (prefixSet.size < numPrefixes) {
+          let prefix = '';
+          for (let i = 0; i < prefixLength; i++) {
+            prefix += hexChars.charAt(Math.floor(Math.random() * hexChars.length));
+          }
+          prefixSet.add(prefix);
+        }
+        
+        // Convert set to array
+        dhtOptions.shardPrefixes = Array.from(prefixSet);
+        
+        debug(`Generated random DHT shard prefixes: ${dhtOptions.shardPrefixes.join(', ')}`);
+      }
+    }
+    
+    // Store DHT options for later use when initializing PeerDiscoveryManager
+    this.dhtOptions = dhtOptions;
 
     // Initialize Gun for signaling and fallback relay
     const gunOptions = options.gunOptions || {};
@@ -191,6 +258,14 @@ export default class FileHost {
    */
   getUdpPort(): number {
     return this.enableUDP ? this.udpPort : 0;
+  }
+
+  /**
+   * Get all announced files
+   * @returns Map of currently announced file hashes
+   */
+  getAnnouncedFiles(): Map<string, boolean> {
+    return new Map(this.announcedFiles);
   }
 
   /**
@@ -258,6 +333,32 @@ export default class FileHost {
 
     // Set up Gun message handling for discovery and relay
     this._setupGunMessageHandling();
+    
+    // Initialize PeerDiscoveryManager
+    if (this.tcpPort || this.udpPort) {
+      const announcePort = this.tcpPort || this.udpPort;
+      const nodeType = (this.watchOptions?.priority === AnnouncePriority.HIGH) 
+        ? NODE_TYPE.SUPER 
+        : ((this.watchOptions?.priority === AnnouncePriority.LOW) 
+          ? NODE_TYPE.LIGHT 
+          : NODE_TYPE.STANDARD);
+      
+      this.peerDiscoveryManager = new PeerDiscoveryManager({
+        nodeType,
+        announcePort,
+        enablePersistence: true,
+        persistenceDir: path.join(os.tmpdir(), `dig-host-${this.hostId}`),
+        dhtOptions: this.dhtOptions // Pass the DHT options including shard prefixes
+      });
+      
+      await this.peerDiscoveryManager.start(announcePort);
+      debug(`Peer discovery manager started on port ${announcePort}`);
+    }
+    
+    // Initialize directory watcher if configured
+    if (this.watchDir && this.watchOptions && this.peerDiscoveryManager) {
+      await this._startDirectoryWatcher();
+    }
   }
 
   /**
@@ -271,6 +372,18 @@ export default class FileHost {
 
     debug('Stopping file host');
     this.isRunning = false;
+
+    // Stop directory watcher if running
+    if (this.directoryWatcher) {
+      await this.directoryWatcher.stop();
+      this.directoryWatcher = null;
+    }
+    
+    // Stop peer discovery manager if running
+    if (this.peerDiscoveryManager) {
+      await this.peerDiscoveryManager.stop();
+      this.peerDiscoveryManager = null;
+    }
 
     // Close all active connections
     for (const connection of this.activeConnections.values()) {
@@ -313,12 +426,81 @@ export default class FileHost {
   }
 
   /**
+   * Start the directory watcher
+   */
+  private async _startDirectoryWatcher(): Promise<void> {
+    if (!this.watchDir || !this.watchOptions || !this.peerDiscoveryManager) {
+      debug('Cannot start directory watcher - missing configuration');
+      return;
+    }
+    
+    try {
+      // Create directory watcher
+      this.directoryWatcher = new DirectoryWatcher({
+        directory: this.watchDir,
+        recursive: this.watchOptions.recursive,
+        includeExtensions: this.watchOptions.includeExtensions,
+        excludeExtensions: this.watchOptions.excludeExtensions,
+        maxFileSize: this.watchOptions.maxFileSize,
+        persistHashes: this.watchOptions.persistHashes,
+        persistenceDir: path.join(os.tmpdir(), `dig-host-${this.hostId}`)
+      });
+      
+      // Handle file discovery events
+      this.directoryWatcher.on('file:discovered', async (event: FileDiscoveredEvent) => {
+        const { hash, filePath, size } = event;
+        
+        debug(`Discovered file: ${filePath} (${hash}) - ${size} bytes`);
+        
+        // Announce the file if not already announced
+        if (!this.announcedFiles.has(hash) && this.peerDiscoveryManager) {
+          await this.peerDiscoveryManager.addInfoHash(hash, this.watchOptions!.priority);
+          this.announcedFiles.set(hash, true);
+          debug(`Announced file: ${filePath} with hash ${hash}`);
+        }
+      });
+      
+      // Handle file removal events
+      this.directoryWatcher.on('file:removed', async (event: FileRemovedEvent) => {
+        const { hash, filePath } = event;
+        
+        debug(`Removed file: ${filePath} (${hash})`);
+        
+        // Stop announcing the file
+        if (this.announcedFiles.has(hash) && this.peerDiscoveryManager) {
+          await this.peerDiscoveryManager.removeInfoHash(hash);
+          this.announcedFiles.delete(hash);
+          debug(`Stopped announcing file: ${filePath} with hash ${hash}`);
+        }
+      });
+      
+      // Start watching
+      await this.directoryWatcher.start();
+      debug(`Directory watcher started for ${this.watchDir}`);
+      
+      // Get currently tracked files and announce them
+      const trackedFiles = this.directoryWatcher.getTrackedFiles();
+      debug(`Found ${trackedFiles.size} existing files to announce`);
+      
+      for (const [filePath, hash] of trackedFiles.entries()) {
+        if (!this.announcedFiles.has(hash) && this.peerDiscoveryManager) {
+          await this.peerDiscoveryManager.addInfoHash(hash, this.watchOptions!.priority);
+          this.announcedFiles.set(hash, true);
+          debug(`Announced existing file: ${filePath} with hash ${hash}`);
+        }
+      }
+    } catch (error) {
+      debug(`Error starting directory watcher: ${error}`);
+    }
+  }
+
+  /**
    * Get all local IP addresses
    * @returns Array of local IP addresses
    */
-  private _getLocalIPAddresses(): string[] {
+  private _getLocalIPAddresses(): { v4: string[], v6: string[] } {
     const interfaces = os.networkInterfaces();
-    const addresses: string[] = [];
+    const addresses: { v4: string[], v6: string[] } = { v4: [], v6: [] };
 
     // Iterate through network interfaces
     for (const name in interfaces) {
@@ -333,7 +515,20 @@ export default class FileHost {
         if ((typeof family === 'string' && family === 'IPv4') || 
             (typeof family === 'number' && family === 4)) {
           if (!iface.internal) {
-            addresses.push(iface.address);
+            addresses.v4.push(iface.address);
+          }
+        }
+      }
+
+      // Get IPv6 addresses that are not internal
+      for (const iface of networkInterface) {
+        // Support both string and number for the family property
+        // Different Node.js versions might return different types
+        const family = iface.family;
+        if ((typeof family === 'string' && family === 'IPv6') || 
+            (typeof family === 'number' && family === 6)) {
+          if (!iface.internal) {
+            addresses.v6.push(iface.address);
           }
         }
       }
@@ -347,6 +542,7 @@ export default class FileHost {
    */
   private async _startTCPServer(): Promise<void> {
     return new Promise((resolve, reject) => {
+      // Create a TCP server that can handle both IPv4 and IPv6
       this.tcpServer = net.createServer();
       
       this.tcpServer.on('error', (err) => {
@@ -358,12 +554,13 @@ export default class FileHost {
         this._handleTCPConnection(socket);
       });
       
-      this.tcpServer.listen(this.tcpPort, async () => {
+      // Listen on :: address to bind to all interfaces (both IPv4 and IPv6)
+      this.tcpServer.listen(this.tcpPort, '::', async () => {
         const address = this.tcpServer?.address() as net.AddressInfo;
         this.tcpPort = address.port;
-        debug(`TCP server listening on port ${this.tcpPort}`);
+        debug(`TCP server listening on [::]:${this.tcpPort} (IPv4/IPv6 dual-stack)`);
         
-        // Create port mapping if NAT-PMP/PCP is enabled
+        // Create port mapping if NAT-PMP/PCP is enabled (for IPv4 only)
         if (this.enableNATPMP) {
           try {
             const result = await createPortMapping({
@@ -381,7 +578,7 @@ export default class FileHost {
                 debug(`External IPv4 address: ${this.externalIPv4}`);
               }
               
-              // Add to connection options with external port
+              // Add to connection options with external port (IPv4)
               this.connectionOptions.push({
                 type: CONNECTION_TYPE.TCP,
                 address: result.externalAddress || undefined,
@@ -398,25 +595,16 @@ export default class FileHost {
             } else {
               debug(`Failed to create TCP port mapping: ${result.error}`);
               // Fall back to local port
-              this.connectionOptions.push({
-                type: CONNECTION_TYPE.TCP,
-                port: this.tcpPort
-              });
+              this._addLocalConnectionOptions();
             }
           } catch (err) {
             debug(`Error creating TCP port mapping: ${(err as Error).message}`);
             // Fall back to local port
-            this.connectionOptions.push({
-              type: CONNECTION_TYPE.TCP,
-              port: this.tcpPort
-            });
+            this._addLocalConnectionOptions();
           }
         } else {
           // Just use local port if NAT-PMP/PCP is disabled
-          this.connectionOptions.push({
-            type: CONNECTION_TYPE.TCP,
-            port: this.tcpPort
-          });
+          this._addLocalConnectionOptions();
         }
         
         resolve();
@@ -429,7 +617,13 @@ export default class FileHost {
    */
   private async _startUDPServer(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.udpSocket = dgram.createSocket('udp4');
+      // Create a dual-stack UDP socket that supports both IPv4 and IPv6
+      // Using udp6 with appropriate socket options enables dual-stack mode
+      this.udpSocket = dgram.createSocket({
+        type: 'udp6', // Use IPv6 UDP socket
+        ipv6Only: false, // Enable dual-stack mode
+        reuseAddr: true // Allow address reuse
+      });
       
       this.udpSocket.on('error', (err) => {
         debug(`UDP socket error: ${err}`);
@@ -440,11 +634,12 @@ export default class FileHost {
         this._handleUDPMessage(msg, rinfo);
       });
       
-      this.udpSocket.bind(this.udpPort, async () => {
+      // Bind to :: to listen on all interfaces (both IPv4 and IPv6)
+      this.udpSocket.bind(this.udpPort, '::', async () => {
         this.udpPort = this.udpSocket?.address().port || 0;
-        debug(`UDP socket listening on port ${this.udpPort}`);
+        debug(`UDP socket listening on [::]:${this.udpPort} (IPv4/IPv6 dual-stack)`);
         
-        // Create port mapping if NAT-PMP/PCP is enabled
+        // Create port mapping if NAT-PMP/PCP is enabled (for IPv4 only)
         if (this.enableNATPMP) {
           try {
             const result = await createPortMapping({
@@ -462,7 +657,7 @@ export default class FileHost {
                 debug(`External IPv4 address: ${this.externalIPv4}`);
               }
               
-              // Add to connection options with external port
+              // Add to connection options with external port (IPv4)
               this.connectionOptions.push({
                 type: CONNECTION_TYPE.UDP,
                 address: result.externalAddress || undefined,
@@ -479,30 +674,75 @@ export default class FileHost {
             } else {
               debug(`Failed to create UDP port mapping: ${result.error}`);
               // Fall back to local port
-              this.connectionOptions.push({
-                type: CONNECTION_TYPE.UDP,
-                port: this.udpPort
-              });
+              this._addLocalUDPConnectionOptions();
             }
           } catch (err) {
             debug(`Error creating UDP port mapping: ${(err as Error).message}`);
             // Fall back to local port
-            this.connectionOptions.push({
-              type: CONNECTION_TYPE.UDP,
-              port: this.udpPort
-            });
+            this._addLocalUDPConnectionOptions();
           }
         } else {
           // Just use local port if NAT-PMP/PCP is disabled
-          this.connectionOptions.push({
-            type: CONNECTION_TYPE.UDP,
-            port: this.udpPort
-          });
+          this._addLocalUDPConnectionOptions();
         }
         
         resolve();
       });
     });
+  }
+
+  /**
+   * Add local connection options for TCP (both IPv4 and IPv6)
+   * @private
+   */
+  private _addLocalConnectionOptions(): void {
+    // Get all local IP addresses, including both IPv4 and IPv6
+    const localIPs = this._getLocalIPAddresses();
+    
+    // Add IPv4 addresses
+    for (const ip of localIPs.v4) {
+      this.connectionOptions.push({
+        type: CONNECTION_TYPE.TCP,
+        address: ip,
+        port: this.tcpPort
+      });
+    }
+    
+    // Add IPv6 addresses
+    for (const ip of localIPs.v6) {
+      this.connectionOptions.push({
+        type: CONNECTION_TYPE.IPV6, // Use IPv6-specific connection type
+        address: ip,
+        port: this.tcpPort
+      });
+    }
+  }
+
+  /**
+   * Add local connection options for UDP (both IPv4 and IPv6)
+   * @private
+   */
+  private _addLocalUDPConnectionOptions(): void {
+    // Get all local IP addresses, including both IPv4 and IPv6
+    const localIPs = this._getLocalIPAddresses();
+    
+    // Add IPv4 addresses
+    for (const ip of localIPs.v4) {
+      this.connectionOptions.push({
+        type: CONNECTION_TYPE.UDP,
+        address: ip,
+        port: this.udpPort
+      });
+    }
+    
+    // Add IPv6 addresses
+    for (const ip of localIPs.v6) {
+      this.connectionOptions.push({
+        type: CONNECTION_TYPE.IPV6, // Use IPv6-specific connection type for UDP over IPv6
+        address: ip,
+        port: this.udpPort
+      });
+    }
   }
 
   /**
@@ -1148,5 +1388,234 @@ export default class FileHost {
     
     // Handle incoming UDP data
     this._handleIncomingMessage(msg, clientId, CONNECTION_TYPE.UDP);
+  }
+
+  /**
+   * Record a contribution from a peer (upload or other useful activity)
+   * @param peerId - ID of the peer
+   * @param bytes - Number of bytes contributed
+   */
+  public recordPeerContribution(peerId: string, bytes: number): void {
+    const currentContribution = this._peerContributions.get(peerId) || 0;
+    this._peerContributions.set(peerId, currentContribution + bytes);
+    
+    // If the peer is choked but has contributed enough, consider unchoking
+    if (this._chokedPeers.has(peerId) && bytes > 0) {
+      this._considerUnchokingPeer(peerId);
+    }
+  }
+
+  /**
+   * Update the choked status of peers based on their contributions
+   * This implements a tit-for-tat strategy to incentivize uploads
+   */
+  private _updatePeerChoking(): void {
+    const now = Date.now();
+    // Only update every _chokeUpdateInterval milliseconds
+    if (now - this._lastChokeUpdateTime < this._chokeUpdateInterval) {
+      return;
+    }
+    
+    this._lastChokeUpdateTime = now;
+    
+    // Sort peers by their contribution
+    const peersByContribution = Array.from(this._peerContributions.entries())
+      .sort(([, contribA], [, contribB]) => contribB - contribA);
+    
+    // In super seed mode, we handle things differently
+    if (this._superSeedMode) {
+      this._updateChokingForSuperSeed(peersByContribution);
+      return;
+    }
+    
+    // Determine which peers to unchoke
+    const peersToUnchoke = new Set<string>();
+    
+    // Top contributors get unchoked (minus one slot for optimistic unchoking)
+    const topCount = Math.max(1, this._maxUnchokedPeers - 1);
+    peersByContribution.slice(0, topCount).forEach(([peerId]) => {
+      peersToUnchoke.add(peerId);
+    });
+    
+    // Reserve one slot for optimistic unchoking
+    const remainingPeers = peersByContribution
+      .slice(topCount)
+      .map(([peerId]) => peerId)
+      .filter(peerId => this._chokedPeers.has(peerId));
+    
+    if (remainingPeers.length > 0) {
+      // Randomly select one peer for optimistic unchoking
+      const randomIndex = Math.floor(Math.random() * remainingPeers.length);
+      const optimisticPeer = remainingPeers[randomIndex];
+      peersToUnchoke.add(optimisticPeer);
+      
+      debug(`Optimistically unchoking peer ${optimisticPeer}`);
+    }
+    
+    // Apply the new choke/unchoke status
+    for (const [peerId] of peersByContribution) {
+      if (peersToUnchoke.has(peerId)) {
+        if (this._chokedPeers.has(peerId)) {
+          this._unchokePeer(peerId);
+        }
+      } else {
+        if (!this._chokedPeers.has(peerId)) {
+          this._chokePeer(peerId);
+        }
+      }
+    }
+    
+    debug(`Updated peer choking: ${this._chokedPeers.size} choked, ${peersToUnchoke.size} unchoked`);
+  }
+
+  /**
+   * Special choking algorithm for super seed mode
+   * In super seed mode, we want to:
+   * 1. Ensure each peer gets unique pieces to spread them around
+   * 2. Prioritize peers that share pieces with others
+   * 3. Cycle through peers to ensure wide distribution
+   */
+  private _updateChokingForSuperSeed(peersByContribution: Array<[string, number]>): void {
+    // In super seed mode we work differently:
+    // - We unchoke peers that don't have any of our pieces yet
+    // - Once they download a piece, we choke them and unchoke someone else
+    
+    const peersToUnchoke = new Set<string>();
+    
+    // Find peers that haven't downloaded anything yet
+    const newPeers = peersByContribution
+      .filter(([peerId, contribution]) => contribution === 0)
+      .map(([peerId]) => peerId);
+    
+    // Find peers that have downloaded something and shared it
+    const sharingPeers = peersByContribution
+      .filter(([peerId, contribution]) => contribution > 0)
+      .map(([peerId]) => peerId);
+    
+    // Blend the two groups, prioritizing new peers but keeping some sharing peers
+    // This ensures both piece distribution and continuing distribution
+    for (let i = 0; i < this._maxUnchokedPeers; i++) {
+      if (i < Math.ceil(this._maxUnchokedPeers / 2) && i < newPeers.length) {
+        // First half slots reserved for new peers
+        peersToUnchoke.add(newPeers[i]);
+      } else if (sharingPeers.length > 0) {
+        // Remaining slots for sharing peers
+        const index = i % sharingPeers.length;
+        peersToUnchoke.add(sharingPeers[index]);
+      }
+    }
+    
+    // Apply the choking
+    for (const [peerId] of peersByContribution) {
+      if (peersToUnchoke.has(peerId)) {
+        if (this._chokedPeers.has(peerId)) {
+          this._unchokePeer(peerId);
+        }
+      } else {
+        if (!this._chokedPeers.has(peerId)) {
+          this._chokePeer(peerId);
+        }
+      }
+    }
+  }
+
+  /**
+   * Consider unchoking a peer that has recently contributed
+   * @private
+   * @param peerId - ID of the peer to potentially unchoke
+   */
+  private _considerUnchokingPeer(peerId: string): void {
+    // If we already have max unchoked peers, don't do anything
+    const unchokedCount = this._peerContributions.size - this._chokedPeers.size;
+    if (unchokedCount >= this._maxUnchokedPeers) {
+      return;
+    }
+    
+    // Otherwise, unchoke this peer if it's currently choked
+    if (this._chokedPeers.has(peerId)) {
+      this._unchokePeer(peerId);
+    }
+  }
+
+  /**
+   * Choke a peer (restrict their download speed)
+   * @private
+   * @param peerId - ID of the peer to choke
+   */
+  private _chokePeer(peerId: string): void {
+    if (this._chokedPeers.has(peerId)) return;
+    
+    this._chokedPeers.add(peerId);
+    debug(`Choking peer ${peerId}`);
+    
+    // Notify the peer they are choked if we have a connection
+    this._sendChokeToPeer(peerId, true);
+  }
+
+  /**
+   * Unchoke a peer (allow normal download speed)
+   * @private
+   * @param peerId - ID of the peer to unchoke
+   */
+  private _unchokePeer(peerId: string): void {
+    if (!this._chokedPeers.has(peerId)) return;
+    
+    this._chokedPeers.delete(peerId);
+    debug(`Unchoking peer ${peerId}`);
+    
+    // Notify the peer they are unchoked if we have a connection
+    this._sendChokeToPeer(peerId, false);
+  }
+
+  /**
+   * Send a choke or unchoke message to a peer
+   * @private
+   * @param peerId - ID of the peer
+   * @param choked - Whether the peer is choked
+   */
+  private _sendChokeToPeer(peerId: string, choked: boolean): void {
+    // This is a placeholder - you would implement based on your connection system
+    // It should send a message to the peer indicating their choke status
+    // Example:
+    //    if (this.connections.has(peerId)) {
+    //      const connection = this.connections.get(peerId);
+    //      connection.send(choked ? 'choke' : 'unchoke', {});
+    //    }
+    
+    debug(`Sent ${choked ? 'choke' : 'unchoke'} message to peer ${peerId}`);
+  }
+
+  /**
+   * Check if a peer is currently choked
+   * @param peerId - ID of the peer
+   * @returns true if the peer is choked, false otherwise
+   */
+  public isPeerChoked(peerId: string): boolean {
+    return this._chokedPeers.has(peerId);
+  }
+
+  /**
+   * Enable super seed mode for efficient initial file distribution
+   * In super seed mode, this node will:
+   * 1. Only send each peer very limited pieces
+   * 2. Unchoke peers in a pattern that maximizes piece distribution
+   * 3. Focus on new peers to ensure wide distribution
+   * @param enable - Whether to enable or disable super seed mode
+   */
+  public enableSuperSeedMode(enable: boolean = true): void {
+    this._superSeedMode = enable;
+    debug(`Super seed mode ${enable ? 'enabled' : 'disabled'}`);
+    
+    // Force a choking update
+    this._lastChokeUpdateTime = 0;
+    this._updatePeerChoking();
+  }
+
+  /**
+   * Get the DHT shard prefixes used by this host
+   * @returns Array of shard prefixes or empty array if DHT sharding is not enabled
+   */
+  getShardPrefixes(): string[] {
+    return this.dhtOptions?.shardPrefixes || [];
   }
 } 

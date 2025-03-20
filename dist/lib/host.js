@@ -79,6 +79,13 @@ class FileHost {
         this.isRunning = false;
         this.portMappings = [];
         this.externalIPv4 = null;
+        // Add these properties to the FileHost class
+        this._peerContributions = new Map(); // peerId -> bytes contributed
+        this._chokedPeers = new Set(); // Peers that are currently choked
+        this._maxUnchokedPeers = 4; // Maximum number of peers that can be unchoked at once
+        this._lastChokeUpdateTime = 0;
+        this._chokeUpdateInterval = 10000; // 10 seconds
+        this._superSeedMode = false; // Whether super seed mode is enabled
         this.hostId = (0, uuid_1.v4)();
         this.hostFileCallback = options.hostFileCallback;
         this.chunkSize = options.chunkSize || 64 * 1024; // 64KB default
@@ -969,6 +976,200 @@ class FileHost {
         }
         // Handle incoming UDP data
         this._handleIncomingMessage(msg, clientId, constants_1.CONNECTION_TYPE.UDP);
+    }
+    /**
+     * Record a contribution from a peer (upload or other useful activity)
+     * @param peerId - ID of the peer
+     * @param bytes - Number of bytes contributed
+     */
+    recordPeerContribution(peerId, bytes) {
+        const currentContribution = this._peerContributions.get(peerId) || 0;
+        this._peerContributions.set(peerId, currentContribution + bytes);
+        // If the peer is choked but has contributed enough, consider unchoking
+        if (this._chokedPeers.has(peerId) && bytes > 0) {
+            this._considerUnchokingPeer(peerId);
+        }
+    }
+    /**
+     * Update the choked status of peers based on their contributions
+     * This implements a tit-for-tat strategy to incentivize uploads
+     */
+    _updatePeerChoking() {
+        const now = Date.now();
+        // Only update every _chokeUpdateInterval milliseconds
+        if (now - this._lastChokeUpdateTime < this._chokeUpdateInterval) {
+            return;
+        }
+        this._lastChokeUpdateTime = now;
+        // Sort peers by their contribution
+        const peersByContribution = Array.from(this._peerContributions.entries())
+            .sort(([, contribA], [, contribB]) => contribB - contribA);
+        // In super seed mode, we handle things differently
+        if (this._superSeedMode) {
+            this._updateChokingForSuperSeed(peersByContribution);
+            return;
+        }
+        // Determine which peers to unchoke
+        const peersToUnchoke = new Set();
+        // Top contributors get unchoked (minus one slot for optimistic unchoking)
+        const topCount = Math.max(1, this._maxUnchokedPeers - 1);
+        peersByContribution.slice(0, topCount).forEach(([peerId]) => {
+            peersToUnchoke.add(peerId);
+        });
+        // Reserve one slot for optimistic unchoking
+        const remainingPeers = peersByContribution
+            .slice(topCount)
+            .map(([peerId]) => peerId)
+            .filter(peerId => this._chokedPeers.has(peerId));
+        if (remainingPeers.length > 0) {
+            // Randomly select one peer for optimistic unchoking
+            const randomIndex = Math.floor(Math.random() * remainingPeers.length);
+            const optimisticPeer = remainingPeers[randomIndex];
+            peersToUnchoke.add(optimisticPeer);
+            debug(`Optimistically unchoking peer ${optimisticPeer}`);
+        }
+        // Apply the new choke/unchoke status
+        for (const [peerId] of peersByContribution) {
+            if (peersToUnchoke.has(peerId)) {
+                if (this._chokedPeers.has(peerId)) {
+                    this._unchokePeer(peerId);
+                }
+            }
+            else {
+                if (!this._chokedPeers.has(peerId)) {
+                    this._chokePeer(peerId);
+                }
+            }
+        }
+        debug(`Updated peer choking: ${this._chokedPeers.size} choked, ${peersToUnchoke.size} unchoked`);
+    }
+    /**
+     * Special choking algorithm for super seed mode
+     * In super seed mode, we want to:
+     * 1. Ensure each peer gets unique pieces to spread them around
+     * 2. Prioritize peers that share pieces with others
+     * 3. Cycle through peers to ensure wide distribution
+     */
+    _updateChokingForSuperSeed(peersByContribution) {
+        // In super seed mode we work differently:
+        // - We unchoke peers that don't have any of our pieces yet
+        // - Once they download a piece, we choke them and unchoke someone else
+        const peersToUnchoke = new Set();
+        // Find peers that haven't downloaded anything yet
+        const newPeers = peersByContribution
+            .filter(([peerId, contribution]) => contribution === 0)
+            .map(([peerId]) => peerId);
+        // Find peers that have downloaded something and shared it
+        const sharingPeers = peersByContribution
+            .filter(([peerId, contribution]) => contribution > 0)
+            .map(([peerId]) => peerId);
+        // Blend the two groups, prioritizing new peers but keeping some sharing peers
+        // This ensures both piece distribution and continuing distribution
+        for (let i = 0; i < this._maxUnchokedPeers; i++) {
+            if (i < Math.ceil(this._maxUnchokedPeers / 2) && i < newPeers.length) {
+                // First half slots reserved for new peers
+                peersToUnchoke.add(newPeers[i]);
+            }
+            else if (sharingPeers.length > 0) {
+                // Remaining slots for sharing peers
+                const index = i % sharingPeers.length;
+                peersToUnchoke.add(sharingPeers[index]);
+            }
+        }
+        // Apply the choking
+        for (const [peerId] of peersByContribution) {
+            if (peersToUnchoke.has(peerId)) {
+                if (this._chokedPeers.has(peerId)) {
+                    this._unchokePeer(peerId);
+                }
+            }
+            else {
+                if (!this._chokedPeers.has(peerId)) {
+                    this._chokePeer(peerId);
+                }
+            }
+        }
+    }
+    /**
+     * Consider unchoking a peer that has recently contributed
+     * @private
+     * @param peerId - ID of the peer to potentially unchoke
+     */
+    _considerUnchokingPeer(peerId) {
+        // If we already have max unchoked peers, don't do anything
+        const unchokedCount = this._peerContributions.size - this._chokedPeers.size;
+        if (unchokedCount >= this._maxUnchokedPeers) {
+            return;
+        }
+        // Otherwise, unchoke this peer if it's currently choked
+        if (this._chokedPeers.has(peerId)) {
+            this._unchokePeer(peerId);
+        }
+    }
+    /**
+     * Choke a peer (restrict their download speed)
+     * @private
+     * @param peerId - ID of the peer to choke
+     */
+    _chokePeer(peerId) {
+        if (this._chokedPeers.has(peerId))
+            return;
+        this._chokedPeers.add(peerId);
+        debug(`Choking peer ${peerId}`);
+        // Notify the peer they are choked if we have a connection
+        this._sendChokeToPeer(peerId, true);
+    }
+    /**
+     * Unchoke a peer (allow normal download speed)
+     * @private
+     * @param peerId - ID of the peer to unchoke
+     */
+    _unchokePeer(peerId) {
+        if (!this._chokedPeers.has(peerId))
+            return;
+        this._chokedPeers.delete(peerId);
+        debug(`Unchoking peer ${peerId}`);
+        // Notify the peer they are unchoked if we have a connection
+        this._sendChokeToPeer(peerId, false);
+    }
+    /**
+     * Send a choke or unchoke message to a peer
+     * @private
+     * @param peerId - ID of the peer
+     * @param choked - Whether the peer is choked
+     */
+    _sendChokeToPeer(peerId, choked) {
+        // This is a placeholder - you would implement based on your connection system
+        // It should send a message to the peer indicating their choke status
+        // Example:
+        //    if (this.connections.has(peerId)) {
+        //      const connection = this.connections.get(peerId);
+        //      connection.send(choked ? 'choke' : 'unchoke', {});
+        //    }
+        debug(`Sent ${choked ? 'choke' : 'unchoke'} message to peer ${peerId}`);
+    }
+    /**
+     * Check if a peer is currently choked
+     * @param peerId - ID of the peer
+     * @returns true if the peer is choked, false otherwise
+     */
+    isPeerChoked(peerId) {
+        return this._chokedPeers.has(peerId);
+    }
+    /**
+     * Enable super seed mode for efficient initial file distribution
+     * In super seed mode, this node will:
+     * 1. Only send each peer very limited pieces
+     * 2. Unchoke peers in a pattern that maximizes piece distribution
+     * 3. Focus on new peers to ensure wide distribution
+     * @param enable - Whether to enable or disable super seed mode
+     */
+    enableSuperSeedMode(enable = true) {
+        this._superSeedMode = enable;
+        debug(`Super seed mode ${enable ? 'enabled' : 'disabled'}`);
+        // Force a choking update
+        this._lastChokeUpdateTime = 0;
+        this._updatePeerChoking();
     }
 }
 exports.default = FileHost;
