@@ -92,7 +92,7 @@ interface FileInfo {
 export default class FileHost {
   private hostId: string;
   private gun: any;
-  private hostFileCallback: (sha256: string, startChunk: number, chunkSize: number) => Promise<Buffer[] | null>;
+  private hostFileCallback: (contentId: string, startChunk: number, chunkSize: number, sha256?: string) => Promise<Buffer[] | null>;
   private chunkSize: number;
   private stunServers: string[];
   private enableTCP: boolean;
@@ -141,6 +141,9 @@ export default class FileHost {
 
   // New properties for shared host
   private dhtOptions: Record<string, any> = {};
+
+  // Also add a mapping between contentId and sha256 if they're different
+  private contentHashMap: Map<string, string> = new Map();
 
   /**
    * Create a new FileHost instance
@@ -960,8 +963,12 @@ export default class FileHost {
     debug(`Handling metadata request for ${sha256} from ${clientId}`);
     
     try {
+      // Use sha256 as the contentId initially - in a full implementation, 
+      // we might have a reverse lookup from sha256 to contentId
+      const contentId = sha256;
+      
       // Get the first chunk to determine if file exists and get its size
-      const firstChunk = await this.hostFileCallback(sha256, 0, this.chunkSize);
+      const firstChunk = await this.getFileChunks(contentId, 0);
       
       if (!firstChunk) {
         debug(`File ${sha256} not found`);
@@ -984,7 +991,7 @@ export default class FileHost {
         }
         
         chunkIndex++;
-        lastChunk = await this.hostFileCallback(sha256, chunkIndex, this.chunkSize);
+        lastChunk = await this.getFileChunks(contentId, chunkIndex);
       }
       
       // Send metadata response
@@ -1019,8 +1026,12 @@ export default class FileHost {
     debug(`Handling chunk request for ${sha256}, chunk ${startChunk} from ${clientId}`);
     
     try {
+      // Use sha256 as the contentId initially - in a full implementation, 
+      // we might have a reverse lookup from sha256 to contentId
+      const contentId = sha256;
+      
       // Get the requested chunk
-      const chunks = await this.hostFileCallback(sha256, startChunk, this.chunkSize);
+      const chunks = await this.getFileChunks(contentId, startChunk);
       
       if (!chunks) {
         debug(`Chunk ${startChunk} of file ${sha256} not found`);
@@ -1617,5 +1628,88 @@ export default class FileHost {
    */
   getShardPrefixes(): string[] {
     return this.dhtOptions?.shardPrefixes || [];
+  }
+
+  /**
+   * Add a content ID to SHA-256 hash mapping
+   * @param contentId - Content identifier
+   * @param sha256 - SHA-256 hash of the content
+   */
+  public addContentMapping(contentId: string, sha256: string): void {
+    debug(`Adding content mapping: ${contentId} -> ${sha256}`);
+    this.contentHashMap.set(contentId, sha256);
+    
+    // If we have a peer discovery manager, also add the mapping there for consistency
+    if (this.peerDiscoveryManager && typeof this.peerDiscoveryManager.addContentMapping === 'function') {
+      this.peerDiscoveryManager.addContentMapping(contentId, sha256);
+    }
+  }
+
+  /**
+   * Get SHA-256 hash for a content ID
+   * @param contentId - Content identifier
+   * @returns SHA-256 hash or undefined if not found
+   */
+  public getHashForContent(contentId: string): string | undefined {
+    // First check our local map
+    const hash = this.contentHashMap.get(contentId);
+    if (hash) {
+      return hash;
+    }
+    
+    // If not found locally, check the discovery manager if available
+    if (this.peerDiscoveryManager && typeof this.peerDiscoveryManager.getHashForContent === 'function') {
+      return this.peerDiscoveryManager.getHashForContent(contentId);
+    }
+    
+    return undefined;
+  }
+
+  /**
+   * Get content ID for a SHA-256 hash (reverse lookup)
+   * @param sha256 - SHA-256 hash
+   * @returns Content ID or undefined if not found
+   */
+  public getContentForHash(sha256: string): string | undefined {
+    // Check our local map first with a reverse lookup
+    for (const [contentId, hash] of this.contentHashMap.entries()) {
+      if (hash === sha256) {
+        return contentId;
+      }
+    }
+    
+    // If not found locally, check the discovery manager if available
+    if (this.peerDiscoveryManager && typeof this.peerDiscoveryManager.getContentForHash === 'function') {
+      return this.peerDiscoveryManager.getContentForHash(sha256);
+    }
+    
+    return undefined;
+  }
+
+  /**
+   * Update methods that call hostFileCallback to use contentId and pass sha256 as needed
+   * @param contentId - Content identifier for the file
+   * @param startChunk - Starting chunk index
+   * @returns Promise resolving to array of buffers for the chunks or null
+   */
+  private async getFileChunks(contentId: string, startChunk: number): Promise<Buffer[] | null> {
+    // Try to get the verification hash if it exists
+    const sha256 = this.getHashForContent(contentId);
+    
+    // If contentId looks like a hash (and we don't have a mapping), it might be the hash itself
+    if (!sha256 && contentId.length >= 40) {
+      debug(`No mapping found for ${contentId}, using it directly as both contentId and hash`);
+      return this.hostFileCallback(contentId, startChunk, this.chunkSize, contentId);
+    }
+    
+    // If we have a mapping, pass both contentId and sha256 to the callback
+    if (sha256) {
+      debug(`Found hash ${sha256} for contentId ${contentId}, using both in callback`);
+      return this.hostFileCallback(contentId, startChunk, this.chunkSize, sha256);
+    }
+    
+    // Fall back to just using contentId
+    debug(`No hash found for contentId ${contentId}, using only contentId in callback`);
+    return this.hostFileCallback(contentId, startChunk, this.chunkSize);
   }
 } 

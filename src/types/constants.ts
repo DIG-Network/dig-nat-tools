@@ -6,9 +6,11 @@
  * Connection types supported by the library
  */
 export enum CONNECTION_TYPE {
-  // Direct connections
-  TCP = 'TCP',                     // Direct TCP connection
-  UDP = 'UDP',                     // Direct UDP connection
+  UNKNOWN = 'unknown',
+  TCP = 'tcp',
+  UDP = 'udp',
+  WEBRTC = 'webrtc',
+  GUN_RELAY = 'gun-relay',
   
   // NAT traversal methods (in order of reliability)
   UPNP = 'UPNP',                   // UPnP port mapping
@@ -21,7 +23,6 @@ export enum CONNECTION_TYPE {
   TCP_SIMULTANEOUS_OPEN = 'TCP_SIMULTANEOUS_OPEN', // Simultaneous TCP connection
   
   // WebRTC related
-  WEBRTC = 'WEBRTC',               // WebRTC data channel
   ICE = 'ICE',                     // Standalone ICE protocol
   
   // Relay methods (fallbacks)
@@ -37,8 +38,11 @@ export enum CONNECTION_TYPE {
  * Node types for DHT participation and resource allocation
  */
 export enum NODE_TYPE {
+  UNKNOWN = 'unknown',
+  STANDARD = 'standard',
+  RELAY = 'relay',
+  BOOTSTRAP = 'bootstrap',
   LIGHT = 'light',     // Minimal resource usage, limited DHT participation
-  STANDARD = 'standard', // Default resource allocation, full DHT participation 
   SUPER = 'super'      // High resource allocation, extensive caching, potential relay
 }
 
@@ -84,4 +88,29 @@ export const DEFAULT_STUN_SERVERS = [
   'stun:stun.l.google.com:19302',
   'stun:stun1.l.google.com:19302',
   'stun:stun2.l.google.com:19302'
-]; 
+];
+
+/**
+ * NAT traversal methods
+ */
+export const NAT_METHODS = {
+  DIRECT: 'direct',
+  UPNP: 'upnp',
+  NAT_PMP: 'nat-pmp',
+  UDP_HOLE_PUNCHING: 'udp-hole-punching',
+  TCP_PORT_PREDICTION: 'tcp-port-prediction',
+  WEBRTC: 'webrtc',
+  RELAY: 'relay'
+};
+
+/**
+ * Peer discovery sources
+ */
+export const PEER_SOURCES = {
+  DHT: 'dht',
+  PEX: 'pex',
+  LOCAL: 'local',
+  TRACKER: 'tracker',
+  MANUAL: 'manual',
+  GUN: 'gun'
+}; 

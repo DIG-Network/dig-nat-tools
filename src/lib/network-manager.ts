@@ -6,6 +6,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs-extra';
 import * as path from 'path';
 import Gun from 'gun';
+import { EventEmitter } from 'events';
 
 import FileClient from './client';
 import { connectWithNATTraversal, NATTraversalOptions, NATTraversalResult } from './utils/nat-traversal-manager';
@@ -14,6 +15,11 @@ import Debug from 'debug';
 import { MultiDownloadOptions } from './types';
 import { connectionRegistry } from './utils/connection-registry';
 import { PeerDiscoveryManager, DiscoveredPeer } from './utils/peer-discovery-manager';
+import { DHTClient } from './utils/dht';
+import { FileHost } from './host';
+import { promiseWithTimeout } from './utils';
+import { calculateSHA256 } from './utils';
+import { NODE_TYPE } from '../types/constants';
 
 const debug = Debug('dig-nat-tools:network-manager');
 
@@ -50,6 +56,8 @@ interface NetworkManagerConfig {
   enableIPv6?: boolean;
   maxPeers?: number;
   announcePort?: number;
+  // New options for continuous discovery
+  enableContinuousDiscovery?: boolean;
 }
 
 /**
@@ -99,7 +107,7 @@ export interface NetworkManagerOptions {
   announcePort?: number;
 }
 
-class NetworkManager {
+class NetworkManager extends EventEmitter {
   private chunkSize: number;
   private concurrency: number;
   private peerTimeout: number;
@@ -131,12 +139,28 @@ class NetworkManager {
   private _options: NetworkManagerOptions;
   private _infoHash: string | null = null;
   private _isStarted = false;
+  // Add these new properties for continuous peer discovery
+  private _activePeers: Set<string> = new Set(); // Keep track of active peers in current download
+  private _continuousDiscoveryInterval: NodeJS.Timeout | null = null;
+  private _maxPeersToConnect: number = 10; // Maximum number of peers to maintain for downloads
+  private _isContinuousDiscoveryEnabled: boolean = false; // Flag to toggle continuous discovery
+  // Add content mapping property
+  private _contentHashMap: Map<string, string> = new Map(); // Maps contentId to fileHash
+  private peerDiscovery: PeerDiscoveryManager | null = null;
+  private host: FileHost | null = null;
+  private dht: DHTClient | null = null;
+  private gun: any = null;
+  private fileClients: Map<string, FileClient> = new Map();
+  private nodeId: string;
+  private started: boolean = false;
   
   /**
    * Create a new NetworkManager instance
    * @param config - Configuration options
    */
   constructor(config: NetworkManagerConfig = {}) {
+    super();
+    
     this.chunkSize = config.chunkSize || 64 * 1024; // 64KB default
     this.concurrency = config.concurrency || 3; // Default concurrent downloads
     this.peerTimeout = config.peerTimeout || 30000; // 30 seconds
@@ -185,22 +209,41 @@ class NetworkManager {
       enableIPv6: this._options.enableIPv6,
       announcePort: this._options.announcePort
     });
+    
+    // Set flag for continuous discovery if provided
+    this._isContinuousDiscoveryEnabled = config.enableContinuousDiscovery !== undefined ? 
+      config.enableContinuousDiscovery : true;
+    
+    // Set maximum number of peers to connect if provided
+    this._maxPeersToConnect = config.maxPeers || 10;
+
+    // Generate a unique node ID
+    this.nodeId = this._generateNodeId();
+  }
+  
+  /**
+   * Toggle continuous peer discovery during downloads
+   * @param enabled - Whether to enable continuous peer discovery
+   */
+  public setEnableContinuousDiscovery(enabled: boolean): void {
+    this._isContinuousDiscoveryEnabled = enabled;
+    debug(`Continuous peer discovery ${enabled ? 'enabled' : 'disabled'}`);
   }
   
   /**
    * Download a file from multiple peers
-   * @param peers - Array of peer identifiers
-   * @param fileHash - SHA-256 hash of the file to download
+   * @param peers - Array of peer IDs
+   * @param contentId - Content identifier for the file
    * @param options - Download options
-   * @returns Promise that resolves to download result
+   * @returns Promise with download result
    */
-  async downloadFile(peers: string[], fileHash: string, options: MultiDownloadOptions): Promise<DownloadResult> {
+  async downloadFile(peers: string[], contentId: string, options: MultiDownloadOptions): Promise<DownloadResult> {
     if (!peers || peers.length === 0) {
       throw new Error('At least one peer is required');
     }
     
-    if (!fileHash) {
-      throw new Error('File hash is required');
+    if (!contentId) {
+      throw new Error('Content ID is required');
     }
     
     if (!options.savePath) {
@@ -210,23 +253,55 @@ class NetworkManager {
     const { 
       savePath, 
       onProgress, 
-      onPeerStatus 
+      onPeerStatus,
+      verificationHash 
     } = options;
     
+    // Determine the file hash to use for verification
+    // Use verificationHash from options if provided, otherwise look it up from content mapping
+    let fileHash = verificationHash;
+    if (!fileHash) {
+      fileHash = this.getHashForContent(contentId);
+      if (!fileHash) {
+        debug(`Warning: No verification hash found for contentId ${contentId}`);
+        // Fall back to using the contentId itself if no mapping exists
+        fileHash = contentId;
+      } else {
+        debug(`Using mapped hash ${fileHash} for content ID ${contentId}`);
+      }
+    } else {
+      // If verificationHash was provided, make sure we have the mapping
+      this.addContentMapping(contentId, fileHash);
+    }
+    
+    this._infoHash = contentId; // Store the content ID for discovery
     this.downloadStartTime = Date.now();
     
-    debug(`Starting multi-peer download of file ${fileHash} from ${peers.length} peers`);
+    debug(`Starting multi-peer download of content ${contentId} (hash: ${fileHash}) from ${peers.length} peers`);
     
-    // Establish connections to peers first
+    // Start the discovery manager if needed
+    if (!this._discoveryManager || !this._isStarted) {
+      await this._discoveryManager.start(this._options.announcePort);
+      this._isStarted = true;
+    }
+    
+    // Clear active peers list
+    this._activePeers.clear();
+    
+    // Establish connections to initial peers
     await this._connectToPeers(peers);
     
+    // Add the initial peers to our active set
+    peers.forEach(peer => this._activePeers.add(peer));
+    
     // Determine file size by getting metadata from a peer
+    // Use fileHash for accessing the content on peers
     const fileSizeAndMetadata = await this._getFileMetadata(peers, fileHash);
     const { totalChunks, totalBytes } = fileSizeAndMetadata;
     
     debug(`File has ${totalChunks} chunks, total size: ${totalBytes} bytes`);
     
-    // Initialize piece rarity tracking
+    // Initialize piece rarity tracking using fileHash
     await this._initializePieceRarity(peers, fileHash, totalChunks);
     
     // Set initial concurrency based on file size
@@ -271,6 +346,11 @@ class NetworkManager {
       const peerStatusCallback = onPeerStatus ? 
         (peerId: string, status: string, bytesFromPeer: number) => onPeerStatus(peerId, status, bytesFromPeer) : 
         undefined;
+      
+      // Start continuous peer discovery if enabled
+      if (this._isContinuousDiscoveryEnabled) {
+        this._startContinuousDiscovery(fileHash, peerStats);
+      }
       
       // Setup interval for bandwidth checks and peer performance evaluation
       const bandwidthCheckerId = setInterval(() => {
@@ -388,7 +468,7 @@ class NetworkManager {
         throw new Error(`Not all chunks were downloaded. Expected ${totalChunks}, got ${completedChunks.size}`);
       }
       
-      // Finalize download by combining chunks and verifying integrity
+      // Finalize download by combining chunks and verifying integrity using fileHash
       debug(`All chunks downloaded. Combining into final file: ${savePath}`);
       const verificationSuccess = await this._combineChunksAndVerify(tempDir, totalChunks, savePath, fileHash);
       
@@ -423,12 +503,18 @@ class NetworkManager {
       // for potential retry/resume later
       throw error;
     } finally {
+      // Stop continuous discovery interval
+      this._stopContinuousDiscovery();
+      
       // Reset endgame flag for future downloads
       this._isInEndgameMode = false;
       this._pieceRarityMap.clear();
       
       // Close all peer connections
       this._closeAllConnections();
+      
+      // Clear the current info hash
+      this._infoHash = null;
     }
   }
   
@@ -583,12 +669,11 @@ class NetworkManager {
   }
   
   /**
-   * Get file metadata from any available peer
-   * 
+   * Get metadata about a file from any available peer
    * @private
    * @param peers - Array of peer IDs
-   * @param fileHash - SHA-256 hash of the file
-   * @returns Promise with file metadata
+   * @param fileHash - SHA-256 hash of the file (used for verification and content access)
+   * @returns Promise with file size and chunks information
    */
   private async _getFileMetadata(peers: string[], fileHash: string): Promise<{ totalBytes: number, totalChunks: number }> {
     // Try each peer until we get metadata
@@ -1022,10 +1107,10 @@ class NetworkManager {
   }
 
   /**
-   * Initialize piece rarity tracking for a file
+   * Initialize the piece rarity map by querying peers for which pieces they have
    * @private
    * @param peers - Array of peer IDs
-   * @param fileHash - Hash of the file
+   * @param fileHash - SHA-256 hash of the file (used for content access)
    * @param totalPieces - Total number of pieces in the file
    */
   private async _initializePieceRarity(peers: string[], fileHash: string, totalPieces: number): Promise<void> {
@@ -1205,6 +1290,340 @@ class NetworkManager {
     }
     
     return shuffled.slice(0, count);
+  }
+
+  /**
+   * Start continuous peer discovery for the current download
+   * @private
+   * @param fileHash - Hash of the file being downloaded
+   * @param peerStats - Current peer statistics
+   */
+  private _startContinuousDiscovery(fileHash: string, peerStats: Record<string, PeerStats>): void {
+    // Stop any existing discovery interval
+    this._stopContinuousDiscovery();
+    
+    debug(`Starting continuous peer discovery for ${fileHash.substring(0, 6)}...`);
+    
+    // Start an interval to periodically check for new peers
+    this._continuousDiscoveryInterval = setInterval(async () => {
+      try {
+        // Get active peer count
+        const activePeerCount = Object.values(peerStats).filter(p => p.active).length;
+        
+        // Check if we need more peers
+        if (activePeerCount >= this._maxPeersToConnect) {
+          debug(`Already have ${activePeerCount} active peers, skipping discovery`);
+          return;
+        }
+        
+        // Find peers for this file hash
+        const newPeers = await this._discoveryManager.findPeers(fileHash);
+        
+        if (newPeers.length === 0) {
+          debug(`No new peers found for ${fileHash.substring(0, 6)}...`);
+          return;
+        }
+        
+        debug(`Found ${newPeers.length} potential new peers for ${fileHash.substring(0, 6)}...`);
+        
+        // Convert discovered peers to peer IDs
+        const peersToAdd: string[] = [];
+        for (const peer of newPeers) {
+          const peerId = peer.id || `${peer.address}:${peer.port}`;
+          
+          // Skip peers we already know about
+          if (this._activePeers.has(peerId)) {
+            continue;
+          }
+          
+          peersToAdd.push(peerId);
+          this._activePeers.add(peerId);
+          
+          // Add this peer to our stats tracking
+          peerStats[peerId] = {
+            bytesDownloaded: 0,
+            chunksDownloaded: 0,
+            connectionType: '',
+            downloadSpeed: 0,
+            lastChunkTime: null,
+            lastBytesDownloaded: 0,
+            consecutiveFailures: 0,
+            active: true
+          };
+          
+          // Only add a limited number of new peers at once
+          if (peersToAdd.length >= this._maxPeersToConnect - activePeerCount) {
+            break;
+          }
+        }
+        
+        if (peersToAdd.length > 0) {
+          debug(`Adding ${peersToAdd.length} new peers to active download`);
+          // Connect to these new peers - don't await since we want this to run in the background
+          this._connectToPeers(peersToAdd).catch(err => {
+            debug(`Error connecting to new peers: ${err.message}`);
+          });
+        }
+      } catch (err) {
+        debug(`Error in continuous peer discovery: ${(err as Error).message}`);
+      }
+    }, 30000); // Check for new peers every 30 seconds
+  }
+  
+  /**
+   * Stop continuous peer discovery
+   * @private
+   */
+  private _stopContinuousDiscovery(): void {
+    if (this._continuousDiscoveryInterval) {
+      clearInterval(this._continuousDiscoveryInterval);
+      this._continuousDiscoveryInterval = null;
+      debug('Stopped continuous peer discovery');
+    }
+  }
+
+  /**
+   * Add a mapping between content ID and SHA-256 hash
+   * @param contentId - Content identifier
+   * @param fileHash - SHA-256 hash for verification
+   */
+  public addContentMapping(contentId: string, fileHash: string): void {
+    this._contentHashMap.set(contentId, fileHash);
+    debug(`Added content mapping: ${contentId} -> ${fileHash}`);
+    
+    // If we have a discovery manager, also add the mapping there
+    if (this._discoveryManager) {
+      this._discoveryManager.addContentMapping(contentId, fileHash);
+    }
+  }
+
+  /**
+   * Get SHA-256 hash for a content ID
+   * @param contentId - Content identifier
+   * @returns SHA-256 hash or undefined if not found
+   */
+  public getHashForContent(contentId: string): string | undefined {
+    // First check our local map
+    const localHash = this._contentHashMap.get(contentId);
+    if (localHash) {
+      return localHash;
+    }
+    
+    // If not found locally, check the discovery manager if available
+    if (this._discoveryManager) {
+      return this._discoveryManager.getHashForContent(contentId);
+    }
+    
+    return undefined;
+  }
+
+  /**
+   * Get content ID for a SHA-256 hash (reverse lookup)
+   * @param fileHash - SHA-256 hash
+   * @returns Content ID or undefined if not found
+   */
+  public getContentForHash(fileHash: string): string | undefined {
+    // Check our local map first
+    for (const [contentId, hash] of this._contentHashMap.entries()) {
+      if (hash === fileHash) {
+        return contentId;
+      }
+    }
+    
+    // If not found locally, check the discovery manager if available
+    if (this._discoveryManager) {
+      return this._discoveryManager.getContentForHash(fileHash);
+    }
+    
+    return undefined;
+  }
+
+  /**
+   * Start the network manager
+   */
+  public async start(): Promise<void> {
+    if (this.started) {
+      debug('Network manager already started');
+      return;
+    }
+    
+    debug('Starting network manager');
+    
+    try {
+      // Initialize Gun.js if options are provided
+      if (this.gunOptions) {
+        await this._initializeGun();
+      }
+      
+      // Create file host
+      this.host = new FileHost({
+        hostFileCallback: this._hostFileCallback.bind(this),
+        chunkSize: this.chunkSize,
+        stunServers: this.stunServers,
+        gunOptions: this.gunOptions,
+        nodeType: NODE_TYPE.STANDARD // Default to standard node
+      });
+      
+      await this.host.start();
+      
+      // Get the host's listening ports
+      const hostPorts = this.host.getListeningPorts();
+      
+      // Initialize peer discovery
+      this.peerDiscovery = new PeerDiscoveryManager({
+        enableDHT: true,
+        enablePEX: true,
+        enableLocal: true,
+        enableGun: !!this.gun, // Enable Gun discovery if Gun is initialized
+        enableIPv6: false, // Default to IPv4 for backward compatibility
+        announcePort: hostPorts.tcp || 0,
+        enablePersistence: true,
+        persistenceDir: './.dig-nat-tools',
+        gun: this.gun, // Pass Gun instance if available
+        nodeId: this.nodeId
+      });
+      
+      // Start peer discovery without parameters
+      await this.peerDiscovery.start();
+      
+      // Listen for peer discovery events
+      this.peerDiscovery.on('peer:discovered', (peer) => {
+        debug(`Discovered peer: ${peer.address}:${peer.port} (${peer.source})`);
+        this.emit('peer:discovered', peer);
+      });
+      
+      this.started = true;
+      debug('Network manager started');
+      
+    } catch (err) {
+      debug(`Failed to start network manager: ${(err as Error).message}`);
+      await this.stop();
+      throw err;
+    }
+  }
+  
+  /**
+   * Stop the network manager
+   */
+  public async stop(): Promise<void> {
+    if (!this.started) {
+      return;
+    }
+    
+    debug('Stopping network manager');
+    
+    // Close all file clients
+    for (const client of this.fileClients.values()) {
+      try {
+        // Try different methods that might exist on the client
+        // to properly clean up resources
+        if (typeof (client as any).stopDownloads === 'function') {
+          await (client as any).stopDownloads();
+        }
+      } catch (err) {
+        debug(`Error stopping client: ${(err as Error).message}`);
+      }
+    }
+    this.fileClients.clear();
+    
+    // Stop peer discovery
+    if (this.peerDiscovery) {
+      this.peerDiscovery.stop();
+      this.peerDiscovery = null;
+    }
+    
+    // Stop host
+    if (this.host) {
+      await this.host.stop();
+      this.host = null;
+    }
+    
+    // Gun.js doesn't need to be explicitly stopped
+    
+    this.started = false;
+    debug('Network manager stopped');
+  }
+  
+  /**
+   * Host file callback that maps content ID to file chunks
+   * @param contentId - Content ID or file hash
+   * @param startChunk - Starting chunk number
+   * @param chunkSize - Size of each chunk
+   * @param sha256 - Optional SHA-256 hash for verification
+   * @returns Promise resolving to array of chunks or null if not found
+   * @private
+   */
+  private async _hostFileCallback(contentId: string, startChunk: number, chunkSize: number, sha256?: string): Promise<Buffer[] | null> {
+    // First check if contentId is a SHA-256 hash directly
+    if (this.host?.hasFile(contentId)) {
+      // FileHost already has this file hash registered
+      return null; // Let FileHost handle it directly
+    }
+    
+    // If not a direct hash, lookup the hash by content ID
+    const fileHash = this.peerDiscovery?.getHashForContent(contentId);
+    
+    if (!fileHash) {
+      debug(`No file hash found for content ID: ${contentId}`);
+      return null;
+    }
+    
+    // Check if the optional SHA-256 hash matches our mapping
+    if (sha256 && sha256 !== fileHash) {
+      debug(`SHA-256 verification failed for content ID: ${contentId}`);
+      return null;
+    }
+    
+    debug(`Mapped content ID ${contentId} to file hash ${fileHash}`);
+    
+    // Let FileHost handle the request with the file hash
+    return null; // FileHost will handle it with the file hash
+  }
+
+  /**
+   * Generate a node ID
+   * @private
+   */
+  private _generateNodeId(): string {
+    const randomBytes = new Uint8Array(16);
+    for (let i = 0; i < 16; i++) {
+      randomBytes[i] = Math.floor(Math.random() * 256);
+    }
+    return Array.from(randomBytes)
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+  
+  /**
+   * Initialize Gun.js
+   * @private
+   */
+  private async _initializeGun(): Promise<void> {
+    if (this.gun) {
+      return; // Already initialized
+    }
+    
+    try {
+      // Load Gun.js
+      const GunConstructor = await loadGun();
+      
+      // Configure Gun.js
+      const gunOptions = this.gunOptions || {};
+      
+      // Set up Gun with options
+      this.gun = new GunConstructor({
+        peers: gunOptions.peers || [],
+        localStorage: false, // Don't use localStorage in Node.js
+        file: gunOptions.file || './.gun',
+        ...gunOptions
+      });
+      
+      debug('Gun.js initialized with peers:', gunOptions.peers || []);
+      
+    } catch (err) {
+      debug(`Failed to initialize Gun.js: ${(err as Error).message}`);
+      throw err;
+    }
   }
 }
 

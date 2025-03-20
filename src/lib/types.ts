@@ -10,7 +10,7 @@ import { CONNECTION_TYPE, NODE_TYPE } from '../types/constants';
  */
 export interface HostOptions {
   /** Callback function to serve file chunks */
-  hostFileCallback: (sha256: string, startChunk: number, chunkSize: number) => Promise<Buffer[] | null>;
+  hostFileCallback: (contentId: string, startChunk: number, chunkSize: number, sha256?: string) => Promise<Buffer[] | null>;
   
   /** Size of file chunks in bytes (default: 64KB) */
   chunkSize?: number;
@@ -196,9 +196,30 @@ export interface DownloadOptions {
 /**
  * Options for multi-peer file download
  */
-export interface MultiDownloadOptions extends DownloadOptions {
-  /** Callback for peer status updates */
+export interface MultiDownloadOptions {
+  /** Path to save downloaded file */
+  savePath: string;
+  
+  /** Size of chunks to request (must match host chunk size) */
+  chunkSize?: number;
+  
+  /** STUN servers for WebRTC connections */
+  stunServers?: string[];
+  
+  /** Callback for download progress updates */
+  onProgress?: (bytesReceived: number, totalBytes: number) => void;
+  
+  /** Callback for download errors */
+  onError?: (error: Error) => void;
+  
+  /** Start downloading from this chunk number */
+  startChunk?: number;
+  
+  /** Callback for peer status changes */
   onPeerStatus?: (peerId: string, status: string, bytesFromPeer: number) => void;
+  
+  /** SHA-256 hash for verification of the file */
+  verificationHash?: string;
 }
 
 /**
@@ -230,12 +251,62 @@ export interface PeerStats {
  * Gun configuration options
  */
 export interface GunOptions {
-  /** Gun peers to connect to */
+  /** Array of Gun relay servers to connect to */
   peers?: string[];
   
-  /** Local storage path */
+  /** Path to save Gun data (Node.js) */
   file?: string;
   
-  /** Additional Gun options */
+  /** Enable localStorage (browser only) */
+  localStorage?: boolean;
+  
+  /** Enable radisk storage */
+  radisk?: boolean;
+  
+  /** Enable WebRTC for direct peer connections */
+  rtc?: {
+    iceServers: Array<{
+      urls: string;
+      username?: string;
+      credential?: string;
+    }>;
+  };
+  
+  /** Any other Gun.js options */
   [key: string]: any;
+}
+
+/**
+ * Gun.js Discovery Options
+ */
+export interface GunDiscoveryOptions {
+  /** Gun instance to use */
+  gun: any;
+  
+  /** Unique ID for this node */
+  nodeId?: string;
+  
+  /** How often to announce hashes (milliseconds) */
+  announceInterval?: number;
+  
+  /** Port to announce for incoming connections */
+  announcePort?: number;
+  
+  /** Enable persisting peer and hash data */
+  enablePersistence?: boolean;
+  
+  /** Directory to store persisted data */
+  persistenceDir?: string;
+  
+  /** How long to keep peer entries (milliseconds) */
+  peerTTL?: number;
+  
+  /** How often to run cleanup (milliseconds) */
+  cleanupInterval?: number;
+  
+  /** External IP to announce (if known) */
+  externalIp?: string | null;
+  
+  /** External port to announce (if known) */
+  externalPort?: number | null;
 } 

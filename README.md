@@ -1,6 +1,195 @@
-# DIG NAT Tools
+# Dig NAT Tools
 
-Decentralized P2P file transfer with comprehensive NAT traversal capabilities.
+A JavaScript/TypeScript library for NAT traversal and peer-to-peer file sharing, with enhanced peer discovery and content availability management.
+
+## Features
+
+- **NAT Traversal**: Enable direct connections between peers, even when behind firewalls or NATs
+- **Peer-to-Peer File Sharing**: Transfer files directly between peers
+- **Multi-Protocol Peer Discovery**:
+  - DHT-based peer discovery
+  - PEX (Peer Exchange) discovery
+  - Gun.js-based peer discovery for challenging NAT environments
+- **Content Availability Management**: Track and verify which peers have which content
+- **Content ID Mapping**: Associate human-readable names with content hashes
+- **Persistent Storage**: Store peer and content information between sessions
+
+## Installation
+
+```bash
+npm install @dignetwork/dig-nat-tools
+```
+
+## Basic Usage
+
+### File Hosting
+
+```typescript
+import { createFileHost } from '@dignetwork/dig-nat-tools';
+
+const host = createFileHost({
+  port: 8080,
+  directory: './shared-files',
+  dhtEnabled: true
+});
+
+await host.start();
+
+// Wait for connections
+```
+
+### File Client
+
+```typescript
+import { createFileClient } from '@dignetwork/dig-nat-tools';
+
+const client = createFileClient();
+await client.start();
+
+// Find peers that have a specific file
+const peers = await client.findPeers('file-hash');
+
+// Download a file
+await client.downloadFile('file-hash', './downloads/my-file.mp4', {
+  progressCallback: (progress) => {
+    console.log(`Download progress: ${Math.round(progress * 100)}%`);
+  }
+});
+
+client.disconnect();
+```
+
+## Enhanced Peer Discovery with Gun.js
+
+Gun.js integration provides powerful peer discovery capabilities, especially in challenging NAT environments.
+
+```typescript
+import { createGunDiscovery } from '@dignetwork/dig-nat-tools';
+import Gun from 'gun';
+
+// Create a Gun instance
+const gun = Gun({
+  peers: ['https://gun-server.example.com/gun'],
+  localStorage: false,
+  radisk: true
+});
+
+// Create a GunDiscovery instance
+const gunDiscovery = createGunDiscovery({
+  gun,
+  nodeId: 'your-unique-node-id',
+  persistenceEnabled: true
+});
+
+// Start the discovery service
+await gunDiscovery.start();
+
+// Announce yourself as a peer for a specific content hash
+gunDiscovery.announce('content-hash', {
+  port: 8080,
+  contentId: 'my-video' // Optional human-readable ID
+});
+
+// Find peers for a specific content hash
+const peers = await gunDiscovery.findPeers('content-hash');
+
+// Map a content ID to a hash
+gunDiscovery.mapContentIdToHash('my-video', 'content-hash');
+
+// Find content hash by ID
+const hash = await gunDiscovery.findHashByContentId('my-video');
+```
+
+## Content Availability Management
+
+The content availability management system tracks which peers have which content and manages the announcement and verification process.
+
+```typescript
+import { 
+  createContentAvailabilityManager,
+  createDiscoveryContentIntegration
+} from '@dignetwork/dig-nat-tools';
+
+// Create a content availability manager
+const contentManager = createContentAvailabilityManager({
+  nodeId: 'your-node-id',
+  gun: gunInstance,              // Optional Gun.js instance
+  contentTTL: 3600000,           // Optional, default: 1 hour
+  reannounceInterval: 1800000,   // Optional, default: 30 minutes
+  enableVerification: true       // Optional, default: true
+});
+
+// Start the manager
+await contentManager.start();
+
+// Announce content availability
+contentManager.announceContentAvailable('content-hash', {
+  port: 8080,
+  contentId: 'my-video'
+});
+
+// When you stop hosting content
+contentManager.announceContentUnavailable('content-hash', 'my-video');
+
+// Report unavailable content when a peer doesn't have what they claim
+contentManager.reportContentUnavailable('peer-id', 'content-hash');
+
+// Integration with discovery mechanisms
+const integration = createDiscoveryContentIntegration({
+  nodeId: 'your-node-id',
+  gun: gunInstance
+});
+
+// Register discovery components
+integration.registerDHTClient(dhtClient);
+integration.registerPEXManager(pexManager);
+integration.registerGunDiscovery(gunDiscovery);
+
+// Filter out peers that don't have content
+const validPeers = integration.filterPeersByContentStatus(allPeers, 'content-hash');
+```
+
+## Network Manager
+
+For complete control over networking, you can use the NetworkManager directly:
+
+```typescript
+import { createNetworkManager } from '@dignetwork/dig-nat-tools';
+
+const networkManager = createNetworkManager({
+  port: 8080,
+  dhtEnabled: true,
+  pexEnabled: true,
+  gunEnabled: true
+});
+
+await networkManager.start();
+
+// Connect to a peer
+const connection = await networkManager.connect({
+  host: '192.168.1.100',
+  port: 8080
+});
+
+// Send data
+connection.send('Hello, peer!');
+
+// Close the connection
+connection.close();
+```
+
+## Documentation
+
+For more detailed documentation, see the `/docs` directory:
+
+- [API Reference](./docs/api.md)
+- [Gun.js Integration](./docs/gun-integration.md)
+- [Content Availability Management](./docs/content-availability-management.md)
+- [Examples](./examples)
+
+## License
+
+MIT
 
 ## Table of Contents
 
@@ -390,7 +579,7 @@ The library includes multiple mechanisms to discover peers sharing specific cont
 
 ### How Peer Discovery Works
 
-The peer discovery system uses a multi-layered approach with three complementary mechanisms:
+The peer discovery system uses a multi-layered approach with four complementary mechanisms:
 
 #### 1. DHT (Distributed Hash Table)
 - **How it works**: Implements a Kademlia-based DHT similar to BitTorrent's, where peers and content are mapped to IDs in the same address space.
@@ -420,8 +609,23 @@ The peer discovery system uses a multi-layered approach with three complementary
 - **Scope**: Local network only
 - **Reliability**: Very high within local networks, useless across the internet
 
-#### 4. Integrated Discovery Manager
-- Combines all three mechanisms through the `PeerDiscoveryManager` class
+#### 4. Gun.js Discovery
+- **How it works**: Uses Gun.js, a decentralized real-time graph database, to announce and discover peers.
+- **Discovery process**:
+  - Peers announce their content hashes to a Gun.js network
+  - Other peers query the Gun.js network for these announcements
+  - Gun.js provides real-time updates when new peers join
+  - Persistent storage keeps information between sessions
+- **Scope**: Global - can discover peers anywhere with access to the Gun.js network
+- **Reliability**: High - works across NATs and firewalls using relay servers when needed
+- **Additional benefits**:
+  - Content mapping (map human-readable content IDs to file hashes)
+  - Persistence of peer information between sessions
+  - Real-time notification of new peers
+  - Cross-NAT discovery even in challenging network environments
+
+#### 5. Integrated Discovery Manager
+- Combines all four mechanisms through the `PeerDiscoveryManager` class
 - Prioritizes peers based on source reliability and reachability
 - Deduplicates peers discovered through multiple mechanisms
 
@@ -442,247 +646,70 @@ The peer discovery system uses a multi-layered approach with three complementary
 3. **For local network peers**: All peers on the same local network will be discovered almost immediately if:
    - UDP multicast is not blocked on the network
    - Peers are actively sending/listening for announcements
+   
+4. **For Gun.js announced peers**: Peers that have announced themselves via Gun.js will be discovered if:
+   - Both peers are connected to common Gun.js relay servers
+   - Gun.js relay servers are accessible
+   - Even peers behind restrictive NATs can be discovered
 
 ### Discovery Timeline
 
 The discovery timeline varies by mechanism:
 
 - **Local Discovery**: Nearly instant (milliseconds to seconds)
+- **Gun.js Discovery**: Fast (seconds) with real-time updates
 - **DHT Discovery**: Moderate speed (seconds to minutes)
 - **PEX Discovery**: Progressive (starts fast with close peers, expands over time)
 
-### Announcing Files You Have Available
+### Using Gun.js for Peer Discovery
 
-For your files to be discoverable by other peers, you must **explicitly announce** them:
-
-```typescript
-import { announceFile, calculateSHA256 } from '@dignetwork/dig-nat-tools';
-
-// 1. Calculate the SHA-256 hash of your file
-const fileHash = await calculateSHA256('/path/to/your/file.dat');
-
-// 2. Announce that you have this file (using your host's listening port)
-const discoveryManager = await announceFile(fileHash, 12345, {
-  // Optional: Configure which discovery mechanisms to use
-  enableDHT: true,     // Announce to the global DHT network
-  enablePEX: true,     // Share with peers you connect to
-  enableLocal: true    // Announce on your local network
-});
-
-// 3. Keep the discovery manager running as long as you're sharing the file
-// When you're done sharing, call:
-await discoveryManager.stop();
-```
-
-This announcement makes your file discoverable through all available mechanisms:
-- It's registered in the DHT, allowing global discovery
-- It's shared with peers via PEX as you connect to them
-- It's broadcast on your local network for fast local discovery
-
-**Note:** Without explicitly announcing your files, they won't be discoverable by peers using the `findPeers()` function. Each file you want to share must be individually announced.
-
-### Peer Discovery Implementation Examples
-
-#### 1. DHT (Distributed Hash Table)
-
-**Requirements:**
-- Bootstrap nodes (default or custom)
-- Open UDP ports for DHT traffic
-
-**Example:**
-```typescript
-import { DHTClient } from '@dignetwork/dig-nat-tools';
-
-const dht = new DHTClient({
-  bootstrapNodes: [
-    { address: 'router.bittorrent.com', port: 6881 }
-  ]
-});
-
-await dht.start();
-const peers = await dht.findPeers('info-hash-of-content');
-console.log(`Found ${peers.length} peers with the content`);
-```
-
-#### 2. PEX (Peer Exchange)
-
-**Requirements:**
-- At least one initial peer connection
-- No external infrastructure needed
-
-**Example:**
-```typescript
-import { PexManager } from '@dignetwork/dig-nat-tools';
-
-const pex = new PexManager({
-  maxPeers: 100,
-  peerExpiration: 30 * 60 * 1000 // 30 minutes
-});
-
-pex.start();
-pex.on('peer:discovered', (peer) => {
-  console.log(`Discovered new peer: ${peer.address}:${peer.port}`);
-});
-```
-
-#### 3. Local Network Discovery
-
-**Requirements:**
-- Local network access
-- UDP multicast support
-- No external infrastructure needed
-
-**Example:**
-```typescript
-import { LocalDiscovery } from '@dignetwork/dig-nat-tools';
-
-const discovery = new LocalDiscovery();
-await discovery.start(12345); // Local TCP port you're listening on
-
-discovery.on('peer:discovered', (peer) => {
-  console.log(`Discovered local peer: ${peer.address}:${peer.port}`);
-});
-
-// Announce a specific info hash (content identifier)
-discovery.addInfoHash('info-hash-of-content');
-```
-
-#### 4. Integrated Peer Discovery
-
-**Example with more control:**
-```typescript
-import { PeerDiscoveryManager } from '@dignetwork/dig-nat-tools';
-
-// Create discovery manager with all methods enabled
-const discoveryManager = new PeerDiscoveryManager({
-  enableDHT: true,       // Use the DHT
-  enablePEX: true,       // Use peer exchange
-  enableLocal: true,     // Use local network discovery
-  announcePort: 12345    // The port we're listening on
-});
-
-// Start discovery
-await discoveryManager.start();
-
-// Add the info hash of the file we're looking for
-await discoveryManager.addInfoHash('info-hash-of-file');
-
-// Find peers with this file
-const discoveredPeers = await discoveryManager.findPeers('info-hash-of-file');
-
-// Listen for newly discovered peers over time
-discoveryManager.on('peer:discovered', (peer) => {
-  console.log(`New peer found: ${peer.address}:${peer.port}`);
-});
-```
-
-**Simple interface:**
-```typescript
-import { findPeers } from '@dignetwork/dig-nat-tools';
-
-// Find peers with specific content using all available methods
-const peers = await findPeers('info-hash-of-content', 12345, {
-  enableDHT: true,
-  enablePEX: true,
-  enableLocal: true
-});
-
-console.log(`Found ${peers.length} peers with the content`);
-```
-
-#### 5. Manually Adding Peers
-
-If you know a peer's details in advance or want to connect to specific peers without discovery, you can manually add them:
+Gun.js provides a powerful addition to our peer discovery capabilities, especially valuable in challenging NAT environments or when you need human-readable content IDs.
 
 ```typescript
-import { addManualPeer } from '@dignetwork/dig-nat-tools';
+import { NetworkManager } from '@dignetwork/dig-nat-tools';
+import Gun from 'gun';
 
-// Add a known peer manually
-const discoveryManager = await addManualPeer(
-  'peer-id-123',           // Unique ID of the peer
-  '192.168.1.100',         // IP address
-  8000,                    // Port
-  {
-    infoHash: 'file-hash', // Optional: associate with a specific file
-    enablePEX: true        // Optional: enable PEX for subsequent discoveries
-  }
-);
-
-// The peer is now available in the discovery manager
-// You can use it with the network manager for downloads
-const networkManager = new NetworkManager();
-await networkManager.downloadFile(
-  ['peer-id-123'],         // The manually added peer ID
-  'file-hash',             // The file to download
-  { savePath: './downloaded-file.dat' }
-);
-```
-
-This approach is useful when:
-- You have a known list of peers from an external source
-- You're building a private network with predefined peers
-- You want to connect to specific peers without waiting for discovery
-
-### Maximizing Discovery Success
-
-To ensure the best chance of discovering all available hosts:
-
-1. **Announce your content**: Make sure hosts announce their files to the DHT
-2. **Stay connected**: Maintain connections to discovered peers to benefit from PEX
-3. **Use multiple bootstrap nodes**: Configure with several DHT bootstrap nodes
-4. **Combine all methods**: Always use all three discovery mechanisms together
-5. **Allow sufficient time**: Some peers may take longer to discover, especially in sparse networks
-
-The beauty of this multi-layered approach is that it's resilient - even if one mechanism fails, the others can still function, ensuring that in most network conditions, peers will eventually find each other.
-
-### Example of DHT Sharding
-
-```typescript
-import { createHost, NODE_TYPE } from '@dignetwork/dig-nat-tools';
-
-// Create a host that only handles a portion of the DHT space
-const shardedHost = createHost({
-  nodeType: NODE_TYPE.STANDARD,
-  dhtOptions: {
-    shardPrefixes: ['00', '01', '02'] // Only handle hashes starting with these prefixes
-  }
+// Create a Gun.js instance
+const gun = Gun({
+  peers: ['https://gun-relay.example.com/gun'], // Gun relay servers
+  file: './.gun-data' // Local persistence
 });
-```
 
-### Shard Hosts with Random DHT Sharding
-
-For better load distribution in large networks, hosts can be configured to randomly select which portions of the DHT space they will handle:
-
-```typescript
-import { createHost, NODE_TYPE } from '@dignetwork/dig-nat-tools';
-
-// Create a shard host with random shard selection
-const shardHost = createHost({
-  hostFileCallback: myFileCallback,
-  nodeType: NODE_TYPE.STANDARD,
-  
-  // Enable shard host mode with random shard selection
-  isShardHost: true,
-  
-  // Configure DHT options (all are optional)
-  dhtOptions: {
-    // Number of shard prefixes to select (default: 3)
-    numShardPrefixes: 4,
-    
-    // Length of each prefix in hex characters (default: 2)
-    shardPrefixLength: 2
+// Initialize NetworkManager with Gun.js
+const network = new NetworkManager({
+  gunOptions: {
+    gun: gun // Pass your Gun instance
   }
 });
 
-// Start the host
-await shardHost.start();
+// Start the network
+await network.start();
 
-// Get the randomly selected shard prefixes
-const shardPrefixes = shardHost.getShardPrefixes();
-console.log(`Host is handling these DHT prefixes: ${shardPrefixes.join(', ')}`);
+// Share a file with a human-readable content ID
+await network.addContentMapping('my-awesome-video', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+
+// Later, find peers for this content using the readable ID
+const peers = await network.findPeers('my-awesome-video');
+
+// Or use the GunDiscovery class directly for more control
+import { GunDiscovery } from '@dignetwork/dig-nat-tools';
+
+const gunDiscovery = new GunDiscovery({
+  gun: gun,
+  nodeId: 'your-unique-node-id',
+  announceInterval: 60000, // Announce every minute
+  peerTTL: 3600000 // Keep peers for 1 hour
+});
+
+await gunDiscovery.start();
+gunDiscovery.addInfoHash('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+gunDiscovery.addContentMapping('my-awesome-video', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+
+// Find peers with this content
+const discoveredPeers = await gunDiscovery.findPeers('my-awesome-video');
 ```
 
-With random sharding, each host takes responsibility for a subset of the DHT space, helping to distribute load more evenly. When many hosts use this feature, the entire DHT space is covered while preventing any single host from becoming overloaded.
+For more information about using Gun.js for peer discovery, see the [Gun Peer Discovery documentation](docs/gun-peer-discovery.md).
 
 ## External Infrastructure Requirements
 
@@ -1065,4 +1092,37 @@ IPv6 support is disabled by default for backward compatibility. When enabled, th
 
 ### Network Manager
 
-// ... existing content continues ... 
+### New Features
+
+#### Continuous Peer Discovery During Downloads
+
+The library now supports continuous peer discovery during the download process. When enabled (which it is by default), the file downloads will automatically:
+
+1. Keep searching for additional peers who have the file while downloading
+2. Connect to newly discovered peers automatically
+3. Add these peers to the download process to increase download speeds and redundancy
+
+This ensures your downloads are as fast and reliable as possible, dynamically adapting to network conditions and peer availability.
+
+##### Usage
+
+This feature is enabled by default, but can be configured:
+
+```javascript
+// Create a network manager with continuous discovery enabled
+const networkManager = new NetworkManager({
+  enableContinuousDiscovery: true, // default is true
+  maxPeers: 15 // maximum number of peers to connect to (default: 10)
+});
+
+// Toggle it on/off at runtime
+networkManager.setEnableContinuousDiscovery(false); // disable
+networkManager.setEnableContinuousDiscovery(true);  // enable
+```
+
+##### Benefits
+
+- **Resilience to peer failures**: Automatically adds new peers when others become unavailable
+- **Better download speeds**: Dynamically adds faster peers when discovered
+- **Improved success rate**: Less likely to fail due to insufficient peers
+- **Optimization for large files**: Particularly valuable for large file transfers where peers may come and go

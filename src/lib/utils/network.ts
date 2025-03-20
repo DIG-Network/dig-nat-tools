@@ -6,12 +6,13 @@ import * as os from 'os';
 import * as ip from 'ip';
 import Debug from 'debug';
 import * as stun from 'stun';
-import { natPmpClient } from './nat-pmp';
+import { createNatPmpClient } from './nat-pmp'; // Import the factory function
 import * as dgram from 'dgram';
 // Import our dual-stack utilities for network interface handling
-import { isPrivateIP } from './dual-stack';
-// Import our new IP helper utils
-import { getPreferredIPs } from './ip-helper';
+// Remove conflicting import and use the one from ip-helper
+// import { isPrivateIP } from './dual-stack'; 
+// Import our IP helper utils
+import { getPreferredIPs, isPrivateIP } from './ip-helper';
 
 const debug = Debug('dig-nat-tools:utils:network');
 
@@ -75,21 +76,6 @@ export function getLocalIPs(): IPAddresses {
 }
 
 /**
- * Check if an IP address is likely to be private/internal
- * @param ipAddress - The IP address to check
- * @returns True if the IP is private/internal
- */
-export function isPrivateIP(ipAddress: string): boolean {
-  try {
-    return ip.isPrivate(ipAddress);
-  } catch (err) {
-    debug(`Error checking if IP is private: ${(err as Error).message}`);
-    // Default to true (assume private) if there's an error
-    return true;
-  }
-}
-
-/**
  * Discover public IP addresses using STUN, NAT-PMP/PCP, and local interfaces
  * @param options Configuration options
  * @param options.stunServers STUN servers to use
@@ -133,7 +119,7 @@ export async function discoverPublicIPs(options: {
   const stunPromise = discoverIPsViaSTUN(stunServers, timeout, tryMultipleServers, enableIPv6)
     .catch(err => {
       ipDiscoveryDebug(`STUN discovery error: ${err.message}`);
-      return { ipv4: null, ipv6: null };
+      return { ipv4: null as string | null, ipv6: null as string | null };
     });
   
   // NAT-PMP/PCP
@@ -141,9 +127,9 @@ export async function discoverPublicIPs(options: {
     ? discoverIPsViaNATPMP(timeout)
       .catch(err => {
         ipDiscoveryDebug(`NAT-PMP/PCP discovery error: ${err.message}`);
-        return { ipv4: null, ipv6: null };
+        return { ipv4: null as string | null, ipv6: null as string | null };
       })
-    : Promise.resolve({ ipv4: null, ipv6: null });
+    : Promise.resolve({ ipv4: null as string | null, ipv6: null as string | null });
   
   // Local interfaces
   const localInterfacesPromise = Promise.resolve()
@@ -243,33 +229,39 @@ async function discoverIPsViaSTUN(
       // Create a promise with timeout
       const stunResponse = await Promise.race([
         new Promise<string>((resolve, reject) => {
-          // Create STUN client
-          const client = stun.createClient();
-          
           // Create UDP socket
           const socket = dgram.createSocket('udp4');
           
-          // Wait for response
-          client.once('response', (response: any) => {
-            const address = response.getXorMappedAddressAttribute()?.address;
-            if (address) {
-              resolve(address);
-            } else {
-              reject(new Error('No XOR-MAPPED-ADDRESS in response'));
+          // Set up a message event handler
+          socket.once('message', (msg) => {
+            try {
+              const response = stun.createStunResponse(msg);
+              const { address } = response.getXorAddress();
+              if (address) {
+                resolve(address);
+              } else {
+                reject(new Error('No XOR-MAPPED-ADDRESS in response'));
+              }
+            } catch (err) {
+              reject(err);
+            } finally {
+              socket.close();
             }
-            socket.close();
           });
           
           // Handle errors
-          client.once('error', (err: Error) => {
+          socket.once('error', (err) => {
             reject(err);
             socket.close();
           });
           
-          // Send request
-          client.sendBindingRequest(socket, {
-            host: server.host,
-            port: server.port
+          // Create and send STUN request
+          const request = stun.createStunRequest();
+          socket.send(request.toBuffer(), server.port, server.host, (err) => {
+            if (err) {
+              reject(err);
+              socket.close();
+            }
           });
         }),
         new Promise<never>((_, reject) => {
@@ -294,7 +286,7 @@ async function discoverIPsViaSTUN(
     }
   }
   
-  // Try IPv6 STUN if enabled
+  // Try IPv6 STUN if enabled - similar pattern to IPv4 code above
   if (enableIPv6) {
     for (const server of stunServers) {
       try {
@@ -303,33 +295,39 @@ async function discoverIPsViaSTUN(
         // Create a promise with timeout
         const stunResponse = await Promise.race([
           new Promise<string>((resolve, reject) => {
-            // Create STUN client
-            const client = stun.createClient();
-            
             // Create UDP socket
             const socket = dgram.createSocket('udp6');
             
-            // Wait for response
-            client.once('response', (response: any) => {
-              const address = response.getXorMappedAddressAttribute()?.address;
-              if (address) {
-                resolve(address);
-              } else {
-                reject(new Error('No XOR-MAPPED-ADDRESS in response'));
+            // Set up a message event handler
+            socket.once('message', (msg) => {
+              try {
+                const response = stun.createStunResponse(msg);
+                const { address } = response.getXorAddress();
+                if (address) {
+                  resolve(address);
+                } else {
+                  reject(new Error('No XOR-MAPPED-ADDRESS in response'));
+                }
+              } catch (err) {
+                reject(err);
+              } finally {
+                socket.close();
               }
-              socket.close();
             });
             
             // Handle errors
-            client.once('error', (err: Error) => {
+            socket.once('error', (err) => {
               reject(err);
               socket.close();
             });
             
-            // Send request
-            client.sendBindingRequest(socket, {
-              host: server.host,
-              port: server.port
+            // Create and send STUN request
+            const request = stun.createStunRequest();
+            socket.send(request.toBuffer(), server.port, server.host, (err) => {
+              if (err) {
+                reject(err);
+                socket.close();
+              }
             });
           }),
           new Promise<never>((_, reject) => {
@@ -375,8 +373,8 @@ async function discoverIPsViaNATPMP(
   try {
     natpmpDebug('Requesting public IP via NAT-PMP/PCP');
     
-    // Use the NAT-PMP client with timeout
-    const client = natPmpClient({
+    // Use the function to create a NAT-PMP client
+    const client = createNatPmpClient({
       timeout
     });
     
@@ -425,13 +423,14 @@ function analyzeLocalNetworkInterfaces(
     if (!networkInterface) continue;
 
     for (const iface of networkInterface) {
+      // Skip if no interface
       if (!iface) continue;
       
       // Skip internal interfaces - we're looking for public-facing ones
       if (iface.internal) continue;
       
-      // Handle IPv4 addresses
-      if (iface.family === 'IPv4' || iface.family === '4' || iface.family === 4) {
+      // Handle IPv4 addresses with proper type checking
+      if (iface.family === 'IPv4' || iface.family === 4) {
         // Skip private IP ranges like 10.x.x.x, 192.168.x.x, etc.
         if (!isPrivateIP(iface.address)) {
           ipv4Candidates.push(iface.address);
@@ -439,7 +438,7 @@ function analyzeLocalNetworkInterfaces(
         }
       } 
       // Handle IPv6 addresses if enabled
-      else if (enableIPv6 && (iface.family === 'IPv6' || iface.family === '6' || iface.family === 6)) {
+      else if (enableIPv6 && (iface.family === 'IPv6' || iface.family === 6)) {
         // Skip link-local addresses (fe80::)
         if (!iface.address.startsWith('fe80:')) {
           ipv6Candidates.push(iface.address);

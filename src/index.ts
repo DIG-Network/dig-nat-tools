@@ -3,6 +3,10 @@
  * Provides tools for NAT traversal and P2P file sharing
  */
 
+// Import Debug for logging
+import Debug from 'debug';
+const debug = Debug('dig-nat-tools:index');
+
 // Export types
 export * from './types/constants';
 
@@ -69,6 +73,7 @@ import { NATTraversalManager, connectWithNATTraversal } from './lib/utils/nat-tr
 import { DHTClient } from './lib/utils/dht';
 import { PexManager, PexMessageType } from './lib/utils/pex';
 import { LocalDiscovery } from './lib/utils/local-discovery';
+import { GunDiscovery } from './lib/utils/gun-discovery';
 import { PeerDiscoveryManager, PeerDiscoveryOptions, AnnouncePriority } from './lib/utils/peer-discovery-manager';
 import { NODE_TYPE } from './types/constants';
 
@@ -76,6 +81,46 @@ import { NODE_TYPE } from './types/constants';
 import type { PexPeer } from './lib/utils/pex';
 import type { LocalPeer } from './lib/utils/local-discovery';
 import type { DiscoveredPeer } from './lib/utils/peer-discovery-manager';
+import type { GunDiscoveryOptions } from './lib/utils/gun-discovery';
+
+// Import and export the content availability management system
+import { 
+  ContentAvailabilityManager, 
+  createContentAvailabilityManager,
+  DEFAULT_CONTENT_TTL,
+  REANNOUNCE_INTERVAL
+} from './lib/utils/content-availability-manager';
+
+import { 
+  DiscoveryContentIntegration,
+  createDiscoveryContentIntegration
+} from './lib/utils/discovery-content-integration';
+
+// Export types for content availability management
+import type { 
+  PeerContentStatus, 
+  ReportLevel 
+} from './lib/utils/content-availability-manager';
+
+import type { 
+  VerificationResult 
+} from './lib/utils/discovery-content-integration';
+
+// Export all types and values
+export { 
+  ContentAvailabilityManager, 
+  createContentAvailabilityManager,
+  DEFAULT_CONTENT_TTL,
+  REANNOUNCE_INTERVAL,
+  DiscoveryContentIntegration,
+  createDiscoveryContentIntegration
+};
+
+export type { 
+  PeerContentStatus, 
+  ReportLevel,
+  VerificationResult 
+};
 
 // Main exports
 export {
@@ -132,13 +177,14 @@ export {
   PexManager,
   PexMessageType,
   LocalDiscovery,
+  GunDiscovery,
   PeerDiscoveryManager,
   AnnouncePriority,
   NODE_TYPE
 };
 
 // Also export types
-export type { PexPeer, LocalPeer, DiscoveredPeer, ICECandidate };
+export type { PexPeer, LocalPeer, DiscoveredPeer, ICECandidate, GunDiscoveryOptions, PeerDiscoveryOptions };
 
 /**
  * Create a new FileHost instance with default settings
@@ -169,13 +215,15 @@ export function createNetworkManager(options: NetworkManagerOptions = {} as Netw
 
 /**
  * Helper function to download a file using the network manager
- * @param fileHash - SHA-256 hash of the file to download
+ * @param contentId - Content identifier for the file (used for peer discovery)
+ * @param fileHash - SHA-256 hash of the file (used for verification)
  * @param savePath - Path where the file should be saved
  * @param peers - Array of peer connection strings
  * @param options - Download options
  * @returns Promise that resolves when the download is complete
  */
 export async function downloadFile(
+  contentId: string,
   fileHash: string,
   savePath: string,
   peers: string[],
@@ -197,11 +245,12 @@ export async function downloadFile(
     onProgress: options.onProgress,
     onError: options.onError,
     startChunk: options.startChunk,
-    onPeerStatus: options.onPeerStatus
+    onPeerStatus: options.onPeerStatus,
+    verificationHash: fileHash // Use fileHash for verification
   };
 
-  // Call with the new parameter order: peers, fileHash, options
-  await networkManager.downloadFile(peers, fileHash, downloadOptions);
+  // Call with contentId for looking up content and fileHash for verification
+  await networkManager.downloadFile(peers, contentId, downloadOptions);
 }
 
 /**
@@ -228,7 +277,7 @@ export async function connectToPeer(
 
 /**
  * Helper function to discover peers with specific content
- * @param infoHash - Info hash of the content to find peers for
+ * @param infoHash - Info hash of the content to find peers for (can be either contentId or fileHash)
  * @param announcePort - Port to announce for incoming connections
  * @param options - Peer discovery options
  * @returns Promise resolving to array of discovered peers
@@ -253,13 +302,15 @@ export async function findPeers(
  * Announce that you have a file available for sharing
  * This makes the file discoverable by other peers via DHT, PEX, and local discovery
  * 
- * @param fileHash - SHA-256 hash of the file to announce
+ * @param contentId - Content identifier for the file
+ * @param fileHash - SHA-256 hash of the file for verification
  * @param port - Port to listen for incoming connections
  * @param options - Configuration options for discovery
  * @returns Promise resolving to the discovery manager
  */
 export async function announceFile(
-  fileHash: string, 
+  contentId: string, 
+  fileHash: string,
   port: number,
   options: {
     nodeType?: NODE_TYPE,
@@ -287,9 +338,14 @@ export async function announceFile(
   // Start the discovery mechanisms
   await manager.start(port);
   
-  // Announce the file hash
+  // Announce the content ID (we'll use this for discovery)
   const priority = options.priority || AnnouncePriority.HIGH;
-  await manager.addInfoHash(fileHash, priority);
+  await manager.addInfoHash(contentId, priority);
+  
+  // Always store the mapping between contentId and fileHash
+  manager.addContentMapping(contentId, fileHash);
+  
+  debug(`Announced file with content ID ${contentId} and hash ${fileHash} on port ${port}`);
   
   return manager;
 }
@@ -378,7 +434,62 @@ export default {
   PexManager,
   PexMessageType,
   LocalDiscovery,
+  GunDiscovery,
   PeerDiscoveryManager,
   AnnouncePriority,
-  NODE_TYPE
-}; 
+  NODE_TYPE,
+  
+  // Content Availability Management System
+  ContentAvailabilityManager,
+  createContentAvailabilityManager,
+  PeerContentStatus,
+  ReportLevel,
+  DEFAULT_CONTENT_TTL,
+  REANNOUNCE_INTERVAL,
+  
+  // Discovery Content Integration
+  DiscoveryContentIntegration,
+  createDiscoveryContentIntegration,
+  VerificationResult
+};
+
+// Export content availability management system
+// Note: Only exporting the factory functions to avoid type issues
+export { createContentAvailabilityManager } from './lib/utils/content-availability-manager';
+export { createDiscoveryContentIntegration } from './lib/utils/discovery-content-integration';
+
+// Export types for content availability management
+export type { ContentAvailabilityOptions, PeerContentStatus, ReportLevel } from './lib/utils/content-availability-manager';
+export type { DiscoveryContentIntegrationOptions, VerificationResult } from './lib/utils/discovery-content-integration';
+
+// Export Cryptographic Identity
+export { 
+  CryptoIdentity, 
+  createCryptoIdentity, 
+  SignatureAlgorithm, 
+  SignedData 
+} from './lib/utils/crypto-identity';
+
+// Export Authenticated File Host
+export { 
+  AuthenticatedFileHost, 
+  createAuthenticatedFileHost, 
+  AuthenticatedFileHostOptions,
+  AuthenticatedFileInfo,
+  ConnectionChallenge, 
+  ConnectionResponse 
+} from './lib/interfaces/authenticated-file-host';
+
+// Export Authenticated Content Availability Manager
+export { 
+  AuthenticatedContentAvailabilityManager, 
+  createAuthenticatedContentAvailabilityManager,
+  AuthenticatedContentAvailabilityOptions,
+  ContentAnnouncement,
+  SignedContentAnnouncement,
+  ContentReport,
+  SignedContentReport,
+} from './lib/utils/authenticated-content-availability-manager';
+
+// Export the enum from authenticated manager separately to avoid conflicts
+export { VerificationResult as AuthenticatedVerificationResult } from './lib/utils/authenticated-content-availability-manager'; 
