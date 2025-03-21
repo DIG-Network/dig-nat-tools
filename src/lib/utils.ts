@@ -39,7 +39,7 @@ export {
   deletePortMapping
 } from './utils/nat-pmp';
 
-// Re-export from crypto utilities
+// Re-export from crypto utilities - now importing from the crypto module
 export {
   calculateSHA256,
   bufferToBase64,
@@ -48,4 +48,4 @@ export {
   generateRandomString,
   encryptAES,
   decryptAES
-} from './utils/crypto'; 
+} from './crypto/utils'; 

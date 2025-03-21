@@ -7,7 +7,7 @@
 
 import { EventEmitter } from 'events';
 import Gun from 'gun';
-import { CryptoIdentity, createCryptoIdentity } from '../src/lib/utils/crypto-identity';
+import { CryptoIdentity, createCryptoIdentity } from '../src/lib/crypto/identity';
 import { 
   AuthenticatedFileHost, 
   createAuthenticatedFileHost 

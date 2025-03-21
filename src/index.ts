@@ -462,13 +462,26 @@ export { createDiscoveryContentIntegration } from './lib/utils/discovery-content
 export type { ContentAvailabilityOptions, PeerContentStatus, ReportLevel } from './lib/utils/content-availability-manager';
 export type { DiscoveryContentIntegrationOptions, VerificationResult } from './lib/utils/discovery-content-integration';
 
-// Export Cryptographic Identity
+// Export Cryptographic Identity from the crypto module
 export { 
   CryptoIdentity, 
   createCryptoIdentity, 
   SignatureAlgorithm, 
-  SignedData 
-} from './lib/utils/crypto-identity';
+  SignedData,
+  signData,
+  verifySignedData
+} from './lib/crypto/identity';
+
+// Export core crypto utilities
+export {
+  calculateSHA256,
+  bufferToBase64,
+  base64ToBuffer,
+  generateRandomBuffer,
+  generateRandomString,
+  encryptAES,
+  decryptAES
+} from './lib/crypto/utils';
 
 // Export Authenticated File Host
 export { 
