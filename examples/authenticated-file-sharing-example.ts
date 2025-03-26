@@ -11,12 +11,12 @@ import { CryptoIdentity, createCryptoIdentity } from '../src/lib/crypto/identity
 import { 
   AuthenticatedFileHost, 
   createAuthenticatedFileHost 
-} from '../src/lib/interfaces/authenticated-file-host';
+} from '../src/lib/application/authenticated-file-host';
 import { 
   AuthenticatedContentAvailabilityManager,
   createAuthenticatedContentAvailabilityManager,
   PeerContentStatus
-} from '../src/lib/utils/authenticated-content-availability-manager';
+} from '../src/lib/application/authenticated-content-availability-manager';
 
 /**
  * Mock blockchain wallet for demo purposes

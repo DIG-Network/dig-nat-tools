@@ -5,20 +5,6 @@
  * and coordinating file serving capabilities.
  */
 import { HostOptions } from './types';
-export interface HostConfig {
-    hostFileCallback: (sha256: string, startChunk: number, chunkSize: number) => Promise<Buffer[] | null>;
-    gunOptions?: Record<string, any>;
-    gunInstance?: any;
-    chunkSize?: number;
-    stunServers?: string[];
-    tcpPort?: number;
-    udpPort?: number;
-    enableTCP?: boolean;
-    enableUDP?: boolean;
-    enableWebRTC?: boolean;
-    enableNATPMP?: boolean;
-    portMappingLifetime?: number;
-}
 /**
  * FileHost class for serving files to peers
  */
@@ -52,6 +38,13 @@ export default class FileHost {
     private _lastChokeUpdateTime;
     private _chokeUpdateInterval;
     private _superSeedMode;
+    private directoryWatcher;
+    private peerDiscoveryManager;
+    private announcedFiles;
+    private watchDir;
+    private watchOptions;
+    private dhtOptions;
+    private contentHashMap;
     /**
      * Create a new FileHost instance
      * @param options Host configuration options
@@ -73,6 +66,11 @@ export default class FileHost {
      */
     getUdpPort(): number;
     /**
+     * Get all announced files
+     * @returns Map of currently announced file hashes
+     */
+    getAnnouncedFiles(): Map<string, boolean>;
+    /**
      * Start the file host
      */
     start(): Promise<void>;
@@ -80,6 +78,10 @@ export default class FileHost {
      * Stop the file host
      */
     stop(): Promise<void>;
+    /**
+     * Start the directory watcher
+     */
+    private _startDirectoryWatcher;
     /**
      * Get all local IP addresses
      * @returns Array of local IP addresses
@@ -93,6 +95,16 @@ export default class FileHost {
      * Start UDP server
      */
     private _startUDPServer;
+    /**
+     * Add local connection options for TCP (both IPv4 and IPv6)
+     * @private
+     */
+    private _addLocalConnectionOptions;
+    /**
+     * Add local connection options for UDP (both IPv4 and IPv6)
+     * @private
+     */
+    private _addLocalUDPConnectionOptions;
     /**
      * Set up Gun message handling for discovery and relay
      */
@@ -240,4 +252,34 @@ export default class FileHost {
      * @param enable - Whether to enable or disable super seed mode
      */
     enableSuperSeedMode(enable?: boolean): void;
+    /**
+     * Get the DHT shard prefixes used by this host
+     * @returns Array of shard prefixes or empty array if DHT sharding is not enabled
+     */
+    getShardPrefixes(): string[];
+    /**
+     * Add a content ID to SHA-256 hash mapping
+     * @param contentId - Content identifier
+     * @param sha256 - SHA-256 hash of the content
+     */
+    addContentMapping(contentId: string, sha256: string): void;
+    /**
+     * Get SHA-256 hash for a content ID
+     * @param contentId - Content identifier
+     * @returns SHA-256 hash or undefined if not found
+     */
+    getHashForContent(contentId: string): string | undefined;
+    /**
+     * Get content ID for a SHA-256 hash (reverse lookup)
+     * @param sha256 - SHA-256 hash
+     * @returns Content ID or undefined if not found
+     */
+    getContentForHash(sha256: string): string | undefined;
+    /**
+     * Update methods that call hostFileCallback to use contentId and pass sha256 as needed
+     * @param contentId - Content identifier for the file
+     * @param startChunk - Starting chunk index
+     * @returns Promise resolving to array of buffers for the chunks or null
+     */
+    private getFileChunks;
 }

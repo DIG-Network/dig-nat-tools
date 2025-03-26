@@ -31,25 +31,34 @@ export enum CONNECTION_TYPE {
   
   // IPv6 related
   IPV6 = 'IPV6',                   // Native IPv6 connection
-  IPV6_TUNNEL = 'IPV6_TUNNEL'      // IPv6 tunneling (6to4, Teredo)
-}
-
-/**
- * Node types for DHT participation and resource allocation
- */
-export enum NODE_TYPE {
-  UNKNOWN = 'unknown',
-  STANDARD = 'standard',
-  RELAY = 'relay',
-  BOOTSTRAP = 'bootstrap',
-  LIGHT = 'light',     // Minimal resource usage, limited DHT participation
-  SUPER = 'super'      // High resource allocation, extensive caching, potential relay
+  IPV6_TUNNEL = 'IPV6_TUNNEL',      // IPv6 tunneling (6to4, Teredo)
+  
+  // New connection type
+  STUN_GUN = 'STUN_GUN'  // Add STUN with GunJS signaling
 }
 
 /**
  * Default chunk size for file transfers (1MB)
  */
 export const DEFAULT_CHUNK_SIZE = 1024 * 1024;
+
+/**
+ * Default timeout for peer connections (30 seconds)
+ */
+export const DEFAULT_PEER_TIMEOUT = 30000;
+
+/**
+ * Default port for peer discovery
+ */
+export const DEFAULT_DISCOVERY_PORT = 6881;
+
+/**
+ * Default port range for peer connections
+ */
+export const DEFAULT_PORT_RANGE = {
+  min: 49152,
+  max: 65535
+};
 
 /**
  * Default connection timeout in milliseconds (30 seconds)
@@ -60,11 +69,6 @@ export const DEFAULT_CONNECTION_TIMEOUT = 30000;
  * Default request timeout in milliseconds (10 seconds)
  */
 export const DEFAULT_REQUEST_TIMEOUT = 10000;
-
-/**
- * Default peer connection timeout in milliseconds (45 seconds)
- */
-export const DEFAULT_PEER_TIMEOUT = 45000;
 
 /**
  * Default concurrency for multi-peer downloads (3 peers)

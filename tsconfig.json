@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "module": "CommonJS",
+    "module": "ESNext",
     "moduleResolution": "node",
     "declaration": true,
     "outDir": "./dist",
@@ -16,8 +16,13 @@
     "types": ["node"],
     "downlevelIteration": true,
     "strictNullChecks": false,
-    "allowUnusedLabels": true,
-    "noUnusedLocals": false,
+    "allowUnusedLabels": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "verbatimModuleSyntax": true,
+    "moduleDetection": "force",
+    "allowJs": false,
     "typeRoots": ["./node_modules/@types", "./src/types"]
   },
   "include": ["src/**/*"],

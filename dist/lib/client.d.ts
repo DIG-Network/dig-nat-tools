@@ -4,7 +4,10 @@
  * Handles downloading files from peers, verifying integrity, and
  * providing resumable download capabilities.
  */
-import { ClientOptions, DownloadOptions } from './types';
+import * as dgram from 'dgram';
+import * as net from 'net';
+import { DownloadOptions } from './types';
+import { CONNECTION_TYPE } from '../types/constants';
 /**
  * FileClient class for downloading files from peers
  */
@@ -19,6 +22,8 @@ export default class FileClient {
     private initPromise;
     private enableWebRTC;
     private enableNATPMP;
+    private enableIPv6;
+    private preferIPv6;
     private externalIPv4;
     private externalIPv6;
     private portMappingLifetime;
@@ -36,7 +41,22 @@ export default class FileClient {
      * Create a new file client instance
      * @param config - Client configuration
      */
-    constructor(config?: ClientOptions);
+    constructor(config?: {
+        chunkSize?: number;
+        stunServers?: string[];
+        requestTimeout?: number;
+        enableWebRTC?: boolean;
+        enableNATPMP?: boolean;
+        enableIPv6?: boolean;
+        preferIPv6?: boolean;
+        portMappingLifetime?: number;
+        gunInstance?: any;
+        gunOptions?: Record<string, any>;
+        existingSocket?: net.Socket | dgram.Socket;
+        connectionType?: CONNECTION_TYPE;
+        remoteAddress?: string;
+        remotePort?: number;
+    });
     /**
      * Initialize the client
      * @returns Promise that resolves when initialization is complete

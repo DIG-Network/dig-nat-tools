@@ -1,3 +1,30 @@
+/**
+ * Type definitions for Gun.js
+ */
+
+/**
+ * Gun chain interface
+ */
+export interface GunChain {
+  get(key: string): GunChain;
+  put(data: unknown): GunChain;
+  on(callback: (data: unknown, key: string) => void): GunChain;
+  once(callback: (data: unknown, key: string) => void): GunChain;
+  set(data: unknown): GunChain;
+  map(): GunChain;
+  path(path: string): GunChain;
+  back(): GunChain;
+  off(): void;
+}
+
+/**
+ * Gun instance interface
+ */
+export interface GunInstance extends GunChain {
+  opt(options: Record<string, unknown>): GunInstance;
+  user(): GunInstance;
+}
+
 declare module 'gun' {
   interface GunOptions {
     peers?: string[];

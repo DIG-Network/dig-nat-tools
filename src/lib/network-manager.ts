@@ -7,21 +7,63 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import Gun from 'gun';
 import { EventEmitter } from 'events';
-
-import FileClient from './client';
-import { connectWithNATTraversal, NATTraversalOptions, NATTraversalResult } from './utils/nat-traversal-manager';
-import { CONNECTION_TYPE } from '../types/constants';
 import Debug from 'debug';
+
+// Import from transport layer
+import { FileClient, FileHost } from './transport';
+import { DownloadOptions } from './transport/types';
+
+// Import from connection layer
+import { 
+  connectWithNATTraversal, 
+  NATTraversalOptions, 
+  NATTraversalResult,
+  connectionRegistry
+} from './connection';
+
+// Import from discovery layer
+import { 
+  PeerDiscoveryManager, 
+  DiscoveredPeer,
+  DHTClient as DHTClientType,
+  AnnouncePriority,
+  NODE_TYPE
+} from './discovery/peer';
+
+// Import from types and utils
+import { CONNECTION_TYPE } from '../types/constants';
 import { MultiDownloadOptions } from './types';
-import { connectionRegistry } from './utils/connection-registry';
-import { PeerDiscoveryManager, DiscoveredPeer } from './utils/peer-discovery-manager';
-import { DHTClient } from './utils/dht';
-import { FileHost } from './host';
-import { promiseWithTimeout } from './utils';
-import { calculateSHA256 } from './utils';
-import { NODE_TYPE } from '../types/constants';
 
 const debug = Debug('dig-nat-tools:network-manager');
+
+// Extended interfaces for type safety
+interface FileHostWithMethods extends FileHost {
+  getListeningPorts(): { tcp?: number; udp?: number };
+  hasFile(contentId: string): boolean;
+}
+
+interface TraversalResultWithNetwork extends NATTraversalResult {
+  address?: string;
+  port?: number;
+}
+
+interface ExtendedNATTraversalOptions extends NATTraversalOptions {
+  remoteId: string;
+  peerId: string;
+  gun: any;
+  timeout: number;
+  iceOptions: {
+    stunServers: string[];
+    turnServer?: string;
+    turnUsername?: string;
+    turnPassword?: string;
+  };
+}
+
+// Import Gun loader function
+function loadGun(): any {
+  return Gun;
+}
 
 // Helper function to generate a random port
 function getRandomPort() {
@@ -147,8 +189,8 @@ class NetworkManager extends EventEmitter {
   // Add content mapping property
   private _contentHashMap: Map<string, string> = new Map(); // Maps contentId to fileHash
   private peerDiscovery: PeerDiscoveryManager | null = null;
-  private host: FileHost | null = null;
-  private dht: DHTClient | null = null;
+  private host: FileHostWithMethods | null = null;
+  private dht: typeof DHTClientType | null = null;
   private gun: any = null;
   private fileClients: Map<string, FileClient> = new Map();
   private nodeId: string;
@@ -275,13 +317,17 @@ class NetworkManager extends EventEmitter {
     }
     
     this._infoHash = contentId; // Store the content ID for discovery
+    if (this.peerDiscovery) {
+      // Add the info hash to peer discovery with high priority
+      await this.peerDiscovery.addInfoHash(this._infoHash, AnnouncePriority.HIGH);
+    }
     this.downloadStartTime = Date.now();
     
     debug(`Starting multi-peer download of content ${contentId} (hash: ${fileHash}) from ${peers.length} peers`);
     
     // Start the discovery manager if needed
     if (!this._discoveryManager || !this._isStarted) {
-      await this._discoveryManager.start(this._options.announcePort);
+      await this._discoveryManager.start();
       this._isStarted = true;
     }
     
@@ -570,45 +616,27 @@ class NetworkManager extends EventEmitter {
     }
     
     try {
-      // For now, assume connectionRegistry.getSuccessfulMethods exists and returns an array of CONNECTION_TYPE
-      // We would need to implement this method in the actual ConnectionRegistry class
       const previousMethods = connectionRegistry.getSuccessfulMethods ? 
         connectionRegistry.getSuccessfulMethods(peerId) : [];
       
-      let natOptions: NATTraversalOptions = {
-        localId: this.localId,
+      const natOptions: ExtendedNATTraversalOptions = {
         remoteId: peerId,
+        peerId: peerId,
         gun: this.gunInstance,
-        localTCPPort: this.localTCPPort,
-        localUDPPort: this.localUDPPort,
         timeout: this.peerTimeout,
-        saveToRegistry: true,
         iceOptions: {
           stunServers: this.stunServers,
-          turnServer: this.turnServer,
-          turnUsername: this.turnUsername,
-          turnPassword: this.turnPassword
-        },
-        turnOptions: {
           turnServer: this.turnServer,
           turnUsername: this.turnUsername,
           turnPassword: this.turnPassword
         }
       };
       
-      // If we have previously successful methods and the NATTraversalOptions interface supports it,
-      // add them as an additional property (this would require extending the interface)
-      if (previousMethods.length > 0) {
-        debug(`Using previously successful connection methods for ${peerId}: ${previousMethods.join(', ')}`);
-        // Note: This would need to be properly typed in the NATTraversalOptions interface
-        (natOptions as any).preferredMethods = previousMethods;
-      }
-      
       // Use NAT traversal manager to establish connection
-      const traversalResult = await connectWithNATTraversal(natOptions);
+      const traversalResult = await connectWithNATTraversal(natOptions) as TraversalResultWithNetwork;
       
-      if (!traversalResult.success || !traversalResult.socket || !traversalResult.connectionType) {
-        throw new Error(`Failed to connect to peer: ${traversalResult.error || 'Unknown error'}`);
+      if (!traversalResult.socket || !traversalResult.connectionType) {
+        throw new Error('Failed to establish connection');
       }
       
       // Create client with the established socket
@@ -626,7 +654,6 @@ class NetworkManager extends EventEmitter {
       
       // Store the connection type used
       if (traversalResult.connectionType) {
-        // Use type assertion to ensure it's treated as CONNECTION_TYPE
         this.connectionTypes[peerId] = traversalResult.connectionType as CONNECTION_TYPE;
       }
       
@@ -1316,15 +1343,22 @@ class NetworkManager extends EventEmitter {
           return;
         }
         
-        // Find peers for this file hash
-        const newPeers = await this._discoveryManager.findPeers(fileHash);
-        
-        if (newPeers.length === 0) {
-          debug(`No new peers found for ${fileHash.substring(0, 6)}...`);
+        // Use the current info hash for peer discovery
+        const currentInfoHash = this._infoHash;
+        if (!currentInfoHash) {
+          debug('No active info hash for peer discovery');
           return;
         }
         
-        debug(`Found ${newPeers.length} potential new peers for ${fileHash.substring(0, 6)}...`);
+        // Find peers for this info hash
+        const newPeers = await this._discoveryManager.findPeers(currentInfoHash);
+        
+        if (newPeers.length === 0) {
+          debug(`No new peers found for ${currentInfoHash.substring(0, 6)}...`);
+          return;
+        }
+        
+        debug(`Found ${newPeers.length} potential new peers for ${currentInfoHash.substring(0, 6)}...`);
         
         // Convert discovered peers to peer IDs
         const peersToAdd: string[] = [];
@@ -1455,39 +1489,36 @@ class NetworkManager extends EventEmitter {
         await this._initializeGun();
       }
       
-      // Create file host
+      // Create file host with extended interface
       this.host = new FileHost({
         hostFileCallback: this._hostFileCallback.bind(this),
         chunkSize: this.chunkSize,
         stunServers: this.stunServers,
         gunOptions: this.gunOptions,
-        nodeType: NODE_TYPE.STANDARD // Default to standard node
-      });
+        nodeType: NODE_TYPE.STANDARD as any // Cast to any to avoid type mismatch
+      }) as FileHostWithMethods;
       
       await this.host.start();
-      
-      // Get the host's listening ports
-      const hostPorts = this.host.getListeningPorts();
       
       // Initialize peer discovery
       this.peerDiscovery = new PeerDiscoveryManager({
         enableDHT: true,
         enablePEX: true,
         enableLocal: true,
-        enableGun: !!this.gun, // Enable Gun discovery if Gun is initialized
-        enableIPv6: false, // Default to IPv4 for backward compatibility
-        announcePort: hostPorts.tcp || 0,
+        enableGun: !!this.gun,
+        enableIPv6: false,
+        announcePort: 0, // Let the system assign a port
         enablePersistence: true,
         persistenceDir: './.dig-nat-tools',
-        gun: this.gun, // Pass Gun instance if available
+        gun: this.gun,
         nodeId: this.nodeId
       });
       
-      // Start peer discovery without parameters
+      // Start peer discovery
       await this.peerDiscovery.start();
       
       // Listen for peer discovery events
-      this.peerDiscovery.on('peer:discovered', (peer) => {
+      this.peerDiscovery.on('peer:discovered', (peer: DiscoveredPeer) => {
         debug(`Discovered peer: ${peer.address}:${peer.port} (${peer.source})`);
         this.emit('peer:discovered', peer);
       });
@@ -1511,6 +1542,11 @@ class NetworkManager extends EventEmitter {
     }
     
     debug('Stopping network manager');
+    
+    // Remove the current info hash from peer discovery
+    if (this._infoHash && this.peerDiscovery) {
+      this.peerDiscovery.removeInfoHash(this._infoHash);
+    }
     
     // Close all file clients
     for (const client of this.fileClients.values()) {

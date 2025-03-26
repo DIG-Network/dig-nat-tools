@@ -1,198 +1,92 @@
 /**
- * Entry point for the Dig NAT Tools library
- * Provides tools for NAT traversal and P2P file sharing
+ * Dig NAT Tools - Main Export
+ * 
+ * This library provides tools for NAT traversal and P2P file sharing
  */
 
 // Import Debug for logging
 import Debug from 'debug';
 const debug = Debug('dig-nat-tools:index');
 
-// Export types
+// Export version information
+export const VERSION = '1.1.1';
+
+// Export constants
 export * from './types/constants';
 
-// Export main classes
-import FileHost from './lib/host';
-import FileClient from './lib/client';
-import NetworkManager from './lib/network-manager';
+// Import main classes
+import { NetworkManager } from './lib';
+import FileHost from './lib/transport/host';
+import FileClient from './lib/transport/client';
 import { CONNECTION_TYPE } from './types/constants';
 import { 
+  createAuthenticatedFileHost, 
+  AuthenticatedFileHost, 
+  AuthenticatedFileHostOptions 
+} from './lib/application/authenticated-file-host';
+import { NODE_TYPE } from './lib/discovery/peer/peer-discovery-manager';
+
+// Import types from layers
+import type { 
   HostOptions, 
   ClientOptions, 
   NetworkManagerOptions, 
-  DownloadOptions, 
-  MultiDownloadOptions, 
-  DownloadResult, 
-  PeerStats, 
-  GunOptions 
+  MultiDownloadOptions,
+  DownloadOptions
 } from './lib/types';
 
-// Import utility functions
-import {
-  parseConnectionString,
-  createConnectionString,
-  sleep,
-  safeJSONParse,
-  discoverPublicIPs,
-  getLocalIPs,
-  isPrivateIP,
-  getRandomPort,
-  bufferToBase64,
-  base64ToBuffer,
-  getRandomArrayValue,
-  shuffleArray,
-  promiseWithTimeout,
-  calculateSHA256
-} from './lib/utils';
+// Import from layers - using the new organized structure
+import * as Application from './lib/application';
+import * as Connection from './lib/connection';
+import * as Crypto from './lib/crypto';
+import * as Discovery from './lib/discovery';
+import * as Transport from './lib/transport';
 
-// Import NAT traversal utilities from existing codebase
-import { 
-  upnpClient, 
-  createUPnPMapping, 
-  deleteUPnPMapping, 
-  getExternalAddressUPnP 
-} from './lib/utils/upnp';
-import { connectionRegistry } from './lib/utils/connection-registry';
-import { 
-  performTCPHolePunch,
-  performUDPHolePunch,
-  performTCPSimultaneousOpen 
-} from './lib/utils/hole-punch';
-import { 
-  ICEClient, 
-  ICECandidate,
-  connectWithICE,
-  ICECandidateType 
-} from './lib/utils/ice';
-import { 
-  TURNClient, 
-  createTURNAllocation 
-} from './lib/utils/turn';
-import { NATTraversalManager, connectWithNATTraversal } from './lib/utils/nat-traversal-manager';
+// Import NAT traversal function
+import { connectWithNATTraversal } from './lib/connection/traversal';
 
-// Import new peer discovery mechanisms
-import { DHTClient } from './lib/utils/dht';
-import { PexManager, PexMessageType } from './lib/utils/pex';
-import { LocalDiscovery } from './lib/utils/local-discovery';
-import { GunDiscovery } from './lib/utils/gun-discovery';
-import { PeerDiscoveryManager, PeerDiscoveryOptions, AnnouncePriority } from './lib/utils/peer-discovery-manager';
-import { NODE_TYPE } from './types/constants';
+// Re-export the layers for advanced usage
+export { Application, Connection, Crypto, Discovery, Transport };
 
-// Type imports (these don't produce runtime code)
-import type { PexPeer } from './lib/utils/pex';
-import type { LocalPeer } from './lib/utils/local-discovery';
-import type { DiscoveredPeer } from './lib/utils/peer-discovery-manager';
-import type { GunDiscoveryOptions } from './lib/utils/gun-discovery';
+// Export the NetworkManager as the primary class
+export { NetworkManager };
+export { FileHost, FileClient };
 
-// Import and export the content availability management system
-import { 
-  ContentAvailabilityManager, 
-  createContentAvailabilityManager,
-  DEFAULT_CONTENT_TTL,
-  REANNOUNCE_INTERVAL
-} from './lib/utils/content-availability-manager';
+// Re-export types with proper 'export type' syntax for TypeScript
+export type { DownloadOptions } from './lib/transport/types';
+export type { TransportOptions } from './lib/transport';
+export type { DiscoveredPeer } from './lib/discovery/peer';
 
-import { 
-  DiscoveryContentIntegration,
-  createDiscoveryContentIntegration
-} from './lib/utils/discovery-content-integration';
+// Export constants for easier access
+export { CONNECTION_TYPE, NODE_TYPE };
 
-// Export types for content availability management
-import type { 
-  PeerContentStatus, 
-  ReportLevel 
-} from './lib/utils/content-availability-manager';
-
-import type { 
-  VerificationResult 
-} from './lib/utils/discovery-content-integration';
-
-// Export all types and values
-export { 
-  ContentAvailabilityManager, 
-  createContentAvailabilityManager,
-  DEFAULT_CONTENT_TTL,
-  REANNOUNCE_INTERVAL,
-  DiscoveryContentIntegration,
-  createDiscoveryContentIntegration
-};
-
-export type { 
-  PeerContentStatus, 
-  ReportLevel,
-  VerificationResult 
-};
-
-// Main exports
-export {
-  FileHost,
-  FileClient,
-  NetworkManager,
-  
-  // Types
-  HostOptions,
-  ClientOptions,
-  NetworkManagerOptions,
-  DownloadOptions,
-  MultiDownloadOptions,
-  DownloadResult,
-  PeerStats,
-  GunOptions,
-  CONNECTION_TYPE,
-  
-  // Utility functions
-  parseConnectionString,
-  createConnectionString,
-  sleep,
-  safeJSONParse,
-  discoverPublicIPs,
-  calculateSHA256,
-  getLocalIPs,
-  isPrivateIP,
-  getRandomPort,
-  bufferToBase64,
-  base64ToBuffer,
-  getRandomArrayValue,
-  shuffleArray,
-  promiseWithTimeout,
-  
-  // NAT traversal utilities
-  upnpClient,
-  createUPnPMapping,
-  deleteUPnPMapping,
-  getExternalAddressUPnP,
-  connectionRegistry,
-  performTCPHolePunch,
-  performUDPHolePunch,
-  performTCPSimultaneousOpen,
-  connectWithICE,
-  ICEClient,
-  ICECandidateType,
-  TURNClient,
-  createTURNAllocation,
-  NATTraversalManager,
-  connectWithNATTraversal,
-  
-  // Peer discovery mechanisms
-  DHTClient,
-  PexManager,
-  PexMessageType,
-  LocalDiscovery,
-  GunDiscovery,
-  PeerDiscoveryManager,
-  AnnouncePriority,
-  NODE_TYPE
-};
-
-// Also export types
-export type { PexPeer, LocalPeer, DiscoveredPeer, ICECandidate, GunDiscoveryOptions, PeerDiscoveryOptions };
+// Core factories and helper functions
 
 /**
- * Create a new FileHost instance with default settings
+ * Create a new authenticated file host instance with default settings
  * @param options - Host configuration options
- * @returns A configured FileHost instance
+ * @returns A configured AuthenticatedFileHost instance
  */
-export function createHost(options: HostOptions = {} as HostOptions) {
-  return new FileHost(options);
+export function createHost(options: Partial<AuthenticatedFileHostOptions> = {}): AuthenticatedFileHost {
+  // Generate a random private key if not provided
+  if (!options.privateKey) {
+    const crypto = require('crypto');
+    options.privateKey = crypto.randomBytes(32);
+  }
+
+  // Set default port if not provided
+  if (!options.port) {
+    options.port = 0; // Let the system assign a random port
+  }
+
+  // Set default directory if not provided
+  if (!options.directory) {
+    const os = require('os');
+    const path = require('path');
+    options.directory = path.join(os.tmpdir(), 'dig-nat-tools-host');
+  }
+
+  return createAuthenticatedFileHost(options as AuthenticatedFileHostOptions);
 }
 
 /**
@@ -200,7 +94,7 @@ export function createHost(options: HostOptions = {} as HostOptions) {
  * @param options - Client configuration options
  * @returns A configured FileClient instance
  */
-export function createClient(options: ClientOptions = {} as ClientOptions) {
+export function createClient(options: any = {}): FileClient {
   return new FileClient(options);
 }
 
@@ -209,7 +103,7 @@ export function createClient(options: ClientOptions = {} as ClientOptions) {
  * @param options - Network manager configuration options
  * @returns A configured NetworkManager instance
  */
-export function createNetworkManager(options: NetworkManagerOptions = {} as NetworkManagerOptions) {
+export function createNetworkManager(options: any = {}): NetworkManager {
   return new NetworkManager(options);
 }
 
@@ -267,6 +161,7 @@ export async function connectToPeer(
   gunInstance: any,
   options: any = {}
 ) {
+  // Use the imported NAT traversal function
   return connectWithNATTraversal({
     localId,
     remoteId,
@@ -285,15 +180,16 @@ export async function connectToPeer(
 export async function findPeers(
   infoHash: string,
   announcePort: number = 0,
-  options: Partial<PeerDiscoveryOptions> = {}
-): Promise<DiscoveredPeer[]> {
-  const discoveryManager = new PeerDiscoveryManager({
+  options: Partial<Discovery.PeerDiscoveryOptions> = {}
+): Promise<Discovery.DiscoveredPeer[]> {
+  const discoveryManager = new Discovery.PeerDiscoveryManager({
     announcePort,
     enableIPv6: options.enableIPv6 !== undefined ? options.enableIPv6 : false,
     ...options
   });
   
-  await discoveryManager.start(announcePort);
+  // Start discovery with the correct parameters
+  await discoveryManager.start();
   const peers = await discoveryManager.findPeers(infoHash);
   return peers;
 }
@@ -320,12 +216,12 @@ export async function announceFile(
     enableIPv6?: boolean,
     enablePersistence?: boolean,
     persistenceDir?: string,
-    priority?: AnnouncePriority
+    priority?: Discovery.AnnouncePriority
   } = {}
-): Promise<PeerDiscoveryManager> {
+): Promise<Discovery.PeerDiscoveryManager> {
   // Create a peer discovery manager with the provided options
-  const manager = new PeerDiscoveryManager({
-    nodeType: options.nodeType || NODE_TYPE.STANDARD,
+  const manager = new Discovery.PeerDiscoveryManager({
+    nodeType: options.nodeType as any, // Cast to any to avoid enum mismatch
     enableDHT: options.enableDHT !== undefined ? options.enableDHT : true,
     enableLocal: options.enableLocal !== undefined ? options.enableLocal : true,
     enablePEX: options.enablePEX !== undefined ? options.enablePEX : true,
@@ -335,11 +231,11 @@ export async function announceFile(
     announcePort: port
   });
   
-  // Start the discovery mechanisms
-  await manager.start(port);
+  // Start the discovery mechanisms with correct parameters
+  await manager.start();
   
   // Announce the content ID (we'll use this for discovery)
-  const priority = options.priority || AnnouncePriority.HIGH;
+  const priority = options.priority || Discovery.AnnouncePriority.HIGH;
   await manager.addInfoHash(contentId, priority);
   
   // Always store the mapping between contentId and fileHash
@@ -371,9 +267,9 @@ export async function addManualPeer(
     enableLocal?: boolean,
     enableIPv6?: boolean
   } = {}
-): Promise<PeerDiscoveryManager> {
+): Promise<Discovery.PeerDiscoveryManager> {
   // Create a peer discovery manager with the provided options
-  const manager = new PeerDiscoveryManager({
+  const manager = new Discovery.PeerDiscoveryManager({
     enableDHT: options.enableDHT !== undefined ? options.enableDHT : false,
     enableLocal: options.enableLocal !== undefined ? options.enableLocal : false,
     enablePEX: options.enablePEX !== undefined ? options.enablePEX : false,
@@ -381,7 +277,7 @@ export async function addManualPeer(
     announcePort: port
   });
   
-  // Start the discovery mechanisms
+  // Start the discovery mechanisms with the correct parameters
   await manager.start();
   
   // Add the manual peer
@@ -390,119 +286,34 @@ export async function addManualPeer(
   return manager;
 }
 
-// Export connection types
-export const ConnectionTypes = CONNECTION_TYPE;
-
 // Default export for the entire library
 export default {
+  // Main classes
+  NetworkManager,
   FileHost,
   FileClient,
-  NetworkManager,
+  
+  // Core factory functions
   createHost,
   createClient,
   createNetworkManager,
+  
+  // Helper functions
   downloadFile,
   connectToPeer,
   findPeers,
   announceFile,
   addManualPeer,
-  ConnectionTypes,
   
-  // Utilities
-  discoverPublicIPs,
-  calculateSHA256,
-  
-  // NAT traversal exports
-  upnpClient,
-  createUPnPMapping,
-  deleteUPnPMapping,
-  getExternalAddressUPnP,
-  connectionRegistry,
-  performTCPHolePunch,
-  performUDPHolePunch,
-  performTCPSimultaneousOpen,
-  connectWithICE,
-  ICEClient,
-  ICECandidateType,
-  TURNClient,
-  createTURNAllocation,
-  NATTraversalManager,
-  connectWithNATTraversal,
-  
-  // Peer discovery mechanisms
-  DHTClient,
-  PexManager,
-  PexMessageType,
-  LocalDiscovery,
-  GunDiscovery,
-  PeerDiscoveryManager,
-  AnnouncePriority,
+  // Constants
+  CONNECTION_TYPE,
   NODE_TYPE,
+  VERSION,
   
-  // Content Availability Management System
-  ContentAvailabilityManager,
-  createContentAvailabilityManager,
-  PeerContentStatus,
-  ReportLevel,
-  DEFAULT_CONTENT_TTL,
-  REANNOUNCE_INTERVAL,
-  
-  // Discovery Content Integration
-  DiscoveryContentIntegration,
-  createDiscoveryContentIntegration,
-  VerificationResult
-};
-
-// Export content availability management system
-// Note: Only exporting the factory functions to avoid type issues
-export { createContentAvailabilityManager } from './lib/utils/content-availability-manager';
-export { createDiscoveryContentIntegration } from './lib/utils/discovery-content-integration';
-
-// Export types for content availability management
-export type { ContentAvailabilityOptions, PeerContentStatus, ReportLevel } from './lib/utils/content-availability-manager';
-export type { DiscoveryContentIntegrationOptions, VerificationResult } from './lib/utils/discovery-content-integration';
-
-// Export Cryptographic Identity from the crypto module
-export { 
-  CryptoIdentity, 
-  createCryptoIdentity, 
-  SignatureAlgorithm, 
-  SignedData,
-  signData,
-  verifySignedData
-} from './lib/crypto/identity';
-
-// Export core crypto utilities
-export {
-  calculateSHA256,
-  bufferToBase64,
-  base64ToBuffer,
-  generateRandomBuffer,
-  generateRandomString,
-  encryptAES,
-  decryptAES
-} from './lib/crypto/utils';
-
-// Export Authenticated File Host
-export { 
-  AuthenticatedFileHost, 
-  createAuthenticatedFileHost, 
-  AuthenticatedFileHostOptions,
-  AuthenticatedFileInfo,
-  ConnectionChallenge, 
-  ConnectionResponse 
-} from './lib/interfaces/authenticated-file-host';
-
-// Export Authenticated Content Availability Manager
-export { 
-  AuthenticatedContentAvailabilityManager, 
-  createAuthenticatedContentAvailabilityManager,
-  AuthenticatedContentAvailabilityOptions,
-  ContentAnnouncement,
-  SignedContentAnnouncement,
-  ContentReport,
-  SignedContentReport,
-} from './lib/utils/authenticated-content-availability-manager';
-
-// Export the enum from authenticated manager separately to avoid conflicts
-export { VerificationResult as AuthenticatedVerificationResult } from './lib/utils/authenticated-content-availability-manager'; 
+  // Layer exports for advanced usage
+  Application,
+  Connection,
+  Crypto,
+  Discovery,
+  Transport
+}; 

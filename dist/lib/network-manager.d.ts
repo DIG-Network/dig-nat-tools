@@ -1,6 +1,7 @@
 /**
  * Network Manager that handles connections and file transfers
  */
+import { EventEmitter } from 'events';
 import { CONNECTION_TYPE } from '../types/constants';
 import { MultiDownloadOptions } from './types';
 /**
@@ -22,6 +23,13 @@ interface NetworkManagerConfig {
     minConcurrency?: number;
     bandwidthCheckInterval?: number;
     slowPeerThreshold?: number;
+    enableDHT?: boolean;
+    enableLocal?: boolean;
+    enablePEX?: boolean;
+    enableIPv6?: boolean;
+    maxPeers?: number;
+    announcePort?: number;
+    enableContinuousDiscovery?: boolean;
 }
 /**
  * Statistics for a peer's contribution to a download
@@ -46,7 +54,26 @@ interface DownloadResult {
     totalTime: number;
     connectionTypes: Record<string, CONNECTION_TYPE>;
 }
-declare class NetworkManager {
+/**
+ * Options for configuring the NetworkManager
+ */
+export interface NetworkManagerOptions {
+    /** Enable DHT peer discovery */
+    enableDHT?: boolean;
+    /** Enable local network peer discovery */
+    enableLocal?: boolean;
+    /** Enable peer exchange (PEX) */
+    enablePEX?: boolean;
+    /** Enable IPv6 support */
+    enableIPv6?: boolean;
+    /** Enable logging */
+    enableLogging?: boolean;
+    /** Maximum number of simultaneous peer connections */
+    maxPeers?: number;
+    /** Port to announce for receiving connections */
+    announcePort?: number;
+}
+declare class NetworkManager extends EventEmitter {
     private chunkSize;
     private concurrency;
     private peerTimeout;
@@ -70,19 +97,40 @@ declare class NetworkManager {
     private _pieceRarityMap;
     private _isInEndgameMode;
     private _endgameModeThreshold;
+    private _discoveryManager;
+    private _options;
+    private _infoHash;
+    private _isStarted;
+    private _activePeers;
+    private _continuousDiscoveryInterval;
+    private _maxPeersToConnect;
+    private _isContinuousDiscoveryEnabled;
+    private _contentHashMap;
+    private peerDiscovery;
+    private host;
+    private dht;
+    private gun;
+    private fileClients;
+    private nodeId;
+    private started;
     /**
      * Create a new NetworkManager instance
      * @param config - Configuration options
      */
     constructor(config?: NetworkManagerConfig);
     /**
-     * Download a file from multiple peers
-     * @param peers - Array of peer identifiers
-     * @param fileHash - SHA-256 hash of the file to download
-     * @param options - Download options
-     * @returns Promise that resolves to download result
+     * Toggle continuous peer discovery during downloads
+     * @param enabled - Whether to enable continuous peer discovery
      */
-    downloadFile(peers: string[], fileHash: string, options: MultiDownloadOptions): Promise<DownloadResult>;
+    setEnableContinuousDiscovery(enabled: boolean): void;
+    /**
+     * Download a file from multiple peers
+     * @param peers - Array of peer IDs
+     * @param contentId - Content identifier for the file
+     * @param options - Download options
+     * @returns Promise with download result
+     */
+    downloadFile(peers: string[], contentId: string, options: MultiDownloadOptions): Promise<DownloadResult>;
     /**
      * Connect to multiple peers
      *
@@ -111,12 +159,11 @@ declare class NetworkManager {
      */
     private _closeAllConnections;
     /**
-     * Get file metadata from any available peer
-     *
+     * Get metadata about a file from any available peer
      * @private
      * @param peers - Array of peer IDs
-     * @param fileHash - SHA-256 hash of the file
-     * @returns Promise with file metadata
+     * @param fileHash - SHA-256 hash of the file (used for verification and content access)
+     * @returns Promise with file size and chunks information
      */
     private _getFileMetadata;
     /**
@@ -192,10 +239,10 @@ declare class NetworkManager {
      */
     private _getShuffledPeers;
     /**
-     * Initialize piece rarity tracking for a file
+     * Initialize the piece rarity map by querying peers for which pieces they have
      * @private
      * @param peers - Array of peer IDs
-     * @param fileHash - Hash of the file
+     * @param fileHash - SHA-256 hash of the file (used for content access)
      * @param totalPieces - Total number of pieces in the file
      */
     private _initializePieceRarity;
@@ -235,5 +282,63 @@ declare class NetworkManager {
      * @returns Array of selected peer IDs
      */
     private _selectRandomPeers;
+    /**
+     * Start continuous peer discovery for the current download
+     * @private
+     * @param fileHash - Hash of the file being downloaded
+     * @param peerStats - Current peer statistics
+     */
+    private _startContinuousDiscovery;
+    /**
+     * Stop continuous peer discovery
+     * @private
+     */
+    private _stopContinuousDiscovery;
+    /**
+     * Add a mapping between content ID and SHA-256 hash
+     * @param contentId - Content identifier
+     * @param fileHash - SHA-256 hash for verification
+     */
+    addContentMapping(contentId: string, fileHash: string): void;
+    /**
+     * Get SHA-256 hash for a content ID
+     * @param contentId - Content identifier
+     * @returns SHA-256 hash or undefined if not found
+     */
+    getHashForContent(contentId: string): string | undefined;
+    /**
+     * Get content ID for a SHA-256 hash (reverse lookup)
+     * @param fileHash - SHA-256 hash
+     * @returns Content ID or undefined if not found
+     */
+    getContentForHash(fileHash: string): string | undefined;
+    /**
+     * Start the network manager
+     */
+    start(): Promise<void>;
+    /**
+     * Stop the network manager
+     */
+    stop(): Promise<void>;
+    /**
+     * Host file callback that maps content ID to file chunks
+     * @param contentId - Content ID or file hash
+     * @param startChunk - Starting chunk number
+     * @param chunkSize - Size of each chunk
+     * @param sha256 - Optional SHA-256 hash for verification
+     * @returns Promise resolving to array of chunks or null if not found
+     * @private
+     */
+    private _hostFileCallback;
+    /**
+     * Generate a node ID
+     * @private
+     */
+    private _generateNodeId;
+    /**
+     * Initialize Gun.js
+     * @private
+     */
+    private _initializeGun;
 }
 export default NetworkManager;

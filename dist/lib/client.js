@@ -47,14 +47,12 @@ const fs = __importStar(require("fs-extra"));
 const crypto = __importStar(require("crypto"));
 const path = __importStar(require("path"));
 const debug_1 = __importDefault(require("debug"));
-// Use dynamic import for node-datachannel
-// import * as dc from 'node-datachannel';
-const dgram = __importStar(require("dgram"));
-const net = __importStar(require("net"));
 const uuid_1 = require("uuid");
 const constants_1 = require("../types/constants");
 // Import NAT-PMP/PCP utilities
 const utils_1 = require("./utils");
+// Import dual-stack utilities
+const dual_stack_1 = require("./utils/dual-stack");
 const debug = (0, debug_1.default)('dig-nat-tools:client');
 // We'll use any for now since we can't use dynamic imports directly in TypeScript
 // This will be initialized in the _initialize method if WebRTC is enabled
@@ -88,6 +86,8 @@ class FileClient {
         this.requestTimeout = config.requestTimeout || 30000; // 30 seconds
         this.enableWebRTC = config.enableWebRTC !== false;
         this.enableNATPMP = config.enableNATPMP !== false; // Default to enabled
+        this.enableIPv6 = config.enableIPv6 || false; // Default to disabled for backward compatibility
+        this.preferIPv6 = config.preferIPv6 !== false; // Default to true if IPv6 is enabled
         this.portMappingLifetime = config.portMappingLifetime || 3600; // Default to 1 hour
         this.clientId = (0, uuid_1.v4)();
         this.initialized = false;
@@ -115,7 +115,7 @@ class FileClient {
                 ...gunOptions
             });
         }
-        debug(`Created client with ID: ${this.clientId}`);
+        debug(`Created client with ID: ${this.clientId}, IPv6: ${this.enableIPv6 ? (this.preferIPv6 ? 'preferred' : 'enabled') : 'disabled'}`);
     }
     /**
      * Initialize the client
@@ -148,7 +148,9 @@ class FileClient {
                     const { ipv4, ipv6 } = await (0, utils_1.discoverPublicIPs)({
                         stunServers: this.stunServers,
                         timeout: this.requestTimeout,
-                        useNATPMP: true
+                        useNATPMP: true,
+                        enableIPv6: this.enableIPv6,
+                        preferIPv6: this.preferIPv6
                     });
                     if (ipv4) {
                         this.externalIPv4 = ipv4;
@@ -156,7 +158,7 @@ class FileClient {
                         // Create port mappings for TCP and UDP protocols
                         await this._createPortMappings();
                     }
-                    if (ipv6) {
+                    if (ipv6 && this.enableIPv6) {
                         this.externalIPv6 = ipv6;
                         debug(`Discovered external IPv6 address: ${ipv6}`);
                     }
@@ -440,47 +442,73 @@ class FileClient {
         if (!connectionOptions || connectionOptions.length === 0) {
             throw new Error(`No connection options available for peer ${peerId}`);
         }
-        // Original connection logic...
-        const natPmpOptions = connectionOptions.filter(opt => (opt.type === constants_1.CONNECTION_TYPE.TCP || opt.type === constants_1.CONNECTION_TYPE.UDP) &&
-            opt.address && opt.port);
-        if (natPmpOptions.length > 0) {
-            debug(`Attempting to connect using NAT-PMP/PCP mapped ports`);
-            try {
-                const option = natPmpOptions[0];
-                if (option.type === constants_1.CONNECTION_TYPE.TCP && option.address && typeof option.port === 'number') {
-                    return await this._createTCPConnection(peerId, option.address, option.port);
+        // Prepare connection options that have address and port
+        // Group options by connection type
+        const tcpOptions = [];
+        const udpOptions = [];
+        // Extract connection options by type
+        connectionOptions.forEach(opt => {
+            if (opt.address && typeof opt.port === 'number') {
+                if (opt.type === constants_1.CONNECTION_TYPE.TCP) {
+                    tcpOptions.push({ address: opt.address, port: opt.port });
                 }
-                else if (option.type === constants_1.CONNECTION_TYPE.UDP && option.address && typeof option.port === 'number') {
-                    return await this._createUDPConnection(peerId, option.address, option.port);
+                else if (opt.type === constants_1.CONNECTION_TYPE.UDP) {
+                    udpOptions.push({ address: opt.address, port: opt.port });
                 }
             }
+        });
+        // Try to establish connection with IPv6 preference
+        // Try TCP first
+        if (tcpOptions.length > 0) {
+            debug(`Attempting TCP connections with ${this.preferIPv6 ? 'IPv6 preference' : 'IPv4 preference'}`);
+            try {
+                // Extract addresses and create a flat list of peer addresses
+                const addresses = tcpOptions.map(opt => opt.address);
+                const port = tcpOptions[0].port; // Use the first port for all addresses
+                // Connect to the first available address with IPv6 preference
+                const { socket, address } = await (0, dual_stack_1.connectToFirstAvailableAddress)(addresses, port, 'tcp', {
+                    timeout: this.requestTimeout,
+                    preferIPv6: this.preferIPv6,
+                    onError: (error, addr) => {
+                        debug(`TCP connection to ${addr}:${port} failed: ${error.message}`);
+                    }
+                });
+                debug(`TCP connection established to ${address}:${port}`);
+                return this._createConnectionFromExistingTCPSocket(peerId, socket);
+            }
             catch (err) {
-                debug(`NAT-PMP/PCP connection failed: ${err.message}`);
+                debug(`All TCP connection attempts failed: ${err.message}`);
             }
         }
-        // Try the original WebRTC option if available
-        for (const option of connectionOptions) {
+        // Try UDP next
+        if (udpOptions.length > 0) {
+            debug(`Attempting UDP connections with ${this.preferIPv6 ? 'IPv6 preference' : 'IPv4 preference'}`);
             try {
-                debug(`Trying connection type: ${option.type}`);
-                switch (option.type) {
-                    case constants_1.CONNECTION_TYPE.TCP:
-                        if (option.address && typeof option.port === 'number') {
-                            return await this._createTCPConnection(peerId, option.address, option.port);
-                        }
-                        break;
-                    case constants_1.CONNECTION_TYPE.UDP:
-                        if (option.address && typeof option.port === 'number') {
-                            return await this._createUDPConnection(peerId, option.address, option.port);
-                        }
-                        break;
-                    case constants_1.CONNECTION_TYPE.WEBRTC:
-                        return await this._createWebRTCConnection(peerId);
-                    case constants_1.CONNECTION_TYPE.GUN:
-                        return this._createGunRelayConnection(peerId);
-                }
+                // Extract addresses and create a flat list of peer addresses
+                const addresses = udpOptions.map(opt => opt.address);
+                const port = udpOptions[0].port; // Use the first port for all addresses
+                // Connect to the first available address with IPv6 preference
+                const { socket, address } = await (0, dual_stack_1.connectToFirstAvailableAddress)(addresses, port, 'udp', { preferIPv6: this.preferIPv6 });
+                // Update remote address and port
+                this.remoteAddress = address;
+                this.remotePort = port;
+                debug(`UDP socket created for ${address}:${port}`);
+                return this._createConnectionFromExistingUDPSocket(peerId, socket);
             }
             catch (err) {
-                debug(`Connection attempt failed with type ${option.type}: ${err.message}`);
+                debug(`All UDP connection attempts failed: ${err.message}`);
+            }
+        }
+        // Try WebRTC if enabled
+        for (const option of connectionOptions) {
+            if (option.type === constants_1.CONNECTION_TYPE.WEBRTC && this.enableWebRTC) {
+                try {
+                    debug(`Trying WebRTC connection`);
+                    return await this._createWebRTCConnection(peerId);
+                }
+                catch (err) {
+                    debug(`WebRTC connection attempt failed: ${err.message}`);
+                }
             }
         }
         // If all else fails, use Gun as a fallback
@@ -500,10 +528,11 @@ class FileClient {
      */
     _createConnectionFromExistingTCPSocket(peerId, socket) {
         debug(`Creating connection from existing TCP socket to ${socket.remoteAddress}:${socket.remotePort}`);
+        const messageHandlers = new Map();
         const connection = {
             type: this.connectionType,
             peerId,
-            messageHandlers: new Map(),
+            messageHandlers,
             send: async (messageType, data) => {
                 return new Promise((resolveSend, rejectSend) => {
                     const message = {
@@ -522,19 +551,34 @@ class FileClient {
                 });
             },
             on: (messageType, handler) => {
-                connection.messageHandlers.set(messageType, handler);
+                if (!messageHandlers.has(messageType)) {
+                    messageHandlers.set(messageType, []);
+                }
+                const handlers = messageHandlers.get(messageType);
+                handlers.push(handler);
             },
             close: () => {
                 socket.destroy();
+            },
+            removeListener: (messageType, handler) => {
+                const handlers = messageHandlers.get(messageType);
+                if (handlers) {
+                    const index = handlers.indexOf(handler);
+                    if (index !== -1) {
+                        handlers.splice(index, 1);
+                    }
+                }
             }
         };
         // Handle incoming data
         socket.on('data', (data) => {
             try {
                 const message = JSON.parse(data.toString('utf8'));
-                const handler = connection.messageHandlers.get(message.type);
-                if (handler) {
-                    handler(message);
+                const handlers = messageHandlers.get(message.type);
+                if (handlers && handlers.length > 0) {
+                    for (const handler of handlers) {
+                        handler(message);
+                    }
                 }
             }
             catch (err) {
@@ -560,11 +604,13 @@ class FileClient {
             throw new Error('Remote address and port are required for UDP connections');
         }
         debug(`Creating connection from existing UDP socket to ${this.remoteAddress}:${this.remotePort}`);
+        // Create message handlers map
+        const messageHandlers = new Map();
         // Create the connection object
         const connection = {
             type: this.connectionType,
             peerId,
-            messageHandlers: new Map(),
+            messageHandlers,
             send: async (messageType, data) => {
                 return new Promise((resolveSend, rejectSend) => {
                     const message = {
@@ -584,10 +630,23 @@ class FileClient {
                 });
             },
             on: (messageType, handler) => {
-                connection.messageHandlers.set(messageType, handler);
+                if (!messageHandlers.has(messageType)) {
+                    messageHandlers.set(messageType, []);
+                }
+                const handlers = messageHandlers.get(messageType);
+                handlers.push(handler);
             },
             close: () => {
                 socket.close();
+            },
+            removeListener: (messageType, handler) => {
+                const handlers = messageHandlers.get(messageType);
+                if (handlers) {
+                    const index = handlers.indexOf(handler);
+                    if (index !== -1) {
+                        handlers.splice(index, 1);
+                    }
+                }
             }
         };
         // Set up message handler for the UDP socket
@@ -596,9 +655,11 @@ class FileClient {
             if (rinfo.address === this.remoteAddress && rinfo.port === this.remotePort) {
                 try {
                     const message = JSON.parse(msg.toString('utf8'));
-                    const handler = connection.messageHandlers.get(message.type);
-                    if (handler) {
-                        handler(message);
+                    const handlers = messageHandlers.get(message.type);
+                    if (handlers && handlers.length > 0) {
+                        for (const handler of handlers) {
+                            handler(message);
+                        }
                     }
                 }
                 catch (err) {
@@ -622,19 +683,63 @@ class FileClient {
         if (!connectionOptions || connectionOptions.length === 0) {
             throw new Error(`No connection options available for peer ${peerId}`);
         }
-        // Try all connection methods in parallel
-        switch (connectionOptions[0].type) {
-            case constants_1.CONNECTION_TYPE.TCP:
-                return await this._createTCPConnection(peerId, connectionOptions[0].address, connectionOptions[0].port);
-            case constants_1.CONNECTION_TYPE.UDP:
-                return await this._createUDPConnection(peerId, connectionOptions[0].address, connectionOptions[0].port);
-            case constants_1.CONNECTION_TYPE.WEBRTC:
-                return await this._createWebRTCConnection(peerId);
-            case constants_1.CONNECTION_TYPE.GUN:
-                return this._createGunRelayConnection(peerId);
-            default:
-                throw new Error(`Unsupported connection type: ${connectionOptions[0].type}`);
+        // Group addresses by protocol
+        const tcpAddresses = [];
+        const udpAddresses = [];
+        let tcpPort;
+        let udpPort;
+        // Collect addresses and ports
+        connectionOptions.forEach(option => {
+            if (option.address) {
+                if (option.type === constants_1.CONNECTION_TYPE.TCP && typeof option.port === 'number') {
+                    tcpAddresses.push(option.address);
+                    tcpPort = option.port;
+                }
+                else if (option.type === constants_1.CONNECTION_TYPE.UDP && typeof option.port === 'number') {
+                    udpAddresses.push(option.address);
+                    udpPort = option.port;
+                }
+            }
+        });
+        // Try TCP with multiple addresses and IPv6 preference first
+        if (tcpAddresses.length > 0 && tcpPort !== undefined) {
+            try {
+                const { socket, address } = await (0, dual_stack_1.connectToFirstAvailableAddress)(tcpAddresses, tcpPort, 'tcp', {
+                    timeout: this.requestTimeout,
+                    preferIPv6: this.preferIPv6
+                });
+                debug(`Direct TCP connection established to ${address}:${tcpPort}`);
+                return this._createConnectionFromExistingTCPSocket(peerId, socket);
+            }
+            catch (err) {
+                debug(`Direct TCP connection failed: ${err.message}`);
+            }
         }
+        // Try UDP with multiple addresses and IPv6 preference next
+        if (udpAddresses.length > 0 && udpPort !== undefined) {
+            try {
+                const { socket, address } = await (0, dual_stack_1.connectToFirstAvailableAddress)(udpAddresses, udpPort, 'udp', { preferIPv6: this.preferIPv6 });
+                // Update remote address and port
+                this.remoteAddress = address;
+                this.remotePort = udpPort;
+                debug(`Direct UDP connection established to ${address}:${udpPort}`);
+                return this._createConnectionFromExistingUDPSocket(peerId, socket);
+            }
+            catch (err) {
+                debug(`Direct UDP connection failed: ${err.message}`);
+            }
+        }
+        // Try WebRTC if available
+        if (connectionOptions.some(opt => opt.type === constants_1.CONNECTION_TYPE.WEBRTC) && this.enableWebRTC) {
+            try {
+                return await this._createWebRTCConnection(peerId);
+            }
+            catch (err) {
+                debug(`WebRTC connection failed: ${err.message}`);
+            }
+        }
+        // Fallback to Gun relay
+        return this._createGunRelayConnection(peerId);
     }
     /**
      * Get peer connection options
@@ -678,68 +783,26 @@ class FileClient {
      * @returns Promise that resolves to a connection object
      */
     async _createTCPConnection(peerId, host, port) {
-        return new Promise((resolve, reject) => {
-            const socket = net.createConnection({ host, port }, () => {
-                debug(`TCP connection established to ${host}:${port}`);
-                const connection = {
-                    type: constants_1.CONNECTION_TYPE.TCP,
-                    peerId,
-                    messageHandlers: new Map(),
-                    send: async (messageType, data) => {
-                        return new Promise((resolveSend, rejectSend) => {
-                            const message = {
-                                type: messageType,
-                                clientId: this.clientId,
-                                ...data
-                            };
-                            socket.write(JSON.stringify(message), (err) => {
-                                if (err) {
-                                    rejectSend(err);
-                                }
-                                else {
-                                    resolveSend();
-                                }
-                            });
-                        });
-                    },
-                    on: (messageType, handler) => {
-                        connection.messageHandlers.set(messageType, handler);
-                    },
-                    close: () => {
-                        socket.destroy();
-                    }
-                };
-                // Handle incoming data
-                socket.on('data', (data) => {
-                    try {
-                        const message = JSON.parse(data.toString('utf8'));
-                        const handler = connection.messageHandlers.get(message.type);
-                        if (handler) {
-                            handler(message);
-                        }
-                    }
-                    catch (err) {
-                        debug(`Error parsing TCP message: ${err}`);
-                    }
-                });
-                socket.on('error', (err) => {
-                    debug(`TCP socket error: ${err.message}`);
-                });
-                socket.on('close', () => {
-                    debug('TCP connection closed');
-                });
-                resolve(connection);
+        debug(`Creating TCP connection to ${host}:${port}`);
+        const ipVersion = (0, dual_stack_1.getIPVersion)(host);
+        const protocol = 'tcp';
+        try {
+            // Use our IPv6-aware connection utility
+            const socket = await (0, dual_stack_1.connectWithIPv6Preference)(host, port, protocol, {
+                timeout: this.requestTimeout,
+                onError: (error) => {
+                    debug(`TCP connection error to ${host}:${port}: ${error.message}`);
+                },
+                onConnection: (socket) => {
+                    debug(`TCP connection established to ${host}:${port}`);
+                }
             });
-            socket.on('error', (err) => {
-                reject(err);
-            });
-            // Set connection timeout
-            socket.setTimeout(this.requestTimeout);
-            socket.on('timeout', () => {
-                socket.destroy();
-                reject(new Error('TCP connection timeout'));
-            });
-        });
+            return this._createConnectionFromExistingTCPSocket(peerId, socket);
+        }
+        catch (error) {
+            debug(`Failed to create TCP connection to ${host}:${port}: ${error.message}`);
+            throw error;
+        }
     }
     /**
      * Create a UDP connection
@@ -749,76 +812,21 @@ class FileClient {
      * @returns Promise that resolves to a connection object
      */
     async _createUDPConnection(peerId, host, port) {
-        return new Promise((resolve, reject) => {
-            const socket = dgram.createSocket('udp4');
-            socket.on('message', (msg, rinfo) => {
-                debug(`Received UDP message from ${rinfo.address}:${rinfo.port}`);
-                try {
-                    const message = JSON.parse(msg.toString('utf8'));
-                    // Check if we have a registered handler for this message type
-                    if (connection.messageHandlers.has(message.type)) {
-                        const handler = connection.messageHandlers.get(message.type);
-                        if (handler) {
-                            handler(message);
-                        }
-                    }
-                }
-                catch (err) {
-                    debug(`Error parsing UDP message: ${err}`);
-                }
+        debug(`Creating UDP connection to ${host}:${port}`);
+        try {
+            // Use our IPv6-aware connection utility
+            const socket = await (0, dual_stack_1.connectWithIPv6Preference)(host, port, 'udp', {
+                timeout: this.requestTimeout
             });
-            socket.on('error', (err) => {
-                debug(`UDP socket error: ${err.message}`);
-                socket.close();
-                reject(err);
-            });
-            // Create the connection object
-            const connection = {
-                type: constants_1.CONNECTION_TYPE.UDP,
-                peerId,
-                messageHandlers: new Map(),
-                send: async (messageType, data) => {
-                    return new Promise((resolveSend, rejectSend) => {
-                        const message = {
-                            type: messageType,
-                            clientId: this.clientId,
-                            ...data
-                        };
-                        const buffer = Buffer.from(JSON.stringify(message));
-                        socket.send(buffer, port, host, (err) => {
-                            if (err) {
-                                rejectSend(err);
-                            }
-                            else {
-                                resolveSend();
-                            }
-                        });
-                    });
-                },
-                on: (messageType, handler) => {
-                    connection.messageHandlers.set(messageType, handler);
-                },
-                close: () => {
-                    socket.close();
-                }
-            };
-            // Send a ping to establish connection
-            const pingMessage = {
-                type: 'ping',
-                clientId: this.clientId,
-                timestamp: Date.now()
-            };
-            const pingBuffer = Buffer.from(JSON.stringify(pingMessage));
-            socket.send(pingBuffer, port, host, (err) => {
-                if (err) {
-                    socket.close();
-                    reject(err);
-                }
-                else {
-                    resolve(connection);
-                }
-            });
-        });
+            // Update remote address and port
+            this.remoteAddress = host;
+            this.remotePort = port;
+            return this._createConnectionFromExistingUDPSocket(peerId, socket);
+        }
+        catch (error) {
+            debug(`Failed to create UDP connection to ${host}:${port}: ${error.message}`);
+            throw error;
+        }
     }
     /**
      * Create a WebRTC connection
@@ -879,6 +887,15 @@ class FileClient {
                     close: () => {
                         dataChannel.close();
                         peer.close();
+                    },
+                    removeListener: (messageType, handler) => {
+                        const handlers = this.messageHandlers.get(messageType);
+                        if (handlers) {
+                            const index = handlers.indexOf(handler);
+                            if (index !== -1) {
+                                handlers.splice(index, 1);
+                            }
+                        }
                     }
                 };
                 // Set up event handlers
@@ -992,6 +1009,15 @@ class FileClient {
             },
             close: () => {
                 // No resources to clean up for Gun relay connection
+            },
+            removeListener: (messageType, handler) => {
+                const handlers = this.messageHandlers.get(messageType);
+                if (handlers) {
+                    const index = handlers.indexOf(handler);
+                    if (index !== -1) {
+                        handlers.splice(index, 1);
+                    }
+                }
             }
         };
         // Listen for responses from the peer
@@ -1268,15 +1294,15 @@ class FileClient {
      * @returns Promise with a Connection object
      */
     async _createFileConnection(fileHash) {
-        // This is a placeholder that should be replaced with your actual connection logic
-        // It should return a Connection object that implements the Connection interface
-        // If you already have an established connection, use it
+        // Use a type guard to handle the existingSocket safely
         if (this.hasEstablishedConnection && this.existingSocket) {
             if (this.connectionType === constants_1.CONNECTION_TYPE.TCP) {
-                return this._createConnectionFromExistingTCPSocket('file-' + fileHash, this.existingSocket);
+                const tcpSocket = this.existingSocket;
+                return this._createConnectionFromExistingTCPSocket('file-' + fileHash, tcpSocket);
             }
             else if (this.connectionType === constants_1.CONNECTION_TYPE.UDP) {
-                return this._createConnectionFromExistingUDPSocket('file-' + fileHash, this.existingSocket);
+                const udpSocket = this.existingSocket;
+                return this._createConnectionFromExistingUDPSocket('file-' + fileHash, udpSocket);
             }
         }
         // Otherwise, create a new connection

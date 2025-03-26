@@ -54,6 +54,11 @@ const uuid_1 = require("uuid");
 const constants_1 = require("../types/constants");
 // Import NAT-PMP/PCP utilities
 const utils_1 = require("./utils");
+// Import DirectoryWatcher for auto-announcing files
+const directory_watcher_1 = require("./utils/directory-watcher");
+// Import PeerDiscoveryManager for announcing files
+const peer_discovery_manager_1 = require("./utils/peer-discovery-manager");
+const peer_discovery_manager_2 = require("./utils/peer-discovery-manager");
 const debug = (0, debug_1.default)('dig-nat-tools:host');
 // We'll use any for now since we can't use dynamic imports directly in TypeScript
 // This will be initialized in the constructor if WebRTC is enabled
@@ -86,6 +91,16 @@ class FileHost {
         this._lastChokeUpdateTime = 0;
         this._chokeUpdateInterval = 10000; // 10 seconds
         this._superSeedMode = false; // Whether super seed mode is enabled
+        // Directory watcher properties
+        this.directoryWatcher = null;
+        this.peerDiscoveryManager = null;
+        this.announcedFiles = new Map(); // hash -> announced status
+        this.watchDir = null;
+        this.watchOptions = null;
+        // New properties for shared host
+        this.dhtOptions = {};
+        // Also add a mapping between contentId and sha256 if they're different
+        this.contentHashMap = new Map();
         this.hostId = (0, uuid_1.v4)();
         this.hostFileCallback = options.hostFileCallback;
         this.chunkSize = options.chunkSize || 64 * 1024; // 64KB default
@@ -100,6 +115,50 @@ class FileHost {
         this.portMappingLifetime = options.portMappingLifetime || 3600; // Default to 1 hour
         this.tcpPort = options.tcpPort || 0; // 0 = random available port
         this.udpPort = options.udpPort || 0; // 0 = random available port
+        // Store watch directory options if provided
+        if (options.watchDir) {
+            this.watchDir = options.watchDir;
+            this.watchOptions = {
+                recursive: options.watchRecursive !== false,
+                includeExtensions: options.watchIncludeExtensions,
+                excludeExtensions: options.watchExcludeExtensions,
+                maxFileSize: options.watchMaxFileSize,
+                persistHashes: options.watchPersistHashes !== false,
+                priority: options.watchAnnouncePriority === 'high'
+                    ? peer_discovery_manager_2.AnnouncePriority.HIGH
+                    : (options.watchAnnouncePriority === 'low'
+                        ? peer_discovery_manager_2.AnnouncePriority.LOW
+                        : peer_discovery_manager_2.AnnouncePriority.MEDIUM)
+            };
+        }
+        // Prepare DHT options
+        let dhtOptions = options.dhtOptions || {};
+        // Handle shared host with random shard prefixes
+        if (options.isShardHost) {
+            // Generate random shard prefixes if not provided
+            if (!dhtOptions.shardPrefixes || dhtOptions.shardPrefixes.length === 0) {
+                const numPrefixes = dhtOptions.numShardPrefixes || 3;
+                const prefixLength = dhtOptions.shardPrefixLength || 2;
+                // Generate the specified number of random hex prefixes
+                const shardPrefixes = [];
+                const hexChars = '0123456789abcdef';
+                // Track prefixes to ensure uniqueness
+                const prefixSet = new Set();
+                // Generate unique prefixes
+                while (prefixSet.size < numPrefixes) {
+                    let prefix = '';
+                    for (let i = 0; i < prefixLength; i++) {
+                        prefix += hexChars.charAt(Math.floor(Math.random() * hexChars.length));
+                    }
+                    prefixSet.add(prefix);
+                }
+                // Convert set to array
+                dhtOptions.shardPrefixes = Array.from(prefixSet);
+                debug(`Generated random DHT shard prefixes: ${dhtOptions.shardPrefixes.join(', ')}`);
+            }
+        }
+        // Store DHT options for later use when initializing PeerDiscoveryManager
+        this.dhtOptions = dhtOptions;
         // Initialize Gun for signaling and fallback relay
         const gunOptions = options.gunOptions || {};
         // Use type assertion to fix the constructor issue
@@ -139,6 +198,13 @@ class FileHost {
      */
     getUdpPort() {
         return this.enableUDP ? this.udpPort : 0;
+    }
+    /**
+     * Get all announced files
+     * @returns Map of currently announced file hashes
+     */
+    getAnnouncedFiles() {
+        return new Map(this.announcedFiles);
     }
     /**
      * Start the file host
@@ -197,6 +263,28 @@ class FileHost {
         debug(`Host registered with connection options:`, this.connectionOptions);
         // Set up Gun message handling for discovery and relay
         this._setupGunMessageHandling();
+        // Initialize PeerDiscoveryManager
+        if (this.tcpPort || this.udpPort) {
+            const announcePort = this.tcpPort || this.udpPort;
+            const nodeType = (this.watchOptions?.priority === peer_discovery_manager_2.AnnouncePriority.HIGH)
+                ? constants_1.NODE_TYPE.SUPER
+                : ((this.watchOptions?.priority === peer_discovery_manager_2.AnnouncePriority.LOW)
+                    ? constants_1.NODE_TYPE.LIGHT
+                    : constants_1.NODE_TYPE.STANDARD);
+            this.peerDiscoveryManager = new peer_discovery_manager_1.PeerDiscoveryManager({
+                nodeType,
+                announcePort,
+                enablePersistence: true,
+                persistenceDir: path.join(os.tmpdir(), `dig-host-${this.hostId}`),
+                dhtOptions: this.dhtOptions // Pass the DHT options including shard prefixes
+            });
+            await this.peerDiscoveryManager.start(announcePort);
+            debug(`Peer discovery manager started on port ${announcePort}`);
+        }
+        // Initialize directory watcher if configured
+        if (this.watchDir && this.watchOptions && this.peerDiscoveryManager) {
+            await this._startDirectoryWatcher();
+        }
     }
     /**
      * Stop the file host
@@ -208,6 +296,16 @@ class FileHost {
         }
         debug('Stopping file host');
         this.isRunning = false;
+        // Stop directory watcher if running
+        if (this.directoryWatcher) {
+            await this.directoryWatcher.stop();
+            this.directoryWatcher = null;
+        }
+        // Stop peer discovery manager if running
+        if (this.peerDiscoveryManager) {
+            await this.peerDiscoveryManager.stop();
+            this.peerDiscoveryManager = null;
+        }
         // Close all active connections
         for (const connection of this.activeConnections.values()) {
             connection.close();
@@ -245,12 +343,71 @@ class FileHost {
         debug('Host unregistered');
     }
     /**
+     * Start the directory watcher
+     */
+    async _startDirectoryWatcher() {
+        if (!this.watchDir || !this.watchOptions || !this.peerDiscoveryManager) {
+            debug('Cannot start directory watcher - missing configuration');
+            return;
+        }
+        try {
+            // Create directory watcher
+            this.directoryWatcher = new directory_watcher_1.DirectoryWatcher({
+                directory: this.watchDir,
+                recursive: this.watchOptions.recursive,
+                includeExtensions: this.watchOptions.includeExtensions,
+                excludeExtensions: this.watchOptions.excludeExtensions,
+                maxFileSize: this.watchOptions.maxFileSize,
+                persistHashes: this.watchOptions.persistHashes,
+                persistenceDir: path.join(os.tmpdir(), `dig-host-${this.hostId}`)
+            });
+            // Handle file discovery events
+            this.directoryWatcher.on('file:discovered', async (event) => {
+                const { hash, filePath, size } = event;
+                debug(`Discovered file: ${filePath} (${hash}) - ${size} bytes`);
+                // Announce the file if not already announced
+                if (!this.announcedFiles.has(hash) && this.peerDiscoveryManager) {
+                    await this.peerDiscoveryManager.addInfoHash(hash, this.watchOptions.priority);
+                    this.announcedFiles.set(hash, true);
+                    debug(`Announced file: ${filePath} with hash ${hash}`);
+                }
+            });
+            // Handle file removal events
+            this.directoryWatcher.on('file:removed', async (event) => {
+                const { hash, filePath } = event;
+                debug(`Removed file: ${filePath} (${hash})`);
+                // Stop announcing the file
+                if (this.announcedFiles.has(hash) && this.peerDiscoveryManager) {
+                    await this.peerDiscoveryManager.removeInfoHash(hash);
+                    this.announcedFiles.delete(hash);
+                    debug(`Stopped announcing file: ${filePath} with hash ${hash}`);
+                }
+            });
+            // Start watching
+            await this.directoryWatcher.start();
+            debug(`Directory watcher started for ${this.watchDir}`);
+            // Get currently tracked files and announce them
+            const trackedFiles = this.directoryWatcher.getTrackedFiles();
+            debug(`Found ${trackedFiles.size} existing files to announce`);
+            for (const [filePath, hash] of trackedFiles.entries()) {
+                if (!this.announcedFiles.has(hash) && this.peerDiscoveryManager) {
+                    await this.peerDiscoveryManager.addInfoHash(hash, this.watchOptions.priority);
+                    this.announcedFiles.set(hash, true);
+                    debug(`Announced existing file: ${filePath} with hash ${hash}`);
+                }
+            }
+        }
+        catch (error) {
+            debug(`Error starting directory watcher: ${error}`);
+        }
+    }
+    /**
      * Get all local IP addresses
      * @returns Array of local IP addresses
      */
     _getLocalIPAddresses() {
         const interfaces = os.networkInterfaces();
-        const addresses = [];
+        const addresses = { v4: [], v6: [] };
         // Iterate through network interfaces
         for (const name in interfaces) {
             const networkInterface = interfaces[name];
@@ -264,7 +421,19 @@ class FileHost {
                 if ((typeof family === 'string' && family === 'IPv4') ||
                     (typeof family === 'number' && family === 4)) {
                     if (!iface.internal) {
-                        addresses.push(iface.address);
+                        addresses.v4.push(iface.address);
+                    }
+                }
+            }
+            // Get IPv6 addresses that are not internal
+            for (const iface of networkInterface) {
+                // Support both string and number for the family property
+                // Different Node.js versions might return different types
+                const family = iface.family;
+                if ((typeof family === 'string' && family === 'IPv6') ||
+                    (typeof family === 'number' && family === 6)) {
+                    if (!iface.internal) {
+                        addresses.v6.push(iface.address);
                     }
                 }
             }
@@ -276,6 +445,7 @@ class FileHost {
      */
     async _startTCPServer() {
         return new Promise((resolve, reject) => {
+            // Create a TCP server that can handle both IPv4 and IPv6
             this.tcpServer = net.createServer();
             this.tcpServer.on('error', (err) => {
                 debug(`TCP server error: ${err}`);
@@ -284,11 +454,12 @@ class FileHost {
             this.tcpServer.on('connection', (socket) => {
                 this._handleTCPConnection(socket);
             });
-            this.tcpServer.listen(this.tcpPort, async () => {
+            // Listen on :: address to bind to all interfaces (both IPv4 and IPv6)
+            this.tcpServer.listen(this.tcpPort, '::', async () => {
                 const address = this.tcpServer?.address();
                 this.tcpPort = address.port;
-                debug(`TCP server listening on port ${this.tcpPort}`);
-                // Create port mapping if NAT-PMP/PCP is enabled
+                debug(`TCP server listening on [::]:${this.tcpPort} (IPv4/IPv6 dual-stack)`);
+                // Create port mapping if NAT-PMP/PCP is enabled (for IPv4 only)
                 if (this.enableNATPMP) {
                     try {
                         const result = await (0, utils_1.createPortMapping)({
@@ -303,7 +474,7 @@ class FileHost {
                                 this.externalIPv4 = result.externalAddress;
                                 debug(`External IPv4 address: ${this.externalIPv4}`);
                             }
-                            // Add to connection options with external port
+                            // Add to connection options with external port (IPv4)
                             this.connectionOptions.push({
                                 type: constants_1.CONNECTION_TYPE.TCP,
                                 address: result.externalAddress || undefined,
@@ -320,27 +491,18 @@ class FileHost {
                         else {
                             debug(`Failed to create TCP port mapping: ${result.error}`);
                             // Fall back to local port
-                            this.connectionOptions.push({
-                                type: constants_1.CONNECTION_TYPE.TCP,
-                                port: this.tcpPort
-                            });
+                            this._addLocalConnectionOptions();
                         }
                     }
                     catch (err) {
                         debug(`Error creating TCP port mapping: ${err.message}`);
                         // Fall back to local port
-                        this.connectionOptions.push({
-                            type: constants_1.CONNECTION_TYPE.TCP,
-                            port: this.tcpPort
-                        });
+                        this._addLocalConnectionOptions();
                     }
                 }
                 else {
                     // Just use local port if NAT-PMP/PCP is disabled
-                    this.connectionOptions.push({
-                        type: constants_1.CONNECTION_TYPE.TCP,
-                        port: this.tcpPort
-                    });
+                    this._addLocalConnectionOptions();
                 }
                 resolve();
             });
@@ -351,7 +513,13 @@ class FileHost {
      */
     async _startUDPServer() {
         return new Promise((resolve, reject) => {
-            this.udpSocket = dgram.createSocket('udp4');
+            // Create a dual-stack UDP socket that supports both IPv4 and IPv6
+            // Using udp6 with appropriate socket options enables dual-stack mode
+            this.udpSocket = dgram.createSocket({
+                type: 'udp6', // Use IPv6 UDP socket
+                ipv6Only: false, // Enable dual-stack mode
+                reuseAddr: true // Allow address reuse
+            });
             this.udpSocket.on('error', (err) => {
                 debug(`UDP socket error: ${err}`);
                 reject(err);
@@ -359,10 +527,11 @@ class FileHost {
             this.udpSocket.on('message', (msg, rinfo) => {
                 this._handleUDPMessage(msg, rinfo);
             });
-            this.udpSocket.bind(this.udpPort, async () => {
+            // Bind to :: to listen on all interfaces (both IPv4 and IPv6)
+            this.udpSocket.bind(this.udpPort, '::', async () => {
                 this.udpPort = this.udpSocket?.address().port || 0;
-                debug(`UDP socket listening on port ${this.udpPort}`);
-                // Create port mapping if NAT-PMP/PCP is enabled
+                debug(`UDP socket listening on [::]:${this.udpPort} (IPv4/IPv6 dual-stack)`);
+                // Create port mapping if NAT-PMP/PCP is enabled (for IPv4 only)
                 if (this.enableNATPMP) {
                     try {
                         const result = await (0, utils_1.createPortMapping)({
@@ -377,7 +546,7 @@ class FileHost {
                                 this.externalIPv4 = result.externalAddress;
                                 debug(`External IPv4 address: ${this.externalIPv4}`);
                             }
-                            // Add to connection options with external port
+                            // Add to connection options with external port (IPv4)
                             this.connectionOptions.push({
                                 type: constants_1.CONNECTION_TYPE.UDP,
                                 address: result.externalAddress || undefined,
@@ -394,31 +563,70 @@ class FileHost {
                         else {
                             debug(`Failed to create UDP port mapping: ${result.error}`);
                             // Fall back to local port
-                            this.connectionOptions.push({
-                                type: constants_1.CONNECTION_TYPE.UDP,
-                                port: this.udpPort
-                            });
+                            this._addLocalUDPConnectionOptions();
                         }
                     }
                     catch (err) {
                         debug(`Error creating UDP port mapping: ${err.message}`);
                         // Fall back to local port
-                        this.connectionOptions.push({
-                            type: constants_1.CONNECTION_TYPE.UDP,
-                            port: this.udpPort
-                        });
+                        this._addLocalUDPConnectionOptions();
                     }
                 }
                 else {
                     // Just use local port if NAT-PMP/PCP is disabled
-                    this.connectionOptions.push({
-                        type: constants_1.CONNECTION_TYPE.UDP,
-                        port: this.udpPort
-                    });
+                    this._addLocalUDPConnectionOptions();
                 }
                 resolve();
             });
         });
+    }
+    /**
+     * Add local connection options for TCP (both IPv4 and IPv6)
+     * @private
+     */
+    _addLocalConnectionOptions() {
+        // Get all local IP addresses, including both IPv4 and IPv6
+        const localIPs = this._getLocalIPAddresses();
+        // Add IPv4 addresses
+        for (const ip of localIPs.v4) {
+            this.connectionOptions.push({
+                type: constants_1.CONNECTION_TYPE.TCP,
+                address: ip,
+                port: this.tcpPort
+            });
+        }
+        // Add IPv6 addresses
+        for (const ip of localIPs.v6) {
+            this.connectionOptions.push({
+                type: constants_1.CONNECTION_TYPE.IPV6, // Use IPv6-specific connection type
+                address: ip,
+                port: this.tcpPort
+            });
+        }
+    }
+    /**
+     * Add local connection options for UDP (both IPv4 and IPv6)
+     * @private
+     */
+    _addLocalUDPConnectionOptions() {
+        // Get all local IP addresses, including both IPv4 and IPv6
+        const localIPs = this._getLocalIPAddresses();
+        // Add IPv4 addresses
+        for (const ip of localIPs.v4) {
+            this.connectionOptions.push({
+                type: constants_1.CONNECTION_TYPE.UDP,
+                address: ip,
+                port: this.udpPort
+            });
+        }
+        // Add IPv6 addresses
+        for (const ip of localIPs.v6) {
+            this.connectionOptions.push({
+                type: constants_1.CONNECTION_TYPE.IPV6, // Use IPv6-specific connection type for UDP over IPv6
+                address: ip,
+                port: this.udpPort
+            });
+        }
     }
     /**
      * Set up Gun message handling for discovery and relay
@@ -608,8 +816,11 @@ class FileHost {
     async _handleMetadataRequest(clientId, sha256, msgId = null, connectionType = constants_1.CONNECTION_TYPE.GUN) {
         debug(`Handling metadata request for ${sha256} from ${clientId}`);
         try {
+            // Use sha256 as the contentId initially - in a full implementation, 
+            // we might have a reverse lookup from sha256 to contentId
+            const contentId = sha256;
             // Get the first chunk to determine if file exists and get its size
-            const firstChunk = await this.hostFileCallback(sha256, 0, this.chunkSize);
+            const firstChunk = await this.getFileChunks(contentId, 0);
             if (!firstChunk) {
                 debug(`File ${sha256} not found`);
                 this._sendResponse({
@@ -628,7 +839,7 @@ class FileHost {
                     totalSize += chunk.length;
                 }
                 chunkIndex++;
-                lastChunk = await this.hostFileCallback(sha256, chunkIndex, this.chunkSize);
+                lastChunk = await this.getFileChunks(contentId, chunkIndex);
             }
             // Send metadata response
             this._sendResponse({
@@ -654,8 +865,11 @@ class FileHost {
     async _handleChunkRequest(clientId, sha256, startChunk, msgId = null, connectionType = constants_1.CONNECTION_TYPE.GUN) {
         debug(`Handling chunk request for ${sha256}, chunk ${startChunk} from ${clientId}`);
         try {
+            // Use sha256 as the contentId initially - in a full implementation, 
+            // we might have a reverse lookup from sha256 to contentId
+            const contentId = sha256;
             // Get the requested chunk
-            const chunks = await this.hostFileCallback(sha256, startChunk, this.chunkSize);
+            const chunks = await this.getFileChunks(contentId, startChunk);
             if (!chunks) {
                 debug(`Chunk ${startChunk} of file ${sha256} not found`);
                 this._sendResponse({
@@ -1170,6 +1384,84 @@ class FileHost {
         // Force a choking update
         this._lastChokeUpdateTime = 0;
         this._updatePeerChoking();
+    }
+    /**
+     * Get the DHT shard prefixes used by this host
+     * @returns Array of shard prefixes or empty array if DHT sharding is not enabled
+     */
+    getShardPrefixes() {
+        return this.dhtOptions?.shardPrefixes || [];
+    }
+    /**
+     * Add a content ID to SHA-256 hash mapping
+     * @param contentId - Content identifier
+     * @param sha256 - SHA-256 hash of the content
+     */
+    addContentMapping(contentId, sha256) {
+        debug(`Adding content mapping: ${contentId} -> ${sha256}`);
+        this.contentHashMap.set(contentId, sha256);
+        // If we have a peer discovery manager, also add the mapping there for consistency
+        if (this.peerDiscoveryManager && typeof this.peerDiscoveryManager.addContentMapping === 'function') {
+            this.peerDiscoveryManager.addContentMapping(contentId, sha256);
+        }
+    }
+    /**
+     * Get SHA-256 hash for a content ID
+     * @param contentId - Content identifier
+     * @returns SHA-256 hash or undefined if not found
+     */
+    getHashForContent(contentId) {
+        // First check our local map
+        const hash = this.contentHashMap.get(contentId);
+        if (hash) {
+            return hash;
+        }
+        // If not found locally, check the discovery manager if available
+        if (this.peerDiscoveryManager && typeof this.peerDiscoveryManager.getHashForContent === 'function') {
+            return this.peerDiscoveryManager.getHashForContent(contentId);
+        }
+        return undefined;
+    }
+    /**
+     * Get content ID for a SHA-256 hash (reverse lookup)
+     * @param sha256 - SHA-256 hash
+     * @returns Content ID or undefined if not found
+     */
+    getContentForHash(sha256) {
+        // Check our local map first with a reverse lookup
+        for (const [contentId, hash] of this.contentHashMap.entries()) {
+            if (hash === sha256) {
+                return contentId;
+            }
+        }
+        // If not found locally, check the discovery manager if available
+        if (this.peerDiscoveryManager && typeof this.peerDiscoveryManager.getContentForHash === 'function') {
+            return this.peerDiscoveryManager.getContentForHash(sha256);
+        }
+        return undefined;
+    }
+    /**
+     * Update methods that call hostFileCallback to use contentId and pass sha256 as needed
+     * @param contentId - Content identifier for the file
+     * @param startChunk - Starting chunk index
+     * @returns Promise resolving to array of buffers for the chunks or null
+     */
+    async getFileChunks(contentId, startChunk) {
+        // Try to get the verification hash if it exists
+        const sha256 = this.getHashForContent(contentId);
+        // If contentId looks like a hash (and we don't have a mapping), it might be the hash itself
+        if (!sha256 && contentId.length >= 40) {
+            debug(`No mapping found for ${contentId}, using it directly as both contentId and hash`);
+            return this.hostFileCallback(contentId, startChunk, this.chunkSize, contentId);
+        }
+        // If we have a mapping, pass both contentId and sha256 to the callback
+        if (sha256) {
+            debug(`Found hash ${sha256} for contentId ${contentId}, using both in callback`);
+            return this.hostFileCallback(contentId, startChunk, this.chunkSize, sha256);
+        }
+        // Fall back to just using contentId
+        debug(`No hash found for contentId ${contentId}, using only contentId in callback`);
+        return this.hostFileCallback(contentId, startChunk, this.chunkSize);
     }
 }
 exports.default = FileHost;
