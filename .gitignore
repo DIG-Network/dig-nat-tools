@@ -9,10 +9,9 @@ yarn.lock
 # Build outputs
 dist/
 build/
-lib/
 *.tsbuildinfo
 
-# Coverage and test directories
+# Coverage and test directoflibfries
 coverage/
 .nyc_output/
 test-report.xml
