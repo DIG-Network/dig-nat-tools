@@ -1,1 +1,0 @@
-{"extends":"./tsconfig.json","compilerOptions":{"skipLibCheck":true,"types":["jest","node"]},"exclude":["node_modules","**/*.test.ts"],"include":["src/__tests__/network-manager.test.ts"]}
