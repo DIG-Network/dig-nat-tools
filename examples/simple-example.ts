@@ -66,8 +66,24 @@ async function main() {
     console.log(`Local URL (for local network): ${localFileUrl}`);
     console.log('Local download completed successfully!');
 
+    // Wait for user input before cleanup
+    console.log('\n--- Server is running ---');
+    console.log('You can now test the URLs above in a browser or with another client.');
+    console.log('Press Enter to stop the server and clean up...');
+    
+    // Wait for keyboard input
+    await new Promise<void>((resolve) => {
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      process.stdin.once('data', () => {
+        process.stdin.setRawMode(false);
+        process.stdin.pause();
+        resolve();
+      });
+    });
+
     // Cleanup
-    console.log('Stopping server...');
+    console.log('\nStopping server...');
     await host.stop();
     console.log('Server stopped');
 
@@ -76,8 +92,25 @@ async function main() {
     console.log('Temporary file deleted');
     
     console.log('Example completed successfully!');
+    
+    // Force exit to prevent hanging
+    process.exit(0);
+    
   } catch (error) {
     console.error('Error:', error);
+    
+    // Cleanup on error
+    try {
+      await host.stop();
+      if (fs.existsSync(tempFilePath)) {
+        fs.unlinkSync(tempFilePath);
+      }
+    } catch (cleanupError) {
+      console.error('Cleanup error:', cleanupError);
+    }
+    
+    // Force exit on error
+    process.exit(1);
   }
 }
 

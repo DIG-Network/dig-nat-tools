@@ -210,54 +210,123 @@ export class FileHost {
       console.log('Getting external IP address...');
       
       // Try UPnP for external IP first
-      this.client.externalIp((err: Error | null, upnpIp?: string) => {
+      this.client.externalIp(async (err: Error | null, upnpIp?: string) => {
         if (err || !upnpIp) {
           console.warn('Failed to get external IP via UPnP, falling back to local IP');
-          
-          // Fallback to getting local IP address
-          const os = require('os');
-          const interfaces = os.networkInterfaces();
-          let localIp: string | null = null;
-          
-          // Find the active WiFi or Ethernet interface
-          for (const name of Object.keys(interfaces)) {
-            if (name.toLowerCase().includes('wi-fi') || name.toLowerCase().includes('ethernet')) {
-              for (const iface of interfaces[name]!) {
-                if (iface.family === 'IPv4' && !iface.internal) {
-                  localIp = iface.address;
-                  console.log(`Found local IP from ${name}: ${localIp}`);
-                  break;
-                }
-              }
-            }
-          }
-          
-          // If we didn't find a specific interface, get any non-internal IPv4
-          if (!localIp) {
-            for (const name of Object.keys(interfaces)) {
-              for (const iface of interfaces[name]!) {
-                if (iface.family === 'IPv4' && !iface.internal) {
-                  localIp = iface.address;
-                  console.log(`Found fallback local IP from ${name}: ${localIp}`);
-                  break;
-                }
-              }
-              if (localIp) break;
-            }
-          }
-          
+          const localIp = this.detectLocalIp();
           if (localIp) {
-            console.log(`Using detected local IP: ${localIp}`);
             resolve(localIp);
           } else {
             reject(new Error('Could not determine IP address'));
           }
         } else {
-          console.log(`Using UPnP external IP: ${upnpIp}`);
-          resolve(upnpIp);
+          console.log(`UPnP reported external IP: ${upnpIp}`);
+          
+          // Check if the UPnP IP is actually a private/local IP
+          // This indicates we're behind a cascaded router/access point
+          if (this.isPrivateIp(upnpIp)) {
+            console.warn(`UPnP returned private IP ${upnpIp} - likely behind cascaded router/access point`);
+            
+            // Try to get the actual external IP using a different method
+            try {
+              const realExternalIp = await this.getRealExternalIp();
+              if (realExternalIp && !this.isPrivateIp(realExternalIp)) {
+                console.log(`Found real external IP: ${realExternalIp}`);
+                resolve(realExternalIp);
+              } else {
+                resolve(upnpIp);
+              }
+            } catch (error) {
+              console.warn('Could not determine real external IP, using UPnP IP');
+              resolve(upnpIp);
+            }
+          } else {
+            console.log(`Using UPnP external IP: ${upnpIp}`);
+            resolve(upnpIp);
+          }
         }
       });
     });
+  }
+
+  // Check if an IP is in private address space
+  private isPrivateIp(ip: string): boolean {
+    const parts = ip.split('.').map(Number);
+    if (parts.length !== 4) return false;
+    
+    // 192.168.x.x
+    if (parts[0] === 192 && parts[1] === 168) return true;
+    // 10.x.x.x
+    if (parts[0] === 10) return true;
+    // 172.16.x.x - 172.31.x.x
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+    
+    return false;
+  }
+
+  // Get the real external IP using a web service
+  private async getRealExternalIp(): Promise<string | null> {
+    const https = require('https');
+    
+    return new Promise((resolve) => {
+      const options = {
+        hostname: 'api.ipify.org',
+        port: 443,
+        path: '/',
+        method: 'GET',
+        timeout: 5000
+      };
+
+      const req = https.request(options, (res: any) => {
+        let data = '';
+        res.on('data', (chunk: any) => data += chunk);
+        res.on('end', () => {
+          const ip = data.trim();
+          if (ip && !this.isPrivateIp(ip)) {
+            resolve(ip);
+          } else {
+            resolve(null);
+          }
+        });
+      });
+
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(null);
+      });
+      
+      req.end();
+    });
+  }
+
+  private detectLocalIp(): string | null {
+    const os = require('os');
+    const interfaces = os.networkInterfaces();
+    
+    // Find the active WiFi or Ethernet interface
+    for (const name of Object.keys(interfaces)) {
+      if (name.toLowerCase().includes('wi-fi') || name.toLowerCase().includes('ethernet')) {
+        for (const iface of interfaces[name]!) {
+          if (iface.family === 'IPv4' && !iface.internal) {
+            console.log(`Found local IP from ${name}: ${iface.address}`);
+            return iface.address;
+          }
+        }
+      }
+    }
+    
+    // Fallback: get any non-internal IPv4
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name]!) {
+        if (iface.family === 'IPv4' && !iface.internal) {
+          console.log(`Found fallback local IP from ${name}: ${iface.address}`);
+          return iface.address;
+        }
+      }
+    }
+    
+    return null;
   }
 
   private generateUniqueId(): string {
