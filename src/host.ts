@@ -209,42 +209,43 @@ export class FileHost {
     return new Promise<string>((resolve, reject) => {
       console.log('Getting external IP address...');
       
-      // First try to get the actual local IP address
-      const os = require('os');
-      const interfaces = os.networkInterfaces();
-      let localIp: string | null = null;
-      
-      // Find the active WiFi or Ethernet interface
-      for (const name of Object.keys(interfaces)) {
-        if (name.toLowerCase().includes('wi-fi') || name.toLowerCase().includes('ethernet')) {
-          for (const iface of interfaces[name]!) {
-            if (iface.family === 'IPv4' && !iface.internal) {
-              localIp = iface.address;
-              console.log(`Found local IP from ${name}: ${localIp}`);
-              break;
-            }
-          }
-        }
-      }
-      
-      // If we didn't find a specific interface, get any non-internal IPv4
-      if (!localIp) {
-        for (const name of Object.keys(interfaces)) {
-          for (const iface of interfaces[name]!) {
-            if (iface.family === 'IPv4' && !iface.internal) {
-              localIp = iface.address;
-              console.log(`Found fallback local IP from ${name}: ${localIp}`);
-              break;
-            }
-          }
-          if (localIp) break;
-        }
-      }
-      
-      // Try UPnP for external IP (this might be different from local IP if behind NAT)
+      // Try UPnP for external IP first
       this.client.externalIp((err: Error | null, upnpIp?: string) => {
         if (err || !upnpIp) {
-          console.warn('Failed to get external IP via UPnP');
+          console.warn('Failed to get external IP via UPnP, falling back to local IP');
+          
+          // Fallback to getting local IP address
+          const os = require('os');
+          const interfaces = os.networkInterfaces();
+          let localIp: string | null = null;
+          
+          // Find the active WiFi or Ethernet interface
+          for (const name of Object.keys(interfaces)) {
+            if (name.toLowerCase().includes('wi-fi') || name.toLowerCase().includes('ethernet')) {
+              for (const iface of interfaces[name]!) {
+                if (iface.family === 'IPv4' && !iface.internal) {
+                  localIp = iface.address;
+                  console.log(`Found local IP from ${name}: ${localIp}`);
+                  break;
+                }
+              }
+            }
+          }
+          
+          // If we didn't find a specific interface, get any non-internal IPv4
+          if (!localIp) {
+            for (const name of Object.keys(interfaces)) {
+              for (const iface of interfaces[name]!) {
+                if (iface.family === 'IPv4' && !iface.internal) {
+                  localIp = iface.address;
+                  console.log(`Found fallback local IP from ${name}: ${localIp}`);
+                  break;
+                }
+              }
+              if (localIp) break;
+            }
+          }
+          
           if (localIp) {
             console.log(`Using detected local IP: ${localIp}`);
             resolve(localIp);
@@ -252,15 +253,8 @@ export class FileHost {
             reject(new Error('Could not determine IP address'));
           }
         } else {
-          console.log(`UPnP reported external IP: ${upnpIp}`);
-          if (localIp && upnpIp !== localIp) {
-            console.log(`Note: UPnP IP (${upnpIp}) differs from local IP (${localIp})`);
-            console.log(`Using local IP for internal network access: ${localIp}`);
-            resolve(localIp);
-          } else {
-            console.log(`Using UPnP external IP: ${upnpIp}`);
-            resolve(upnpIp);
-          }
+          console.log(`Using UPnP external IP: ${upnpIp}`);
+          resolve(upnpIp);
         }
       });
     });
