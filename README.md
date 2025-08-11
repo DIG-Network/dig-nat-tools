@@ -105,15 +105,43 @@ async function stopSharing() {
 ### Using NAT-PMP
 
 ```typescript
-import { FileHost } from 'dig-nat-tools';
+import { FileHost, ConnectionMode } from 'dig-nat-tools';
 
 async function startWithNatPmp() {
   // Start server with NAT-PMP (with automatic UPnP fallback)
-  const host = new FileHost({ port: 3000, useNatPmp: true });
+  const host = new FileHost({ port: 3000, connectionMode: ConnectionMode.NAT_PMP });
   
   try {
     const { externalIp, port } = await host.start();
     console.log(`Server running on ${externalIp}:${port}`);
+    
+    // Share files same as before
+    const fileId = host.shareFile('./my-document.pdf');
+    const fileUrl = await host.getFileUrl(fileId);
+    console.log(`File available at: ${fileUrl}`);
+    
+    // ... rest of your application
+    
+  } catch (error) {
+    console.error('Failed to start server:', error);
+  } finally {
+    await host.stop();
+  }
+}
+```
+
+### Plain Connection (Local Network Only)
+
+```typescript
+import { FileHost, ConnectionMode } from 'dig-nat-tools';
+
+async function startLocalOnly() {
+  // Start server without any NAT traversal (assumes ports are already open)
+  const host = new FileHost({ port: 3000, connectionMode: ConnectionMode.PLAIN });
+  
+  try {
+    const { externalIp, port } = await host.start();
+    console.log(`Server running locally on ${externalIp}:${port}`);
     
     // Share files same as before
     const fileId = host.shareFile('./my-document.pdf');
@@ -191,11 +219,19 @@ async function checkServer(baseUrl: string) {
 #### Constructor
 
 ```typescript
+import { FileHost, ConnectionMode } from 'dig-nat-tools';
+
 new FileHost(options?: {
-  port?: number;        // Port to use (default: random available port)
-  ttl?: number;         // Time to live for port mapping in seconds (default: 3600)
-  useNatPmp?: boolean;  // Use NAT-PMP instead of UPnP for port forwarding (default: false)
+  port?: number;                    // Port to use (default: random available port)
+  ttl?: number;                     // Time to live for port mapping in seconds (default: 3600)
+  connectionMode?: ConnectionMode;  // Connection mode for NAT traversal (default: ConnectionMode.UPNP)
 })
+
+enum ConnectionMode {
+  UPNP = 'upnp',      // Use UPnP for port forwarding
+  NAT_PMP = 'natpmp', // Use NAT-PMP for port forwarding  
+  PLAIN = 'plain'     // Skip NAT traversal, use local IP only
+}
 ```
 
 #### Methods
@@ -238,14 +274,27 @@ This package supports two protocols for NAT traversal:
 - **Lightweight**: Simpler protocol with less overhead
 - **Fast Setup**: Quicker port mapping establishment
 
+### Local Network Only (Skip NAT Traversal)
+- **Manual Setup**: For when ports are already manually forwarded
+- **Local Networks**: For use within the same network/LAN only
+- **Fastest Start**: No protocol negotiation, immediate server start
+- **Pre-configured**: When you've already set up port forwarding manually
+
 ### Protocol Selection
 
 ```typescript
+import { FileHost, ConnectionMode } from 'dig-nat-tools';
+
 // Use UPnP (default)
 const host = new FileHost({ port: 3000 });
+// or explicitly:
+const host = new FileHost({ port: 3000, connectionMode: ConnectionMode.UPNP });
 
 // Use NAT-PMP
-const host = new FileHost({ port: 3000, useNatPmp: true });
+const host = new FileHost({ port: 3000, connectionMode: ConnectionMode.NAT_PMP });
+
+// Plain connection (local network only)
+const host = new FileHost({ port: 3000, connectionMode: ConnectionMode.PLAIN });
 ```
 
 ### Automatic Fallback

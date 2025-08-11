@@ -46,7 +46,7 @@ jest.mock('os', () => ({
   }
 }));
 
-import { FileHost } from '../src/host';
+import { FileHost, ConnectionMode } from '../src/host';
 import * as fs from 'fs';
 import * as path from 'path';
 import os from 'os';
@@ -86,8 +86,16 @@ describe('FileHost - Comprehensive Coverage', () => {
     });
 
     it('should initialize with NAT-PMP enabled', () => {
-      const natPmpHost = new FileHost({ useNatPmp: true });
+      const natPmpHost = new FileHost({ connectionMode: ConnectionMode.NAT_PMP });
       expect(natPmpHost).toBeInstanceOf(FileHost);
+    });
+
+    it('should initialize with plain connection mode enabled', () => {
+      const plainHost = new FileHost({ connectionMode: ConnectionMode.PLAIN, port: 8080 });
+      expect(plainHost).toBeInstanceOf(FileHost);
+      expect((plainHost as any).connectionMode).toBe(ConnectionMode.PLAIN);
+      expect((plainHost as any).upnpClient).toBeNull();
+      expect((plainHost as any).natPmpClient).toBeNull();
     });
 
     it('should fallback to UPnP when NAT-PMP initialization fails', () => {
@@ -98,9 +106,10 @@ describe('FileHost - Comprehensive Coverage', () => {
       });
 
       const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-      const natPmpHost = new FileHost({ useNatPmp: true });
+      const natPmpHost = new FileHost({ connectionMode: ConnectionMode.NAT_PMP });
       
       expect(natPmpHost).toBeInstanceOf(FileHost);
+      expect((natPmpHost as any).connectionMode).toBe(ConnectionMode.UPNP);
       expect(consoleWarnSpy).toHaveBeenCalledWith(
         'Failed to initialize NAT-PMP client, falling back to UPnP:',
         expect.any(Error)
@@ -318,7 +327,7 @@ describe('FileHost - Comprehensive Coverage', () => {
       });
 
       it('should resolve successfully with external IP and port (NAT-PMP)', async () => {
-        const natPmpHost = new FileHost({ useNatPmp: true });
+        const natPmpHost = new FileHost({ connectionMode: ConnectionMode.NAT_PMP });
         mockServer.address.mockReturnValue({ port: 3000 });
         
         // Mock successful NAT-PMP
@@ -345,7 +354,7 @@ describe('FileHost - Comprehensive Coverage', () => {
       });
 
       it('should handle NAT-PMP external IP returning private IP', async () => {
-        const natPmpHost = new FileHost({ useNatPmp: true });
+        const natPmpHost = new FileHost({ connectionMode: ConnectionMode.NAT_PMP });
         mockServer.address.mockReturnValue({ port: 3000 });
         
         // Mock NAT-PMP returning private IP (cascading network)
@@ -364,6 +373,52 @@ describe('FileHost - Comprehensive Coverage', () => {
         });
 
         await expect(natPmpHost.start()).rejects.toThrow('Cascading network topology detected (NAT-PMP returned private IP 192.168.1.1)');
+      });
+
+      it('should start successfully with plain connection mode', async () => {
+        const plainHost = new FileHost({ connectionMode: ConnectionMode.PLAIN, port: 8080 });
+        mockServer.address.mockReturnValue({ port: 8080 });
+        
+        // Mock os.networkInterfaces to return local IP
+        mockOs.networkInterfaces.mockReturnValue({
+          'Ethernet': [{
+            family: 'IPv4',
+            address: '192.168.1.100',
+            internal: false,
+            netmask: '255.255.255.0',
+            mac: '00:00:00:00:00:00',
+            cidr: '192.168.1.100/24'
+          }]
+        });
+
+        mockApp.listen.mockImplementation((port, host, callback) => {
+          (plainHost as any).server = mockServer;
+          callback();
+          return mockServer;
+        });
+
+        const result = await plainHost.start();
+        expect(result).toEqual({
+          externalIp: '192.168.1.100',
+          port: 8080
+        });
+        expect((plainHost as any).externalPort).toBe(8080);
+      });
+
+      it('should reject when plain connection mode is enabled but local IP cannot be determined', async () => {
+        const plainHost = new FileHost({ connectionMode: ConnectionMode.PLAIN, port: 8080 });
+        mockServer.address.mockReturnValue({ port: 8080 });
+        
+        // Mock os.networkInterfaces to return no interfaces
+        mockOs.networkInterfaces.mockReturnValue({});
+
+        mockApp.listen.mockImplementation((port, host, callback) => {
+          (plainHost as any).server = mockServer;
+          callback();
+          return mockServer;
+        });
+
+        await expect(plainHost.start()).rejects.toThrow('Could not determine local IP address');
       });
     });
 
@@ -402,6 +457,17 @@ describe('FileHost - Comprehensive Coverage', () => {
 
         await expect(fileHost.stop()).resolves.toBeUndefined();
         expect((fileHost as any).externalPort).toBeNull();
+      });
+
+      it('should resolve successfully when plain connection mode is enabled', async () => {
+        const plainHost = new FileHost({ connectionMode: ConnectionMode.PLAIN, port: 8080 });
+        (plainHost as any).server = mockServer;
+
+        mockServer.close.mockImplementation((callback: any) => {
+          callback(null);
+        });
+
+        await expect(plainHost.stop()).resolves.toBeUndefined();
       });
     });
   });
@@ -450,7 +516,7 @@ describe('FileHost - Comprehensive Coverage', () => {
     });
 
     it('should handle NAT-PMP mapping successfully', async () => {
-      const natPmpHost = new FileHost({ useNatPmp: true });
+      const natPmpHost = new FileHost({ connectionMode: ConnectionMode.NAT_PMP });
       
       // Mock successful NAT-PMP mapping
       mockNatPmpClient.portMapping.mockImplementation((options, callback) => {
@@ -462,7 +528,7 @@ describe('FileHost - Comprehensive Coverage', () => {
     });
 
     it('should fallback to UPnP when NAT-PMP mapping fails', async () => {
-      const natPmpHost = new FileHost({ useNatPmp: true });
+      const natPmpHost = new FileHost({ connectionMode: ConnectionMode.NAT_PMP });
       
       // Mock NAT-PMP mapping failure
       mockNatPmpClient.portMapping.mockImplementation((options, callback) => {
@@ -496,7 +562,7 @@ describe('FileHost - Comprehensive Coverage', () => {
     });
 
     it('should handle NAT-PMP unmapping', async () => {
-      const natPmpHost = new FileHost({ useNatPmp: true });
+      const natPmpHost = new FileHost({ connectionMode: ConnectionMode.NAT_PMP });
       (natPmpHost as any).externalPort = 9090;
       
       mockNatPmpClient.portUnmapping.mockImplementation((options, callback) => {
@@ -650,7 +716,7 @@ describe('FileHost - Comprehensive Coverage', () => {
     });
 
     it('should return correct URL when everything is set up (NAT-PMP)', async () => {
-      const natPmpHost = new FileHost({ useNatPmp: true });
+      const natPmpHost = new FileHost({ connectionMode: ConnectionMode.NAT_PMP });
       mockFs.existsSync.mockReturnValue(true);
       const fileId = natPmpHost.shareFile('/test/file.txt');
       
@@ -663,6 +729,45 @@ describe('FileHost - Comprehensive Coverage', () => {
       
       const url = await natPmpHost.getFileUrl(fileId);
       expect(url).toBe(`http://203.0.113.1:3000/files/${fileId}`);
+    });
+
+    it('should return correct URL with local IP when plain connection mode is enabled', async () => {
+      const plainHost = new FileHost({ connectionMode: ConnectionMode.PLAIN, port: 8080 });
+      mockFs.existsSync.mockReturnValue(true);
+      const fileId = plainHost.shareFile('/test/file.txt');
+      
+      // Set up external port
+      (plainHost as any).externalPort = 8080;
+      
+      // Mock os.networkInterfaces to return local IP
+      mockOs.networkInterfaces.mockReturnValue({
+        'Wi-Fi': [{
+          family: 'IPv4',
+          address: '192.168.1.50',
+          internal: false,
+          netmask: '255.255.255.0',
+          mac: '00:00:00:00:00:00',
+          cidr: '192.168.1.50/24'
+        }]
+      });
+      
+      const url = await plainHost.getFileUrl(fileId);
+      expect(url).toBe(`http://192.168.1.50:8080/files/${fileId}`);
+    });
+
+    it('should throw error when plain connection mode is enabled but local IP cannot be determined', async () => {
+      const plainHost = new FileHost({ connectionMode: ConnectionMode.PLAIN, port: 8080 });
+      mockFs.existsSync.mockReturnValue(true);
+      const fileId = plainHost.shareFile('/test/file.txt');
+      
+      // Set up external port
+      (plainHost as any).externalPort = 8080;
+      
+      // Mock os.networkInterfaces to return no valid interfaces
+      mockOs.networkInterfaces.mockReturnValue({});
+      
+      await expect(plainHost.getFileUrl(fileId))
+        .rejects.toThrow('Could not determine local IP address');
     });
   });
 
