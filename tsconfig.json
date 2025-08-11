@@ -11,11 +11,11 @@
     "forceConsistentCasingInFileNames": true,
     "lib": ["ES2020", "DOM"],
     "resolveJsonModule": true,
-    "types": ["node"]
+    "types": ["node", "jest"]
   },
   "ts-node": {
     "transpileOnly": true
   },
-  "include": ["src", "examples"],
-  "exclude": ["node_modules", "**/*.test.ts"]
+  "include": ["src", "examples", "tests"],
+  "exclude": ["node_modules", "dist"]
 }
