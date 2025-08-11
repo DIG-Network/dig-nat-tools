@@ -4,6 +4,8 @@ import * as path from 'path';
 import * as http from 'http';
 import * as natUpnp from 'nat-upnp';
 import express from 'express';
+import https from 'https';
+import os from 'os';
 
 export interface HostOptions {
   port?: number;
@@ -61,7 +63,7 @@ export class FileHost {
     });
 
     // Route to check server status
-    this.app.get('/status', (req, res) => {
+    this.app.get('/status', (_req, res) => {
       res.json({ 
         status: 'online',
         availableFiles: Array.from(this.fileMappings.keys())
@@ -164,7 +166,7 @@ export class FileHost {
   }
 
   private async mapPort(): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
+    return new Promise<void>((resolve, _reject) => {
       console.log(`Attempting to map port ${this.port} via UPnP...`);
       this.client.portMapping({
         public: this.port,
@@ -238,7 +240,7 @@ export class FileHost {
               }
             } catch (error) {
               console.warn('Could not determine real external IP, using UPnP IP');
-              resolve(upnpIp);
+              throw new Error(`Failed to get external IP: ${error instanceof Error ? error.message : String(error)}`);
             }
           } else {
             console.log(`Using UPnP external IP: ${upnpIp}`);
@@ -266,8 +268,6 @@ export class FileHost {
 
   // Get the real external IP using a web service
   private async getRealExternalIp(): Promise<string | null> {
-    const https = require('https');
-    
     return new Promise((resolve) => {
       const options = {
         hostname: 'api.ipify.org',
@@ -301,7 +301,6 @@ export class FileHost {
   }
 
   private detectLocalIp(): string | null {
-    const os = require('os');
     const interfaces = os.networkInterfaces();
     
     // Find the active WiFi or Ethernet interface

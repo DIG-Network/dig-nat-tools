@@ -7,6 +7,9 @@
   "scripts": {
     "build": "tsc",
     "test": "jest",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src/**/*.ts tests/**/*.ts",
+    "lint:fix": "eslint src/**/*.ts tests/**/*.ts --fix",
     "prepublishOnly": "npm run build",
     "example": "ts-node examples/simple-example.ts"
   },
@@ -19,12 +22,16 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
+    "@jest/globals": "^30.0.5",
     "@types/express": "^4.17.17",
-    "@types/jest": "^29.5.3",
+    "@types/jest": "^29.5.14",
     "@types/nat-upnp": "^1.1.5",
     "@types/node": "^20.4.5",
-    "jest": "^29.6.2",
-    "ts-jest": "^29.1.1",
+    "@typescript-eslint/eslint-plugin": "^8.39.0",
+    "@typescript-eslint/parser": "^8.39.0",
+    "eslint": "^9.33.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.4.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.1.6"
   },
