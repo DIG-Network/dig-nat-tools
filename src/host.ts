@@ -3,18 +3,22 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
 import * as natUpnp from 'nat-upnp';
+import * as natPmp from 'nat-pmp';
 import express from 'express';
 import os from 'os';
 
 export interface HostOptions {
   port?: number;
   ttl?: number;  // Time to live for UPnP mapping (seconds)
+  useNatPmp?: boolean;  // Use NAT-PMP instead of UPnP for port forwarding
 }
 
 export class FileHost {
   private app: express.Application;
   private server: http.Server | null = null;
-  private client: natUpnp.Client;
+  private upnpClient: natUpnp.Client;
+  private natPmpClient: natPmp.Client | null = null;
+  private useNatPmp: boolean;
   private port: number;
   private externalPort: number | null = null;
   private ttl: number;
@@ -23,9 +27,20 @@ export class FileHost {
   constructor(options: HostOptions = {}) {
     this.port = options.port || 0;  // 0 means a random available port
     this.ttl = options.ttl || 3600;  // Default 1 hour
+    this.useNatPmp = options.useNatPmp || false;
     
-    // Initialize UPnP client
-    this.client = natUpnp.createClient();
+    // Initialize UPnP client (always available as fallback)
+    this.upnpClient = natUpnp.createClient();
+    
+    // Initialize NAT-PMP client if requested
+    if (this.useNatPmp) {
+      try {
+        this.natPmpClient = natPmp.connect();
+      } catch (error) {
+        console.warn('Failed to initialize NAT-PMP client, falling back to UPnP:', error);
+        this.useNatPmp = false;
+      }
+    }
     
     // Initialize Express app
     this.app = express();
@@ -166,41 +181,90 @@ export class FileHost {
 
   private async mapPort(): Promise<void> {
     return new Promise<void>((resolve, _reject) => {
-      console.log(`Attempting to map port ${this.port} via UPnP...`);
-      this.client.portMapping({
-        public: this.port,
-        private: this.port,
-        ttl: this.ttl
-      }, (err: Error | null, info?: { public?: number }) => {
-        if (err) {
-          console.warn(`UPnP port mapping failed: ${err.message}`);
-          console.warn('Continuing without UPnP - you may need to manually forward the port');
-          // Don't reject, continue without UPnP
-          this.externalPort = this.port;
-          resolve();
-        } else {
-          console.log('UPnP port mapping successful');
-          if (info && info.public) {
-            this.externalPort = info.public;
-            console.log(`External port mapped: ${this.externalPort}`);
+      console.log(`Attempting to map port ${this.port} via ${this.useNatPmp ? 'NAT-PMP' : 'UPnP'}...`);
+      
+      if (this.useNatPmp && this.natPmpClient) {
+        // Use NAT-PMP for port mapping
+        this.natPmpClient.portMapping({
+          type: 1, // TCP
+          private: this.port,
+          public: this.port,
+          ttl: this.ttl
+        }, (err: Error | null, result?: natPmp.PortMappingResult) => {
+          if (err) {
+            console.warn(`NAT-PMP port mapping failed: ${err.message}`);
+            console.warn('Falling back to UPnP...');
+            // Fallback to UPnP
+            this.mapPortUpnp(resolve);
           } else {
-            this.externalPort = this.port;
+            console.log('NAT-PMP port mapping successful');
+            if (result && result.public) {
+              this.externalPort = result.public;
+              console.log(`External port mapped: ${this.externalPort}`);
+            } else {
+              this.externalPort = this.port;
+            }
+            resolve();
           }
-          resolve();
+        });
+      } else {
+        // Use UPnP for port mapping
+        this.mapPortUpnp(resolve);
+      }
+    });
+  }
+
+  private mapPortUpnp(resolve: () => void): void {
+    this.upnpClient.portMapping({
+      public: this.port,
+      private: this.port,
+      ttl: this.ttl
+    }, (err: Error | null, info?: { public?: number }) => {
+      if (err) {
+        console.warn(`UPnP port mapping failed: ${err.message}`);
+        console.warn('Continuing without port forwarding - you may need to manually forward the port');
+        // Don't reject, continue without port forwarding
+        this.externalPort = this.port;
+        resolve();
+      } else {
+        console.log('UPnP port mapping successful');
+        if (info && info.public) {
+          this.externalPort = info.public;
+          console.log(`External port mapped: ${this.externalPort}`);
+        } else {
+          this.externalPort = this.port;
         }
-      });
+        resolve();
+      }
     });
   }
 
   private async unmapPort(): Promise<void> {
     if (this.externalPort) {
       return new Promise<void>((resolve) => {
-        this.client.portUnmapping({
-          public: this.externalPort
-        }, () => {
-          this.externalPort = null;
-          resolve();
-        });
+        if (this.useNatPmp && this.natPmpClient) {
+          // Use NAT-PMP for port unmapping
+          this.natPmpClient.portUnmapping({
+            type: 1, // TCP
+            private: this.externalPort!
+          }, (err: Error | null) => {
+            if (err) {
+              console.warn(`NAT-PMP port unmapping failed: ${err.message}`);
+            }
+            this.externalPort = null;
+            // Close NAT-PMP client
+            this.natPmpClient?.close();
+            resolve();
+          });
+        } else {
+          // Use UPnP for port unmapping
+          this.upnpClient.portUnmapping({
+            public: this.externalPort
+          }, () => {
+            this.externalPort = null;
+            resolve();
+          });
+        }
       });
     }
     return Promise.resolve();
@@ -208,31 +272,56 @@ export class FileHost {
 
   private async getExternalIp(): Promise<string> {
     return new Promise<string>((resolve, reject) => {
-      console.log('Getting external IP address...');
+      console.log(`Getting external IP address via ${this.useNatPmp ? 'NAT-PMP' : 'UPnP'}...`);
       
-      // Try UPnP for external IP first
-      this.client.externalIp((err: Error | null, upnpIp?: string) => {
-        if (err || !upnpIp) {
-          console.warn('Failed to get external IP via UPnP, falling back to local IP');
-          const localIp = this.detectLocalIp();
-          if (localIp) {
-            resolve(localIp);
+      if (this.useNatPmp && this.natPmpClient) {
+        // Try NAT-PMP for external IP first
+        this.natPmpClient.externalIp((err: Error | null, result?: natPmp.ExternalIpResult) => {
+          if (err || !result) {
+            console.warn('Failed to get external IP via NAT-PMP, falling back to UPnP');
+            this.getExternalIpUpnp(resolve, reject);
           } else {
-            reject(new Error('Could not determine IP address'));
+            const ip = result.ip.join('.');
+            console.log(`NAT-PMP reported external IP: ${ip}`);
+            
+            // Check if the NAT-PMP IP is actually a private/local IP
+            if (this.isPrivateIp(ip)) {
+              reject(new Error(`Cascading network topology detected (NAT-PMP returned private IP ${ip}). This configuration is not supported. Please ensure the device is directly connected to a router with a public IP address.`));
+            } else {
+              console.log(`Using NAT-PMP external IP: ${ip}`);
+              resolve(ip);
+            }
           }
+        });
+      } else {
+        // Use UPnP for external IP
+        this.getExternalIpUpnp(resolve, reject);
+      }
+    });
+  }
+
+  private getExternalIpUpnp(resolve: (ip: string) => void, reject: (error: Error) => void): void {
+    this.upnpClient.externalIp((err: Error | null, upnpIp?: string) => {
+      if (err || !upnpIp) {
+        console.warn('Failed to get external IP via UPnP, falling back to local IP');
+        const localIp = this.detectLocalIp();
+        if (localIp) {
+          resolve(localIp);
         } else {
-          console.log(`UPnP reported external IP: ${upnpIp}`);
-          
-          // Check if the UPnP IP is actually a private/local IP
-          // This indicates we're behind a cascaded router/access point - not supported
-          if (this.isPrivateIp(upnpIp)) {
-            reject(new Error(`Cascading network topology detected (UPnP returned private IP ${upnpIp}). This configuration is not supported. Please ensure the device is directly connected to a router with a public IP address.`));
-          } else {
-            console.log(`Using UPnP external IP: ${upnpIp}`);
-            resolve(upnpIp);
-          }
+          reject(new Error('Could not determine IP address'));
         }
-      });
+      } else {
+        console.log(`UPnP reported external IP: ${upnpIp}`);
+        
+        // Check if the UPnP IP is actually a private/local IP
+        // This indicates we're behind a cascaded router/access point - not supported
+        if (this.isPrivateIp(upnpIp)) {
+          reject(new Error(`Cascading network topology detected (UPnP returned private IP ${upnpIp}). This configuration is not supported. Please ensure the device is directly connected to a router with a public IP address.`));
+        } else {
+          console.log(`Using UPnP external IP: ${upnpIp}`);
+          resolve(upnpIp);
+        }
+      }
     });
   }
 

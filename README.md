@@ -1,17 +1,19 @@
 # P2P File Share
 
-A TypeScript package that provides peer-to-peer file sharing capabilities using UPnP (Universal Plug and Play) for NAT traversal.
+A TypeScript package that provides peer-to-peer file sharing capabilities using UPnP (Universal Plug and Play) and NAT-PMP for NAT traversal.
 
 ## Features
 
 - Share files directly from one peer to another
-- Automatic UPnP port mapping for NAT traversal
+- Automatic port mapping for NAT traversal using UPnP or NAT-PMP
+- Intelligent fallback from NAT-PMP to UPnP when needed
 - Intelligent IP address detection (handles local network access)
 - Simple API for hosting and downloading files
 - Support for streaming downloads
 - Secure and efficient file transfer
 - Robust error handling and fallback mechanisms
 - Real-time download progress tracking
+- Cascading network topology detection and error reporting
 
 ## Installation
 
@@ -100,6 +102,34 @@ async function stopSharing() {
 }
 ```
 
+### Using NAT-PMP
+
+```typescript
+import { FileHost } from 'dig-nat-tools';
+
+async function startWithNatPmp() {
+  // Start server with NAT-PMP (with automatic UPnP fallback)
+  const host = new FileHost({ port: 3000, useNatPmp: true });
+  
+  try {
+    const { externalIp, port } = await host.start();
+    console.log(`Server running on ${externalIp}:${port}`);
+    
+    // Share files same as before
+    const fileId = host.shareFile('./my-document.pdf');
+    const fileUrl = await host.getFileUrl(fileId);
+    console.log(`File available at: ${fileUrl}`);
+    
+    // ... rest of your application
+    
+  } catch (error) {
+    console.error('Failed to start server:', error);
+  } finally {
+    await host.stop();
+  }
+}
+```
+
 ### Downloading Files
 
 ```typescript
@@ -162,8 +192,9 @@ async function checkServer(baseUrl: string) {
 
 ```typescript
 new FileHost(options?: {
-  port?: number;     // Port to use (default: random available port)
-  ttl?: number;      // Time to live for UPnP mapping in seconds (default: 3600)
+  port?: number;        // Port to use (default: random available port)
+  ttl?: number;         // Time to live for port mapping in seconds (default: 3600)
+  useNatPmp?: boolean;  // Use NAT-PMP instead of UPnP for port forwarding (default: false)
 })
 ```
 
@@ -193,22 +224,57 @@ interface DownloadOptions {
 }
 ```
 
+## NAT Traversal Protocols
+
+This package supports two protocols for NAT traversal:
+
+### UPnP (Universal Plug and Play) - Default
+- **Widely Supported**: Works with most consumer routers
+- **Automatic Discovery**: Finds compatible devices automatically
+- **Mature Protocol**: Well-established standard
+
+### NAT-PMP (Network Address Translation Port Mapping Protocol)
+- **Apple Standard**: Developed by Apple, commonly found on Apple routers
+- **Lightweight**: Simpler protocol with less overhead
+- **Fast Setup**: Quicker port mapping establishment
+
+### Protocol Selection
+
+```typescript
+// Use UPnP (default)
+const host = new FileHost({ port: 3000 });
+
+// Use NAT-PMP
+const host = new FileHost({ port: 3000, useNatPmp: true });
+```
+
+### Automatic Fallback
+
+When using NAT-PMP, the package automatically falls back to UPnP if NAT-PMP fails:
+
+1. **NAT-PMP Attempt**: First tries to map port using NAT-PMP
+2. **UPnP Fallback**: If NAT-PMP fails, automatically attempts UPnP
+3. **Local IP**: If both fail, falls back to local IP detection
 
 ## Troubleshooting
 
 ### Network Issues
 
 - **Connection Refused**: Make sure your firewall allows Node.js to accept incoming connections
-- **UPnP Issues**: Ensure UPnP is enabled on your router. The package will fall back to local IP detection if UPnP fails
-- **IP Detection**: The package automatically detects your correct local IP address and handles UPnP inconsistencies
+- **NAT-PMP Issues**: Ensure your router supports NAT-PMP (common on Apple routers). The package will automatically fall back to UPnP if NAT-PMP fails
+- **UPnP Issues**: Ensure UPnP is enabled on your router. The package will fall back to local IP detection if UPnP also fails
+- **IP Detection**: The package automatically detects your correct local IP address and handles NAT traversal inconsistencies
 
 ### Common Solutions
 
 1. **Firewall**: Allow Node.js through Windows Firewall when prompted
-2. **Router UPnP**: Check router settings to enable UPnP/IGD
-3. **Port Conflicts**: Use a different port if the default port is in use
+2. **Router NAT-PMP**: Check if your router supports NAT-PMP (common on Apple routers)
+3. **Router UPnP**: Check router settings to enable UPnP/IGD
+4. **Port Conflicts**: Use a different port if the default port is in use
 
 ## Requirements
 
 - Node.js 14 or newer
-- UPnP-enabled router for NAT traversal
+- Router with NAT-PMP and/or UPnP support for NAT traversal
+  - NAT-PMP: Common on Apple routers
+  - UPnP: Widely supported on consumer routers

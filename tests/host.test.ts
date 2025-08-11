@@ -19,6 +19,18 @@ jest.mock('nat-upnp', () => ({
   }))
 }));
 
+// Mock nat-pmp
+const mockNatPmpClient = {
+  portMapping: jest.fn(),
+  portUnmapping: jest.fn(),
+  externalIp: jest.fn(),
+  close: jest.fn()
+};
+
+jest.mock('nat-pmp', () => ({
+  connect: jest.fn(() => mockNatPmpClient)
+}));
+
 // Mock express
 const mockApp = {
   get: jest.fn(),
@@ -71,6 +83,30 @@ describe('FileHost - Comprehensive Coverage', () => {
     it('should initialize with custom options', () => {
       const customHost = new FileHost({ port: 8080, ttl: 7200 });
       expect(customHost).toBeInstanceOf(FileHost);
+    });
+
+    it('should initialize with NAT-PMP enabled', () => {
+      const natPmpHost = new FileHost({ useNatPmp: true });
+      expect(natPmpHost).toBeInstanceOf(FileHost);
+    });
+
+    it('should fallback to UPnP when NAT-PMP initialization fails', () => {
+      // Mock NAT-PMP connect to throw error
+      const natPmp = jest.requireMock('nat-pmp');
+      natPmp.connect.mockImplementationOnce(() => {
+        throw new Error('NAT-PMP not available');
+      });
+
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const natPmpHost = new FileHost({ useNatPmp: true });
+      
+      expect(natPmpHost).toBeInstanceOf(FileHost);
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        'Failed to initialize NAT-PMP client, falling back to UPnP:',
+        expect.any(Error)
+      );
+      
+      consoleWarnSpy.mockRestore();
     });
 
     it('should setup routes correctly', () => {
@@ -281,33 +317,53 @@ describe('FileHost - Comprehensive Coverage', () => {
         await expect(fileHost.start()).rejects.toThrow();
       });
 
-      it('should resolve successfully with external IP and port', async () => {
+      it('should resolve successfully with external IP and port (NAT-PMP)', async () => {
+        const natPmpHost = new FileHost({ useNatPmp: true });
         mockServer.address.mockReturnValue({ port: 3000 });
         
-        // Mock successful UPnP
-        const mockNatClient = {
-          portMapping: jest.fn((options, callback) => {
-            callback(null, { public: 3000 });
-          }),
-          portUnmapping: jest.fn(),
-          externalIp: jest.fn((callback) => {
-            callback(null, '203.0.113.1');
-          })
-        };
-        (fileHost as any).client = mockNatClient;
+        // Mock successful NAT-PMP
+        mockNatPmpClient.portMapping.mockImplementation((options, callback) => {
+          callback(null, { public: 3000, private: 3000, ttl: 3600, type: 1, epoch: Date.now() });
+        });
+        
+        mockNatPmpClient.externalIp.mockImplementation((callback) => {
+          callback(null, { ip: [203, 0, 113, 1], type: 0, epoch: Date.now() });
+        });
 
         mockApp.listen.mockImplementation((port, host, callback) => {
           // Properly set the server reference
-          (fileHost as any).server = mockServer;
+          (natPmpHost as any).server = mockServer;
           callback();
           return mockServer;
         });
 
-        const result = await fileHost.start();
+        const result = await natPmpHost.start();
         expect(result).toEqual({
           externalIp: '203.0.113.1',
           port: 3000
         });
+      });
+
+      it('should handle NAT-PMP external IP returning private IP', async () => {
+        const natPmpHost = new FileHost({ useNatPmp: true });
+        mockServer.address.mockReturnValue({ port: 3000 });
+        
+        // Mock NAT-PMP returning private IP (cascading network)
+        mockNatPmpClient.portMapping.mockImplementation((options, callback) => {
+          callback(null, { public: 3000, private: 3000, ttl: 3600, type: 1, epoch: Date.now() });
+        });
+        
+        mockNatPmpClient.externalIp.mockImplementation((callback) => {
+          callback(null, { ip: [192, 168, 1, 1], type: 0, epoch: Date.now() });
+        });
+
+        mockApp.listen.mockImplementation((port, host, callback) => {
+          (natPmpHost as any).server = mockServer;
+          callback();
+          return mockServer;
+        });
+
+        await expect(natPmpHost.start()).rejects.toThrow('Cascading network topology detected (NAT-PMP returned private IP 192.168.1.1)');
       });
     });
 
@@ -338,7 +394,7 @@ describe('FileHost - Comprehensive Coverage', () => {
           }),
           externalIp: jest.fn()
         };
-        (fileHost as any).client = mockNatClient;
+        (fileHost as any).upnpClient = mockNatClient;
 
         mockServer.close.mockImplementation((callback: any) => {
           callback(null);
@@ -350,7 +406,7 @@ describe('FileHost - Comprehensive Coverage', () => {
     });
   });
 
-  describe('UPnP Port Mapping', () => {
+  describe('UPnP and NAT-PMP Port Mapping', () => {
     it('should handle UPnP mapping failure gracefully', async () => {
       const mockNatClient = {
         portMapping: jest.fn((options, callback) => {
@@ -359,7 +415,7 @@ describe('FileHost - Comprehensive Coverage', () => {
         portUnmapping: jest.fn(),
         externalIp: jest.fn()
       };
-      (fileHost as any).client = mockNatClient;
+      (fileHost as any).upnpClient = mockNatClient;
 
       await (fileHost as any).mapPort();
       expect((fileHost as any).externalPort).toBe((fileHost as any).port);
@@ -373,7 +429,7 @@ describe('FileHost - Comprehensive Coverage', () => {
         portUnmapping: jest.fn(),
         externalIp: jest.fn()
       };
-      (fileHost as any).client = mockNatClient;
+      (fileHost as any).upnpClient = mockNatClient;
 
       await (fileHost as any).mapPort();
       expect((fileHost as any).externalPort).toBe(8080);
@@ -387,15 +443,74 @@ describe('FileHost - Comprehensive Coverage', () => {
         portUnmapping: jest.fn(),
         externalIp: jest.fn()
       };
-      (fileHost as any).client = mockNatClient;
+      (fileHost as any).upnpClient = mockNatClient;
 
       await (fileHost as any).mapPort();
       expect((fileHost as any).externalPort).toBe((fileHost as any).port);
     });
 
+    it('should handle NAT-PMP mapping successfully', async () => {
+      const natPmpHost = new FileHost({ useNatPmp: true });
+      
+      // Mock successful NAT-PMP mapping
+      mockNatPmpClient.portMapping.mockImplementation((options, callback) => {
+        callback(null, { public: 9090, private: 3000, ttl: 3600, type: 1, epoch: Date.now() });
+      });
+
+      await (natPmpHost as any).mapPort();
+      expect((natPmpHost as any).externalPort).toBe(9090);
+    });
+
+    it('should fallback to UPnP when NAT-PMP mapping fails', async () => {
+      const natPmpHost = new FileHost({ useNatPmp: true });
+      
+      // Mock NAT-PMP mapping failure
+      mockNatPmpClient.portMapping.mockImplementation((options, callback) => {
+        callback(new Error('NAT-PMP mapping failed'), null);
+      });
+
+      // Mock successful UPnP fallback
+      const mockUpnpClient = {
+        portMapping: jest.fn((options, callback) => {
+          callback(null, { public: 7070 });
+        }),
+        portUnmapping: jest.fn(),
+        externalIp: jest.fn()
+      };
+      (natPmpHost as any).upnpClient = mockUpnpClient;
+
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      
+      await (natPmpHost as any).mapPort();
+      
+      expect(consoleWarnSpy).toHaveBeenCalledWith('NAT-PMP port mapping failed: NAT-PMP mapping failed');
+      expect(consoleWarnSpy).toHaveBeenCalledWith('Falling back to UPnP...');
+      expect((natPmpHost as any).externalPort).toBe(7070);
+      
+      consoleWarnSpy.mockRestore();
+    });
+
     it('should handle unmapPort when no external port is set', async () => {
       (fileHost as any).externalPort = null;
       await expect((fileHost as any).unmapPort()).resolves.toBeUndefined();
+    });
+
+    it('should handle NAT-PMP unmapping', async () => {
+      const natPmpHost = new FileHost({ useNatPmp: true });
+      (natPmpHost as any).externalPort = 9090;
+      
+      mockNatPmpClient.portUnmapping.mockImplementation((options, callback) => {
+        callback(null);
+      });
+
+      await (natPmpHost as any).unmapPort();
+      
+      expect(mockNatPmpClient.portUnmapping).toHaveBeenCalledWith({
+        type: 1,
+        private: 9090
+      }, expect.any(Function));
+      expect(mockNatPmpClient.close).toHaveBeenCalled();
+      expect((natPmpHost as any).externalPort).toBeNull();
     });
   });
 
@@ -534,23 +649,19 @@ describe('FileHost - Comprehensive Coverage', () => {
         .rejects.toThrow('Server is not started or port is not mapped');
     });
 
-    it('should return correct URL when everything is set up', async () => {
+    it('should return correct URL when everything is set up (NAT-PMP)', async () => {
+      const natPmpHost = new FileHost({ useNatPmp: true });
       mockFs.existsSync.mockReturnValue(true);
-      const fileId = fileHost.shareFile('/test/file.txt');
+      const fileId = natPmpHost.shareFile('/test/file.txt');
       
-      // Set up external port and mock getExternalIp
-      (fileHost as any).externalPort = 3000;
+      // Set up external port and mock NAT-PMP getExternalIp
+      (natPmpHost as any).externalPort = 3000;
       
-      const mockNatClient = {
-        portMapping: jest.fn(),
-        portUnmapping: jest.fn(),
-        externalIp: jest.fn((callback) => {
-          callback(null, '203.0.113.1');
-        })
-      };
-      (fileHost as any).client = mockNatClient;
+      mockNatPmpClient.externalIp.mockImplementation((callback) => {
+        callback(null, { ip: [203, 0, 113, 1], type: 0, epoch: Date.now() });
+      });
       
-      const url = await fileHost.getFileUrl(fileId);
+      const url = await natPmpHost.getFileUrl(fileId);
       expect(url).toBe(`http://203.0.113.1:3000/files/${fileId}`);
     });
   });

@@ -101,7 +101,7 @@ describe('FileHost - Cascading Network Detection', () => {
       });
 
       // Replace the UPnP client
-      (fileHost as any).client = mockNatClient;
+      (fileHost as any).upnpClient = mockNatClient;
 
       // Test that getExternalIp throws an error when cascading network is detected
       await expect((fileHost as any).getExternalIp()).rejects.toThrow(
@@ -125,7 +125,7 @@ describe('FileHost - Cascading Network Detection', () => {
       });
 
       // Replace the UPnP client
-      (fileHost as any).client = mockNatClient;
+      (fileHost as any).upnpClient = mockNatClient;
 
       // Test that getExternalIp succeeds with external IP
       const result = await (fileHost as any).getExternalIp();
@@ -152,7 +152,7 @@ describe('FileHost - Cascading Network Detection', () => {
       (fileHost as any).detectLocalIp = jest.fn().mockReturnValue(localIp);
 
       // Replace the UPnP client
-      (fileHost as any).client = mockNatClient;
+      (fileHost as any).upnpClient = mockNatClient;
 
       // Test that getExternalIp falls back to local IP when UPnP fails
       const result = await (fileHost as any).getExternalIp();
@@ -180,7 +180,7 @@ describe('FileHost - Cascading Network Detection', () => {
       (fileHost as any).detectLocalIp = jest.fn().mockReturnValue(null);
 
       // Replace the UPnP client
-      (fileHost as any).client = mockNatClient;
+      (fileHost as any).upnpClient = mockNatClient;
 
       // Test that getExternalIp throws an error when both UPnP and local detection fail
       await expect((fileHost as any).getExternalIp()).rejects.toThrow('Could not determine IP address');
