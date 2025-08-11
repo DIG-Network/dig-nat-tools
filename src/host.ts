@@ -4,7 +4,6 @@ import * as path from 'path';
 import * as http from 'http';
 import * as natUpnp from 'nat-upnp';
 import express from 'express';
-import https from 'https';
 import os from 'os';
 
 export interface HostOptions {
@@ -172,7 +171,7 @@ export class FileHost {
         public: this.port,
         private: this.port,
         ttl: this.ttl
-      }, (err: Error | null, info?: any) => {
+      }, (err: Error | null, info?: { public?: number }) => {
         if (err) {
           console.warn(`UPnP port mapping failed: ${err.message}`);
           console.warn('Continuing without UPnP - you may need to manually forward the port');
@@ -212,7 +211,7 @@ export class FileHost {
       console.log('Getting external IP address...');
       
       // Try UPnP for external IP first
-      this.client.externalIp(async (err: Error | null, upnpIp?: string) => {
+      this.client.externalIp((err: Error | null, upnpIp?: string) => {
         if (err || !upnpIp) {
           console.warn('Failed to get external IP via UPnP, falling back to local IP');
           const localIp = this.detectLocalIp();
@@ -225,23 +224,9 @@ export class FileHost {
           console.log(`UPnP reported external IP: ${upnpIp}`);
           
           // Check if the UPnP IP is actually a private/local IP
-          // This indicates we're behind a cascaded router/access point
+          // This indicates we're behind a cascaded router/access point - not supported
           if (this.isPrivateIp(upnpIp)) {
-            console.warn(`UPnP returned private IP ${upnpIp} - likely behind cascaded router/access point`);
-            
-            // Try to get the actual external IP using a different method
-            try {
-              const realExternalIp = await this.getRealExternalIp();
-              if (realExternalIp && !this.isPrivateIp(realExternalIp)) {
-                console.log(`Found real external IP: ${realExternalIp}`);
-                resolve(realExternalIp);
-              } else {
-                resolve(upnpIp);
-              }
-            } catch (error) {
-              console.warn('Could not determine real external IP, using UPnP IP');
-              throw new Error(`Failed to get external IP: ${error instanceof Error ? error.message : String(error)}`);
-            }
+            reject(new Error(`Cascading network topology detected (UPnP returned private IP ${upnpIp}). This configuration is not supported. Please ensure the device is directly connected to a router with a public IP address.`));
           } else {
             console.log(`Using UPnP external IP: ${upnpIp}`);
             resolve(upnpIp);
@@ -264,40 +249,6 @@ export class FileHost {
     if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
     
     return false;
-  }
-
-  // Get the real external IP using a web service
-  private async getRealExternalIp(): Promise<string | null> {
-    return new Promise((resolve) => {
-      const options = {
-        hostname: 'api.ipify.org',
-        port: 443,
-        path: '/',
-        method: 'GET',
-        timeout: 5000
-      };
-
-      const req = https.request(options, (res: any) => {
-        let data = '';
-        res.on('data', (chunk: any) => data += chunk);
-        res.on('end', () => {
-          const ip = data.trim();
-          if (ip && !this.isPrivateIp(ip)) {
-            resolve(ip);
-          } else {
-            resolve(null);
-          }
-        });
-      });
-
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => {
-        req.destroy();
-        resolve(null);
-      });
-      
-      req.end();
-    });
   }
 
   private detectLocalIp(): string | null {
