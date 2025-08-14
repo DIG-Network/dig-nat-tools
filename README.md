@@ -103,6 +103,17 @@ async function startServer() {
 
 // Stop sharing when done
 async function stopSharing() {
+  // Remove files from sharing (but keep hash-named files)
+  const sharedFiles = host.getSharedFiles();
+  sharedFiles.forEach(hash => {
+    host.unshareFile(hash); // Only removes from tracking
+  });
+  
+  // Or remove files and delete hash-named files
+  sharedFiles.forEach(hash => {
+    host.unshareFile(hash, true); // Removes from tracking AND deletes the hash-named file
+  });
+  
   await host.stop();
   console.log('Server stopped');
 }
@@ -116,13 +127,25 @@ This package uses SHA256 hashes as file identifiers, which provides several bene
 - **Deduplication**: Identical files will have the same hash, preventing duplicates
 - **Security**: SHA256 hashes are cryptographically secure and tamper-evident
 - **URL structure**: File URLs use the format `http://{host}:{port}/files/{sha256-hash}`
+- **Hash-based storage**: Files are copied and stored with their SHA256 hash as the filename
+
+#### File Storage Model
+
+When you share a file, the package:
+1. Calculates the SHA256 hash of the file content
+2. Copies the file to a new location named by its hash (e.g., `a1b2c3d4e5f6...`)
+3. Serves the file directly from the hash-named location
+4. No separate file mapping is maintained - the filesystem itself stores files by hash
 
 Example SHA256 hash: `a1b2c3d4e5f6789abcdef0123456789abcdef0123456789abcdef0123456789ab`
 
 ```typescript
-// When you share a file, you get back its SHA256 hash
+// When you share a file, it gets copied to a hash-named file
 const fileHash = await host.shareFile('./document.pdf');
 console.log(fileHash); // "a1b2c3d4e5f6789abc..."
+
+// The file is now stored as: ./a1b2c3d4e5f6789abc...
+// And served at: http://{host}:{port}/files/a1b2c3d4e5f6789abc...
 
 // The hash becomes part of the download URL
 const url = await host.getFileUrl(fileHash);
@@ -270,10 +293,10 @@ enum ConnectionMode {
 
 - `start(): Promise<{ externalIp: string, port: number }>` - Starts the file hosting server
 - `stop(): Promise<void>` - Stops the file hosting server
-- `shareFile(filePath: string): string` - Shares a file and returns its unique ID
-- `unshareFile(id: string): boolean` - Removes a shared file
-- `getSharedFiles(): { id: string, path: string }[]` - Gets a list of shared files
-- `getFileUrl(id: string): Promise<string>` - Gets the public URL for a shared file
+- `shareFile(filePath: string): Promise<string>` - Shares a file and returns its SHA256 hash (64-character hex string)
+- `unshareFile(hash: string, deleteFile?: boolean): boolean` - Removes a shared file from tracking, optionally deletes the hash-named file
+- `getSharedFiles(): string[]` - Gets a list of shared file hashes
+- `getFileUrl(hash: string): Promise<string>` - Gets the public URL for a shared file using its SHA256 hash
 
 ### FileClient
 

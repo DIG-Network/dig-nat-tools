@@ -24,15 +24,17 @@ export interface IFileHost {
   /**
    * Remove a shared file by its SHA256 hash
    * @param hash SHA256 hash of the file to unshare (64-character hexadecimal string)
-   * @returns True if file was found and removed, false otherwise
+   * @param deleteFile Whether to delete the hash-named file from disk (default: false)
+   * @returns True if file was found and removed from tracking, false otherwise
    */
-  unshareFile(hash: string): boolean;
+  unshareFile(hash: string, deleteFile?: boolean): boolean;
 
   /**
-   * Get a list of currently shared files with their SHA256 hashes
-   * @returns Array of objects containing hash (64-character hexadecimal string) and file path
+   * Get a list of currently shared file hashes
+   * Since files are stored with their hash names, only the hashes are returned
+   * @returns Array of SHA256 hashes (64-character hexadecimal strings)
    */
-  getSharedFiles(): { hash: string, path: string }[];
+  getSharedFiles(): string[];
 
   /**
    * Get the URL for a shared file by its SHA256 hash

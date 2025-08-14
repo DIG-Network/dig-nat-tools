@@ -2,12 +2,9 @@
 jest.mock('fs', () => ({
   existsSync: jest.fn(),
   statSync: jest.fn(),
-  createReadStream: jest.fn()
-}));
-
-// Mock path module
-jest.mock('path', () => ({
-  basename: jest.fn()
+  createReadStream: jest.fn(),
+  copyFileSync: jest.fn(),
+  unlinkSync: jest.fn()
 }));
 
 // Mock nat-upnp
@@ -48,12 +45,10 @@ jest.mock('os', () => ({
 
 import { FileHost, ConnectionMode } from '../src/host';
 import * as fs from 'fs';
-import * as path from 'path';
 import os from 'os';
 
 // Get the mocked versions
 const mockFs = fs as jest.Mocked<typeof fs>;
-const mockPath = path as jest.Mocked<typeof path>;
 const mockOs = os as jest.Mocked<typeof os>;
 
 describe('FileHost - Comprehensive Coverage', () => {
@@ -202,7 +197,6 @@ describe('FileHost - Comprehensive Coverage', () => {
 
         mockFs.existsSync.mockReturnValue(true);
         mockFs.statSync.mockReturnValue(fileStats as any);
-        mockPath.basename.mockReturnValue('file.txt');
 
         // Share a file first (this will use the global createReadStream mock)
         const fileHash = await fileHost.shareFile(testFilePath);
@@ -215,7 +209,7 @@ describe('FileHost - Comprehensive Coverage', () => {
         
         expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Length', 1024);
         expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Type', 'application/octet-stream');
-        expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Disposition', 'attachment; filename=file.txt');
+        expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Disposition', `attachment; filename=${fileHash}`);
         expect(mockStreamForRoute.pipe).toHaveBeenCalledWith(mockRes);
       });
     });
@@ -247,15 +241,35 @@ describe('FileHost - Comprehensive Coverage', () => {
         }).rejects.toThrow('File not found: /non/existent/file.txt');
       });
 
-      it('should return unique ID when file exists', async () => {
+      it('should return unique hash when file exists', async () => {
         mockFs.existsSync.mockReturnValue(true);
         
-        const id1 = await fileHost.shareFile('/test/file1.txt');
-        const id2 = await fileHost.shareFile('/test/file2.txt');
+        const hash1 = await fileHost.shareFile('/test/file1.txt');
+        const hash2 = await fileHost.shareFile('/test/file2.txt');
         
-        expect(id1).toBeTruthy();
-        expect(id2).toBeTruthy();
-        expect(id1).not.toBe(id2);
+        expect(hash1).toBeTruthy();
+        expect(hash2).toBeTruthy();
+        expect(hash1).not.toBe(hash2);
+        expect(typeof hash1).toBe('string');
+        expect(hash1).toHaveLength(64); // SHA256 hash length
+      });
+
+      it('should copy file to hash-named location', async () => {
+        mockFs.existsSync.mockReturnValueOnce(true); // Original file exists
+        mockFs.existsSync.mockReturnValueOnce(false); // Hash file doesn't exist yet
+        
+        const hash = await fileHost.shareFile('/test/file.txt');
+        
+        expect(mockFs.copyFileSync).toHaveBeenCalledWith('/test/file.txt', hash);
+        expect(hash).toBeTruthy();
+      });
+
+      it('should not copy file if hash-named file already exists', async () => {
+        mockFs.existsSync.mockReturnValue(true); // Both original and hash files exist
+        
+        await fileHost.shareFile('/test/file.txt');
+        
+        expect(mockFs.copyFileSync).not.toHaveBeenCalled();
       });
     });
 
@@ -274,7 +288,34 @@ describe('FileHost - Comprehensive Coverage', () => {
         
         // Verify it's removed
         const sharedFiles = fileHost.getSharedFiles();
-        expect(sharedFiles.find(f => f.hash === fileHash)).toBeUndefined();
+        expect(sharedFiles.includes(fileHash)).toBe(false);
+      });
+
+      it('should delete hash-named file when deleteFile is true', async () => {
+        mockFs.existsSync.mockReturnValue(true);
+        const fileHash = await fileHost.shareFile('/test/file.txt');
+        
+        // Mock file exists for deletion
+        mockFs.existsSync.mockReturnValue(true);
+        
+        const result = fileHost.unshareFile(fileHash, true);
+        expect(result).toBe(true);
+        expect(mockFs.unlinkSync).toHaveBeenCalledWith(fileHash);
+      });
+
+      it('should handle file deletion errors gracefully', async () => {
+        mockFs.existsSync.mockReturnValue(true);
+        const fileHash = await fileHost.shareFile('/test/file.txt');
+        
+        // Mock file exists but deletion fails
+        mockFs.existsSync.mockReturnValue(true);
+        mockFs.unlinkSync.mockImplementation(() => {
+          throw new Error('Permission denied');
+        });
+        
+        // Should still return true (file removed from tracking)
+        const result = fileHost.unshareFile(fileHash, true);
+        expect(result).toBe(true);
       });
     });
 
@@ -291,10 +332,8 @@ describe('FileHost - Comprehensive Coverage', () => {
         
         const sharedFiles = fileHost.getSharedFiles();
         expect(sharedFiles).toHaveLength(2);
-        expect(sharedFiles).toEqual([
-          { hash: hash1, path: '/test/file1.txt' },
-          { hash: hash2, path: '/test/file2.txt' }
-        ]);
+        expect(sharedFiles).toContain(hash1);
+        expect(sharedFiles).toContain(hash2);
       });
     });
   });

@@ -1,6 +1,5 @@
 // host.ts
 import * as fs from 'fs';
-import * as path from 'path';
 import * as http from 'http';
 import * as crypto from 'crypto';
 import * as natUpnp from 'nat-upnp';
@@ -30,7 +29,7 @@ export class FileHost implements IFileHost {
   private port: number;
   private externalPort: number | null = null;
   private ttl: number;
-  private fileMappings: Map<string, string> = new Map(); // Maps SHA256 hash to file path
+  private sharedFiles: Set<string> = new Set(); // Tracks shared file hashes
 
   constructor(options: HostOptions = {}) {
     this.port = options.port || 0;  // 0 means a random available port
@@ -61,17 +60,21 @@ export class FileHost implements IFileHost {
   private setupRoutes(): void {
     // Route to serve files by SHA256 hash
     // URL format: /files/{64-character-hexadecimal-sha256-hash}
+    // Files are expected to be stored with their hash as the filename
     this.app.get('/files/:hash', (req, res) => {
       const hash = req.params.hash; // SHA256 hash (64-character hex string)
-      const filePath = this.fileMappings.get(hash);
       
-      if (!filePath) {
+      // Check if this hash is tracked as a shared file
+      if (!this.sharedFiles.has(hash)) {
         return res.status(404).json({ error: 'File not found' });
       }
 
+      // File path is the hash itself (files stored with hash names)
+      const filePath = hash;
+
       // Check if file exists
       if (!fs.existsSync(filePath)) {
-        this.fileMappings.delete(hash);
+        this.sharedFiles.delete(hash);
         return res.status(404).json({ error: 'File no longer exists' });
       }
 
@@ -81,7 +84,7 @@ export class FileHost implements IFileHost {
       // Set response headers
       res.setHeader('Content-Length', stats.size);
       res.setHeader('Content-Type', 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename=${path.basename(filePath)}`);
+      res.setHeader('Content-Disposition', `attachment; filename=${hash}`);
       
       // Stream file to response
       const fileStream = fs.createReadStream(filePath);
@@ -92,7 +95,7 @@ export class FileHost implements IFileHost {
     this.app.get('/status', (_req, res) => {
       res.json({ 
         status: 'online',
-        availableFiles: Array.from(this.fileMappings.keys())
+        availableFiles: Array.from(this.sharedFiles)
       });
     });
   }
@@ -182,6 +185,7 @@ export class FileHost implements IFileHost {
 
   /**
    * Share a file and get the SHA256 hash for it
+   * The file will be copied to a new location named by its SHA256 hash
    * The returned hash becomes the file identifier in URLs (e.g., /files/{hash})
    * @param filePath Path to the file to share
    * @returns SHA256 hash of the file (64-character hexadecimal string)
@@ -195,25 +199,42 @@ export class FileHost implements IFileHost {
     // Calculate SHA256 hash of the file content
     const hash = await this.calculateFileHash(filePath);
     
-    // Store the mapping from hash to file path
-    this.fileMappings.set(hash, filePath);
+    // Copy the file to a location named by its hash (if not already there)
+    if (!fs.existsSync(hash)) {
+      fs.copyFileSync(filePath, hash);
+    }
+    
+    // Track this hash as a shared file
+    this.sharedFiles.add(hash);
     
     return hash; // This hash becomes the file path component in URLs
   }
 
   /**
    * Remove a shared file
+   * This removes the file from tracking and optionally deletes the hash-named file
    */
-  public unshareFile(hash: string): boolean {
-    return this.fileMappings.delete(hash);
+  public unshareFile(hash: string, deleteFile: boolean = false): boolean {
+    const wasShared = this.sharedFiles.delete(hash);
+    
+    // Optionally delete the hash-named file
+    if (deleteFile && fs.existsSync(hash)) {
+      try {
+        fs.unlinkSync(hash);
+      } catch (error) {
+        console.warn(`Failed to delete file ${hash}:`, error);
+      }
+    }
+    
+    return wasShared;
   }
 
   /**
    * Get a list of currently shared files
+   * Returns only the hashes since files are stored by hash names
    */
-  public getSharedFiles(): { hash: string, path: string }[] {
-    return Array.from(this.fileMappings.entries())
-      .map(([hash, path]) => ({ hash, path }));
+  public getSharedFiles(): string[] {
+    return Array.from(this.sharedFiles);
   }
 
   private async mapPort(): Promise<void> {
@@ -467,7 +488,7 @@ export class FileHost implements IFileHost {
    * @returns URL to download the file (path component contains the SHA256 hash)
    */
   public async getFileUrl(hash: string): Promise<string> {
-    if (!this.fileMappings.has(hash)) {
+    if (!this.sharedFiles.has(hash)) {
       throw new Error(`No file with hash: ${hash}`);
     }
 
