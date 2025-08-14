@@ -2,12 +2,17 @@
 import { FileHost, HostOptions, ConnectionMode } from './host';
 
 // Re-export from client.ts
-import { FileClient, DownloadOptions } from './client';
+import { FileClient } from './client';
+
+// Re-export from interfaces.ts
+import { IFileHost, IFileClient, DownloadOptions } from './interfaces';
 
 export {
   FileHost,
   HostOptions,
   ConnectionMode,
   FileClient,
-  DownloadOptions
+  DownloadOptions,
+  IFileHost,
+  IFileClient
 };

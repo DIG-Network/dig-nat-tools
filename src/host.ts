@@ -2,10 +2,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
+import * as crypto from 'crypto';
 import * as natUpnp from 'nat-upnp';
 import * as natPmp from 'nat-pmp';
 import express from 'express';
 import os from 'os';
+import { IFileHost } from './interfaces';
 
 export enum ConnectionMode {
   UPNP = 'upnp',
@@ -19,7 +21,7 @@ export interface HostOptions {
   connectionMode?: ConnectionMode;  // Connection mode for NAT traversal
 }
 
-export class FileHost {
+export class FileHost implements IFileHost {
   private app: express.Application;
   private server: http.Server | null = null;
   private upnpClient: natUpnp.Client | null = null;
@@ -28,7 +30,7 @@ export class FileHost {
   private port: number;
   private externalPort: number | null = null;
   private ttl: number;
-  private fileMappings: Map<string, string> = new Map();
+  private fileMappings: Map<string, string> = new Map(); // Maps SHA256 hash to file path
 
   constructor(options: HostOptions = {}) {
     this.port = options.port || 0;  // 0 means a random available port
@@ -58,9 +60,9 @@ export class FileHost {
 
   private setupRoutes(): void {
     // Route to serve files
-    this.app.get('/files/:id', (req, res) => {
-      const id = req.params.id;
-      const filePath = this.fileMappings.get(id);
+    this.app.get('/files/:hash', (req, res) => {
+      const hash = req.params.hash;
+      const filePath = this.fileMappings.get(hash);
       
       if (!filePath) {
         return res.status(404).json({ error: 'File not found' });
@@ -68,7 +70,7 @@ export class FileHost {
 
       // Check if file exists
       if (!fs.existsSync(filePath)) {
-        this.fileMappings.delete(id);
+        this.fileMappings.delete(hash);
         return res.status(404).json({ error: 'File no longer exists' });
       }
 
@@ -178,36 +180,36 @@ export class FileHost {
   }
 
   /**
-   * Share a file and get the unique ID for it
+   * Share a file and get the SHA256 hash for it
    */
-  public shareFile(filePath: string): string {
+  public async shareFile(filePath: string): Promise<string> {
     // Check if file exists
     if (!fs.existsSync(filePath)) {
       throw new Error(`File not found: ${filePath}`);
     }
     
-    // Generate a unique ID for this file
-    const id = this.generateUniqueId();
+    // Calculate SHA256 hash of the file
+    const hash = await this.calculateFileHash(filePath);
     
     // Store the mapping
-    this.fileMappings.set(id, filePath);
+    this.fileMappings.set(hash, filePath);
     
-    return id;
+    return hash;
   }
 
   /**
    * Remove a shared file
    */
-  public unshareFile(id: string): boolean {
-    return this.fileMappings.delete(id);
+  public unshareFile(hash: string): boolean {
+    return this.fileMappings.delete(hash);
   }
 
   /**
    * Get a list of currently shared files
    */
-  public getSharedFiles(): { id: string, path: string }[] {
+  public getSharedFiles(): { hash: string, path: string }[] {
     return Array.from(this.fileMappings.entries())
-      .map(([id, path]) => ({ id, path }));
+      .map(([hash, path]) => ({ hash, path }));
   }
 
   private async mapPort(): Promise<void> {
@@ -432,11 +434,33 @@ export class FileHost {
   }
 
   /**
+   * Calculate SHA256 hash of a file
+   */
+  private async calculateFileHash(filePath: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const hash = crypto.createHash('sha256');
+      const stream = fs.createReadStream(filePath);
+      
+      stream.on('data', (data) => {
+        hash.update(data);
+      });
+      
+      stream.on('end', () => {
+        resolve(hash.digest('hex'));
+      });
+      
+      stream.on('error', (error) => {
+        reject(error);
+      });
+    });
+  }
+
+  /**
    * Get the URL for a shared file
    */
-  public async getFileUrl(id: string): Promise<string> {
-    if (!this.fileMappings.has(id)) {
-      throw new Error(`No file with ID: ${id}`);
+  public async getFileUrl(hash: string): Promise<string> {
+    if (!this.fileMappings.has(hash)) {
+      throw new Error(`No file with hash: ${hash}`);
     }
 
     if (!this.externalPort) {
@@ -449,10 +473,10 @@ export class FileHost {
       if (!localIp) {
         throw new Error('Could not determine local IP address');
       }
-      return `http://${localIp}:${this.externalPort}/files/${id}`;
+      return `http://${localIp}:${this.externalPort}/files/${hash}`;
     } else {
       const externalIp = await this.getExternalIp();
-      return `http://${externalIp}:${this.externalPort}/files/${id}`;
+      return `http://${externalIp}:${this.externalPort}/files/${hash}`;
     }
   }
 }

@@ -83,7 +83,7 @@ describe('FileClient', () => {
         toString: () => url
       }) as any);
 
-      const promise = FileClient.downloadAsBuffer('http://example.com/file.txt');
+      const promise = FileClient.downloadAsBufferStatic('http://example.com/file.txt');
       
       // Wait for the promise to resolve
       const result = await promise;
@@ -103,7 +103,7 @@ describe('FileClient', () => {
         toString: () => url
       }) as any);
 
-      const promise = FileClient.downloadAsBuffer('https://example.com/file.txt');
+      const promise = FileClient.downloadAsBufferStatic('https://example.com/file.txt');
       
       const result = await promise;
       
@@ -121,7 +121,7 @@ describe('FileClient', () => {
         toString: () => url
       }) as any);
 
-      const promise = FileClient.downloadAsBuffer('http://example.com/file.txt', { timeout: 10000 });
+      const promise = FileClient.downloadAsBufferStatic('http://example.com/file.txt', { timeout: 10000 });
       
       await promise;
       
@@ -142,7 +142,7 @@ describe('FileClient', () => {
 
       mockResponse.headers = { 'content-length': '15' }; // Length of "test data chunk"
       
-      const promise = FileClient.downloadAsBuffer('http://example.com/file.txt', { onProgress });
+      const promise = FileClient.downloadAsBufferStatic('http://example.com/file.txt', { onProgress });
       
       await promise;
       
@@ -159,7 +159,7 @@ describe('FileClient', () => {
 
       mockResponse.headers = { 'content-length': '0' }; // No content-length effectively
       
-      const promise = FileClient.downloadAsBuffer('http://example.com/file.txt', { onProgress });
+      const promise = FileClient.downloadAsBufferStatic('http://example.com/file.txt', { onProgress });
       
       await promise;
       
@@ -182,7 +182,7 @@ describe('FileClient', () => {
         return mockResponse;
       });
 
-      const result = await FileClient.downloadAsBuffer('http://example.com/file.txt');
+      const result = await FileClient.downloadAsBufferStatic('http://example.com/file.txt');
       
       expect(result.toString()).toBe('chunk1chunk2');
     });
@@ -204,7 +204,7 @@ describe('FileClient', () => {
         return mockRequest;
       });
 
-      await expect(FileClient.downloadAsBuffer('http://example.com/file.txt'))
+      await expect(FileClient.downloadAsBufferStatic('http://example.com/file.txt'))
         .rejects.toThrow('Failed to download file: 404 Not Found');
     });
 
@@ -227,7 +227,7 @@ describe('FileClient', () => {
         return mockRequest;
       });
 
-      await expect(FileClient.downloadAsBuffer('http://example.com/file.txt'))
+      await expect(FileClient.downloadAsBufferStatic('http://example.com/file.txt'))
         .rejects.toThrow('Network error');
     });
 
@@ -250,7 +250,7 @@ describe('FileClient', () => {
         return mockRequest;
       });
 
-      await expect(FileClient.downloadAsBuffer('http://example.com/file.txt'))
+      await expect(FileClient.downloadAsBufferStatic('http://example.com/file.txt'))
         .rejects.toThrow('Download timed out');
       
       expect(mockRequest.destroy).toHaveBeenCalled();
@@ -264,7 +264,7 @@ describe('FileClient', () => {
         toString: () => url
       }) as any);
 
-      const result = await FileClient.downloadAsStream('http://example.com/file.txt');
+      const result = await FileClient.downloadAsStreamStatic('http://example.com/file.txt');
       
       expect(result).toBe(mockResponse);
       expect(mockHttp.get).toHaveBeenCalledWith(
@@ -280,7 +280,7 @@ describe('FileClient', () => {
         toString: () => url
       }) as any);
 
-      const result = await FileClient.downloadAsStream('https://example.com/file.txt');
+      const result = await FileClient.downloadAsStreamStatic('https://example.com/file.txt');
       
       expect(result).toBe(mockResponse);
       expect(mockHttps.get).toHaveBeenCalledWith(
@@ -296,7 +296,7 @@ describe('FileClient', () => {
         toString: () => url
       }) as any);
 
-      await FileClient.downloadAsStream('http://example.com/file.txt', { timeout: 15000 });
+      await FileClient.downloadAsStreamStatic('http://example.com/file.txt', { timeout: 15000 });
       
       expect(mockHttp.get).toHaveBeenCalledWith(
         'http://example.com/file.txt',
@@ -314,7 +314,7 @@ describe('FileClient', () => {
       mockResponse.statusCode = 500;
       mockResponse.statusMessage = 'Internal Server Error';
 
-      await expect(FileClient.downloadAsStream('http://example.com/file.txt'))
+      await expect(FileClient.downloadAsStreamStatic('http://example.com/file.txt'))
         .rejects.toThrow('Failed to download file: 500 Internal Server Error');
     });
 
@@ -337,7 +337,7 @@ describe('FileClient', () => {
         return mockRequest;
       });
 
-      await expect(FileClient.downloadAsStream('http://example.com/file.txt'))
+      await expect(FileClient.downloadAsStreamStatic('http://example.com/file.txt'))
         .rejects.toThrow('Connection refused');
     });
 
@@ -360,7 +360,7 @@ describe('FileClient', () => {
         return mockRequest;
       });
 
-      await expect(FileClient.downloadAsStream('http://example.com/file.txt'))
+      await expect(FileClient.downloadAsStreamStatic('http://example.com/file.txt'))
         .rejects.toThrow('Download timed out');
       
       expect(mockRequest.destroy).toHaveBeenCalled();
@@ -389,7 +389,7 @@ describe('FileClient', () => {
         return mockResponse;
       });
 
-      const result = await FileClient.isServerOnline('http://example.com:3000');
+      const result = await FileClient.isServerOnlineStatic('http://example.com:3000');
       
       expect(result).toBe(true);
       expect(mockHttp.get).toHaveBeenCalledWith(
@@ -414,7 +414,7 @@ describe('FileClient', () => {
         return mockResponse;
       });
 
-      const result = await FileClient.isServerOnline('https://example.com:3000');
+      const result = await FileClient.isServerOnlineStatic('https://example.com:3000');
       
       expect(result).toBe(true);
       expect(mockHttps.get).toHaveBeenCalled();
@@ -435,7 +435,7 @@ describe('FileClient', () => {
         return mockResponse;
       });
 
-      const result = await FileClient.isServerOnline('http://example.com:3000');
+      const result = await FileClient.isServerOnlineStatic('http://example.com:3000');
       
       expect(result).toBe(false);
     });
@@ -448,7 +448,7 @@ describe('FileClient', () => {
 
       mockResponse.statusCode = 404;
 
-      const result = await FileClient.isServerOnline('http://example.com:3000');
+      const result = await FileClient.isServerOnlineStatic('http://example.com:3000');
       
       expect(result).toBe(false);
     });
@@ -468,7 +468,7 @@ describe('FileClient', () => {
         return mockResponse;
       });
 
-      const result = await FileClient.isServerOnline('http://example.com:3000');
+      const result = await FileClient.isServerOnlineStatic('http://example.com:3000');
       
       expect(result).toBe(false);
     });
@@ -488,7 +488,7 @@ describe('FileClient', () => {
         return mockResponse;
       });
 
-      const result = await FileClient.isServerOnline('http://example.com:3000');
+      const result = await FileClient.isServerOnlineStatic('http://example.com:3000');
       
       expect(result).toBe(false);
     });
@@ -506,7 +506,7 @@ describe('FileClient', () => {
         return mockRequest;
       });
 
-      const result = await FileClient.isServerOnline('http://example.com:3000');
+      const result = await FileClient.isServerOnlineStatic('http://example.com:3000');
       
       expect(result).toBe(false);
     });
@@ -524,7 +524,7 @@ describe('FileClient', () => {
         return mockRequest;
       });
 
-      const result = await FileClient.isServerOnline('http://example.com:3000');
+      const result = await FileClient.isServerOnlineStatic('http://example.com:3000');
       
       expect(result).toBe(false);
       expect(mockRequest.destroy).toHaveBeenCalled();
@@ -535,7 +535,7 @@ describe('FileClient', () => {
         throw new Error('Invalid URL');
       });
 
-      const result = await FileClient.isServerOnline('invalid-url');
+      const result = await FileClient.isServerOnlineStatic('invalid-url');
       
       expect(result).toBe(false);
     });
@@ -556,7 +556,7 @@ describe('FileClient', () => {
         return mockResponse;
       });
 
-      const result = await FileClient.isServerOnline('http://example.com:3000');
+      const result = await FileClient.isServerOnlineStatic('http://example.com:3000');
       
       expect(result).toBe(true);
     });
