@@ -3,20 +3,46 @@ import * as http from 'http';
 import * as https from 'https';
 import { URL } from 'url';
 import { Readable } from 'stream';
+import { IFileClient, DownloadOptions } from './interfaces';
 
-export interface DownloadOptions {
-  timeout?: number;  // Timeout in milliseconds
-  onProgress?: (downloaded: number, total: number) => void;
-}
-
-export class FileClient {
+export class FileClient implements IFileClient {
+  
   /**
    * Download a file from a peer and return it as a buffer
    * @param url The URL of the file to download
    * @param options Download options
+   * @returns A promise that resolves to the file content as a Buffer
+   */
+  public async downloadAsBuffer(url: string, options: DownloadOptions = {}): Promise<Buffer> {
+    return FileClient.downloadAsBufferStatic(url, options);
+  }
+
+  /**
+   * Download a file from a peer and return it as a readable stream
+   * @param url The URL of the file to download
+   * @param options Download options
+   * @returns A promise that resolves to a readable stream
+   */
+  public async downloadAsStream(url: string, options: DownloadOptions = {}): Promise<Readable> {
+    return FileClient.downloadAsStreamStatic(url, options);
+  }
+
+  /**
+   * Check if a P2P server is online
+   * @param baseUrl The base URL of the P2P server
+   * @returns A promise that resolves to a boolean indicating server status
+   */
+  public async isServerOnline(baseUrl: string): Promise<boolean> {
+    return FileClient.isServerOnlineStatic(baseUrl);
+  }
+
+  /**
+   * Download a file from a peer and return it as a buffer (static version)
+   * @param url The URL of the file to download
+   * @param options Download options
    * @returns A promise that resolves to the file buffer
    */
-  public static async downloadAsBuffer(url: string, options: DownloadOptions = {}): Promise<Buffer> {
+  public static async downloadAsBufferStatic(url: string, options: DownloadOptions = {}): Promise<Buffer> {
     const { timeout = 30000, onProgress } = options;
 
     return new Promise<Buffer>((resolve, reject) => {
@@ -61,12 +87,12 @@ export class FileClient {
   }
 
   /**
-   * Download a file from a peer and return it as a readable stream
+   * Download a file from a peer and return it as a readable stream (static version)
    * @param url The URL of the file to download
    * @param options Download options
    * @returns A promise that resolves to a readable stream
    */
-  public static async downloadAsStream(url: string, options: DownloadOptions = {}): Promise<Readable> {
+  public static async downloadAsStreamStatic(url: string, options: DownloadOptions = {}): Promise<Readable> {
     const { timeout = 30000 } = options;
 
     return new Promise<Readable>((resolve, reject) => {
@@ -97,11 +123,11 @@ export class FileClient {
   }
 
   /**
-   * Check if a P2P server is online
+   * Check if a P2P server is online (static version)
    * @param baseUrl The base URL of the P2P server (e.g., http://192.168.1.100:30780)
    * @returns A promise that resolves to a boolean indicating whether the server is online
    */
-  public static async isServerOnline(baseUrl: string): Promise<boolean> {
+  public static async isServerOnlineStatic(baseUrl: string): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
       try {
         // Parse the URL and add the status path

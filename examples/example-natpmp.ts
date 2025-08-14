@@ -22,12 +22,12 @@ async function demonstrateNatPmp(): Promise<void> {
     
     // Share a test file (if it exists)
     try {
-      const fileId = fileHost.shareFile('./README.md');
-      const fileUrl = await fileHost.getFileUrl(fileId);
+      const fileHash = await fileHost.shareFile('./README.md');
+      const fileUrl = await fileHost.getFileUrl(fileHash);
       
       console.log(`\n📄 Shared file: README.md`);
       console.log(`🔗 Download URL: ${fileUrl}`);
-      console.log(`🆔 File ID: ${fileId}`);
+      console.log(`🔑 File SHA256: ${fileHash}`);
     } catch {
       console.log('\n📄 No README.md found to share');
     }

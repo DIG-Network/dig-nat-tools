@@ -2,12 +2,9 @@
 jest.mock('fs', () => ({
   existsSync: jest.fn(),
   statSync: jest.fn(),
-  createReadStream: jest.fn()
-}));
-
-// Mock path module
-jest.mock('path', () => ({
-  basename: jest.fn()
+  createReadStream: jest.fn(),
+  copyFileSync: jest.fn(),
+  unlinkSync: jest.fn()
 }));
 
 // Mock nat-upnp
@@ -48,12 +45,10 @@ jest.mock('os', () => ({
 
 import { FileHost, ConnectionMode } from '../src/host';
 import * as fs from 'fs';
-import * as path from 'path';
 import os from 'os';
 
 // Get the mocked versions
 const mockFs = fs as jest.Mocked<typeof fs>;
-const mockPath = path as jest.Mocked<typeof path>;
 const mockOs = os as jest.Mocked<typeof os>;
 
 describe('FileHost - Comprehensive Coverage', () => {
@@ -70,6 +65,27 @@ describe('FileHost - Comprehensive Coverage', () => {
     };
     
     mockApp.listen.mockReturnValue(mockServer);
+    
+    // Mock createReadStream to simulate a stream with events for calculateFileHash
+    mockFs.createReadStream.mockImplementation((filePath: any) => {
+      const mockStream: any = {
+        on: jest.fn((event: string, callback: any) => {
+          if (event === 'data') {
+            // Simulate different data for different files to get different hashes
+            const fileContent = `test file content for ${filePath}`;
+            setTimeout(() => callback(Buffer.from(fileContent)), 0);
+          } else if (event === 'end') {
+            // Simulate stream end
+            setTimeout(() => callback(), 10);
+          } else if (event === 'error') {
+            // Don't call error callback in normal case
+          }
+          return mockStream;
+        }),
+        pipe: jest.fn()
+      };
+      return mockStream;
+    });
     
     fileHost = new FileHost({ port: 3000, ttl: 1800 });
   });
@@ -120,7 +136,7 @@ describe('FileHost - Comprehensive Coverage', () => {
 
     it('should setup routes correctly', () => {
       // Verify that routes are set up
-      expect(mockApp.get).toHaveBeenCalledWith('/files/:id', expect.any(Function));
+      expect(mockApp.get).toHaveBeenCalledWith('/files/:hash', expect.any(Function));
       expect(mockApp.get).toHaveBeenCalledWith('/status', expect.any(Function));
     });
   });
@@ -134,11 +150,11 @@ describe('FileHost - Comprehensive Coverage', () => {
     beforeEach(() => {
       // Get the route handlers from the mock calls
       const routeCalls = mockApp.get.mock.calls;
-      fileRouteHandler = routeCalls.find(call => call[0] === '/files/:id')?.[1];
+      fileRouteHandler = routeCalls.find(call => call[0] === '/files/:hash')?.[1];
       statusRouteHandler = routeCalls.find(call => call[0] === '/status')?.[1];
 
       mockReq = {
-        params: { id: 'test-id' }
+        params: { hash: 'test-hash' }
       };
 
       mockRes = {
@@ -149,67 +165,67 @@ describe('FileHost - Comprehensive Coverage', () => {
       };
     });
 
-    describe('/files/:id route', () => {
-      it('should return 404 when file ID not found', () => {
+    describe('/files/:hash route', () => {
+      it('should return 404 when file hash not found', () => {
         fileRouteHandler(mockReq, mockRes);
         
         expect(mockRes.status).toHaveBeenCalledWith(404);
         expect(mockRes.json).toHaveBeenCalledWith({ error: 'File not found' });
       });
 
-      it('should return 404 when file no longer exists', () => {
+      it('should return 404 when file no longer exists', async () => {
         // First share a file to add to mappings
         const testFilePath = '/test/file.txt';
         mockFs.existsSync.mockReturnValueOnce(true); // For shareFile
-        const fileId = fileHost.shareFile(testFilePath);
+        const fileHash = await fileHost.shareFile(testFilePath);
         
         // Now simulate file not existing for the route
         mockFs.existsSync.mockReturnValueOnce(false);
         
-        mockReq.params.id = fileId;
+        mockReq.params.hash = fileHash;
         fileRouteHandler(mockReq, mockRes);
         
         expect(mockRes.status).toHaveBeenCalledWith(404);
         expect(mockRes.json).toHaveBeenCalledWith({ error: 'File no longer exists' });
       });
 
-      it('should serve file when it exists', () => {
+      it('should serve file when it exists', async () => {
         // Setup mocks
         const testFilePath = '/test/file.txt';
         const fileStats = { size: 1024 };
-        const mockStream = { pipe: jest.fn() };
+        const mockStreamForRoute = { pipe: jest.fn() };
 
         mockFs.existsSync.mockReturnValue(true);
         mockFs.statSync.mockReturnValue(fileStats as any);
-        mockFs.createReadStream.mockReturnValue(mockStream as any);
-        mockPath.basename.mockReturnValue('file.txt');
 
-        // Share a file
-        const fileId = fileHost.shareFile(testFilePath);
+        // Share a file first (this will use the global createReadStream mock)
+        const fileHash = await fileHost.shareFile(testFilePath);
         
-        mockReq.params.id = fileId;
+        // Now override the mock for the route handling
+        mockFs.createReadStream.mockReturnValue(mockStreamForRoute as any);
+        
+        mockReq.params.hash = fileHash;
         fileRouteHandler(mockReq, mockRes);
         
         expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Length', 1024);
         expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Type', 'application/octet-stream');
-        expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Disposition', 'attachment; filename=file.txt');
-        expect(mockFs.createReadStream).toHaveBeenCalledWith(testFilePath);
-        expect(mockStream.pipe).toHaveBeenCalledWith(mockRes);
+        expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Disposition', `attachment; filename=${fileHash}`);
+        expect(mockStreamForRoute.pipe).toHaveBeenCalledWith(mockRes);
       });
     });
 
     describe('/status route', () => {
-      it('should return server status with available files', () => {
+      it('should return server status with available files', async () => {
         // Add some files to the mappings
         mockFs.existsSync.mockReturnValue(true);
-        const id1 = fileHost.shareFile('/test/file1.txt');
-        const id2 = fileHost.shareFile('/test/file2.txt');
+        const hash1 = await fileHost.shareFile('/test/file1.txt');
+        const hash2 = await fileHost.shareFile('/test/file2.txt');
 
         statusRouteHandler(mockReq, mockRes);
         
         expect(mockRes.json).toHaveBeenCalledWith({
           status: 'online',
-          availableFiles: expect.arrayContaining([id1, id2])
+          availableFiles: expect.arrayContaining([hash1, hash2])
         });
       });
     });
@@ -217,23 +233,43 @@ describe('FileHost - Comprehensive Coverage', () => {
 
   describe('File Management', () => {
     describe('shareFile', () => {
-      it('should throw error when file does not exist', () => {
+      it('should throw error when file does not exist', async () => {
         mockFs.existsSync.mockReturnValue(false);
         
-        expect(() => {
-          fileHost.shareFile('/non/existent/file.txt');
-        }).toThrow('File not found: /non/existent/file.txt');
+        await expect(async () => {
+          await fileHost.shareFile('/non/existent/file.txt');
+        }).rejects.toThrow('File not found: /non/existent/file.txt');
       });
 
-      it('should return unique ID when file exists', () => {
+      it('should return unique hash when file exists', async () => {
         mockFs.existsSync.mockReturnValue(true);
         
-        const id1 = fileHost.shareFile('/test/file1.txt');
-        const id2 = fileHost.shareFile('/test/file2.txt');
+        const hash1 = await fileHost.shareFile('/test/file1.txt');
+        const hash2 = await fileHost.shareFile('/test/file2.txt');
         
-        expect(id1).toBeTruthy();
-        expect(id2).toBeTruthy();
-        expect(id1).not.toBe(id2);
+        expect(hash1).toBeTruthy();
+        expect(hash2).toBeTruthy();
+        expect(hash1).not.toBe(hash2);
+        expect(typeof hash1).toBe('string');
+        expect(hash1).toHaveLength(64); // SHA256 hash length
+      });
+
+      it('should copy file to hash-named location', async () => {
+        mockFs.existsSync.mockReturnValueOnce(true); // Original file exists
+        mockFs.existsSync.mockReturnValueOnce(false); // Hash file doesn't exist yet
+        
+        const hash = await fileHost.shareFile('/test/file.txt');
+        
+        expect(mockFs.copyFileSync).toHaveBeenCalledWith('/test/file.txt', hash);
+        expect(hash).toBeTruthy();
+      });
+
+      it('should not copy file if hash-named file already exists', async () => {
+        mockFs.existsSync.mockReturnValue(true); // Both original and hash files exist
+        
+        await fileHost.shareFile('/test/file.txt');
+        
+        expect(mockFs.copyFileSync).not.toHaveBeenCalled();
       });
     });
 
@@ -243,16 +279,43 @@ describe('FileHost - Comprehensive Coverage', () => {
         expect(result).toBe(false);
       });
 
-      it('should return true and remove existing file', () => {
+      it('should return true and remove existing file', async () => {
         mockFs.existsSync.mockReturnValue(true);
-        const fileId = fileHost.shareFile('/test/file.txt');
+        const fileHash = await fileHost.shareFile('/test/file.txt');
         
-        const result = fileHost.unshareFile(fileId);
+        const result = fileHost.unshareFile(fileHash);
         expect(result).toBe(true);
         
         // Verify it's removed
         const sharedFiles = fileHost.getSharedFiles();
-        expect(sharedFiles.find(f => f.id === fileId)).toBeUndefined();
+        expect(sharedFiles.includes(fileHash)).toBe(false);
+      });
+
+      it('should delete hash-named file when deleteFile is true', async () => {
+        mockFs.existsSync.mockReturnValue(true);
+        const fileHash = await fileHost.shareFile('/test/file.txt');
+        
+        // Mock file exists for deletion
+        mockFs.existsSync.mockReturnValue(true);
+        
+        const result = fileHost.unshareFile(fileHash, true);
+        expect(result).toBe(true);
+        expect(mockFs.unlinkSync).toHaveBeenCalledWith(fileHash);
+      });
+
+      it('should handle file deletion errors gracefully', async () => {
+        mockFs.existsSync.mockReturnValue(true);
+        const fileHash = await fileHost.shareFile('/test/file.txt');
+        
+        // Mock file exists but deletion fails
+        mockFs.existsSync.mockReturnValue(true);
+        mockFs.unlinkSync.mockImplementation(() => {
+          throw new Error('Permission denied');
+        });
+        
+        // Should still return true (file removed from tracking)
+        const result = fileHost.unshareFile(fileHash, true);
+        expect(result).toBe(true);
       });
     });
 
@@ -262,17 +325,15 @@ describe('FileHost - Comprehensive Coverage', () => {
         expect(sharedFiles).toEqual([]);
       });
 
-      it('should return array of shared files', () => {
+      it('should return array of shared files', async () => {
         mockFs.existsSync.mockReturnValue(true);
-        const id1 = fileHost.shareFile('/test/file1.txt');
-        const id2 = fileHost.shareFile('/test/file2.txt');
+        const hash1 = await fileHost.shareFile('/test/file1.txt');
+        const hash2 = await fileHost.shareFile('/test/file2.txt');
         
         const sharedFiles = fileHost.getSharedFiles();
         expect(sharedFiles).toHaveLength(2);
-        expect(sharedFiles).toEqual([
-          { id: id1, path: '/test/file1.txt' },
-          { id: id2, path: '/test/file2.txt' }
-        ]);
+        expect(sharedFiles).toContain(hash1);
+        expect(sharedFiles).toContain(hash2);
       });
     });
   });
@@ -699,26 +760,26 @@ describe('FileHost - Comprehensive Coverage', () => {
   });
 
   describe('getFileUrl', () => {
-    it('should throw error when file ID does not exist', async () => {
-      await expect(fileHost.getFileUrl('non-existent-id'))
-        .rejects.toThrow('No file with ID: non-existent-id');
+    it('should throw error when file hash does not exist', async () => {
+      await expect(fileHost.getFileUrl('non-existent-hash'))
+        .rejects.toThrow('No file with hash: non-existent-hash');
     });
 
     it('should throw error when server is not started', async () => {
       mockFs.existsSync.mockReturnValue(true);
-      const fileId = fileHost.shareFile('/test/file.txt');
+      const fileHash = await fileHost.shareFile('/test/file.txt');
       
       // No external port set (server not started)
       (fileHost as any).externalPort = null;
       
-      await expect(fileHost.getFileUrl(fileId))
+      await expect(fileHost.getFileUrl(fileHash))
         .rejects.toThrow('Server is not started or port is not mapped');
     });
 
     it('should return correct URL when everything is set up (NAT-PMP)', async () => {
       const natPmpHost = new FileHost({ connectionMode: ConnectionMode.NAT_PMP });
       mockFs.existsSync.mockReturnValue(true);
-      const fileId = natPmpHost.shareFile('/test/file.txt');
+      const fileHash = await natPmpHost.shareFile('/test/file.txt');
       
       // Set up external port and mock NAT-PMP getExternalIp
       (natPmpHost as any).externalPort = 3000;
@@ -727,14 +788,14 @@ describe('FileHost - Comprehensive Coverage', () => {
         callback(null, { ip: [203, 0, 113, 1], type: 0, epoch: Date.now() });
       });
       
-      const url = await natPmpHost.getFileUrl(fileId);
-      expect(url).toBe(`http://203.0.113.1:3000/files/${fileId}`);
+      const url = await natPmpHost.getFileUrl(fileHash);
+      expect(url).toBe(`http://203.0.113.1:3000/files/${fileHash}`);
     });
 
     it('should return correct URL with local IP when plain connection mode is enabled', async () => {
       const plainHost = new FileHost({ connectionMode: ConnectionMode.PLAIN, port: 8080 });
       mockFs.existsSync.mockReturnValue(true);
-      const fileId = plainHost.shareFile('/test/file.txt');
+      const fileHash = await plainHost.shareFile('/test/file.txt');
       
       // Set up external port
       (plainHost as any).externalPort = 8080;
@@ -751,14 +812,14 @@ describe('FileHost - Comprehensive Coverage', () => {
         }]
       });
       
-      const url = await plainHost.getFileUrl(fileId);
-      expect(url).toBe(`http://192.168.1.50:8080/files/${fileId}`);
+      const url = await plainHost.getFileUrl(fileHash);
+      expect(url).toBe(`http://192.168.1.50:8080/files/${fileHash}`);
     });
 
     it('should throw error when plain connection mode is enabled but local IP cannot be determined', async () => {
       const plainHost = new FileHost({ connectionMode: ConnectionMode.PLAIN, port: 8080 });
       mockFs.existsSync.mockReturnValue(true);
-      const fileId = plainHost.shareFile('/test/file.txt');
+      const fileHash = await plainHost.shareFile('/test/file.txt');
       
       // Set up external port
       (plainHost as any).externalPort = 8080;
@@ -766,7 +827,7 @@ describe('FileHost - Comprehensive Coverage', () => {
       // Mock os.networkInterfaces to return no valid interfaces
       mockOs.networkInterfaces.mockReturnValue({});
       
-      await expect(plainHost.getFileUrl(fileId))
+      await expect(plainHost.getFileUrl(fileHash))
         .rejects.toThrow('Could not determine local IP address');
     });
   });

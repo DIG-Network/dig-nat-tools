@@ -1,10 +1,11 @@
 import { FileHost, FileClient } from '../src';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 
 // This example demonstrates a simple file sharing scenario
 
-async function main() {
+async function main(): Promise<void> {
   // Create a temporary file to share
   const tempFilePath = path.join(__dirname, 'temp-file.txt');
   fs.writeFileSync(tempFilePath, 'This is a test file for P2P file sharing!');
@@ -20,16 +21,15 @@ async function main() {
     console.log(`Host started with external access at: http://${externalIp}:${port}`);
 
     // Share the test file
-    const fileId = host.shareFile(tempFilePath);
-    console.log(`File shared with ID: ${fileId}`);
+    const fileHash = await host.shareFile(tempFilePath);
+    console.log(`File shared with SHA256 hash: ${fileHash}`);
 
     // Get the public URL for the file (this would be shared with remote peers)
-    const fileUrl = await host.getFileUrl(fileId);
+    const fileUrl = await host.getFileUrl(fileHash);
     console.log(`File available externally at: ${fileUrl}`);
 
     // For local testing, construct a local IP URL to simulate local network access
     // In a real scenario, local clients would connect directly via local IP for better performance
-    const os = require('os');
     const interfaces = os.networkInterfaces();
     let localIp = 'localhost';
     
@@ -45,13 +45,13 @@ async function main() {
       }
     }
     
-    const localFileUrl = `http://${localIp}:${port}/files/${fileId}`;
+    const localFileUrl = `http://${localIp}:${port}/files/${fileHash}`;
     console.log(`File available locally at: ${localFileUrl}`);
 
     // Download the file using the local URL (simulating a local peer connection)
     console.log('Downloading the shared file via local network...');
-    const buffer = await FileClient.downloadAsBuffer(localFileUrl, {
-      onProgress: (downloaded, total) => {
+    const buffer = await FileClient.downloadAsBufferStatic(localFileUrl, {
+      onProgress: (downloaded: number, total: number) => {
         const percent = Math.round((downloaded / total) * 100);
         console.log(`Download progress: ${percent}%`);
       }

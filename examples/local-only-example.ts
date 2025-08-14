@@ -21,10 +21,10 @@ async function startLocalOnlyHost(): Promise<void> {
 
     // Share some example files
     const testFilePath = path.join(__dirname, '../README.md');
-    const fileId = host.shareFile(testFilePath);
+    const fileHash = await host.shareFile(testFilePath);
     
     console.log(`📁 Shared file: ${testFilePath}`);
-    const fileUrl = await host.getFileUrl(fileId);
+    const fileUrl = await host.getFileUrl(fileHash);
     console.log(`🔗 Access URL: ${fileUrl}`);
 
     // List all shared files

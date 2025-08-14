@@ -5,6 +5,8 @@ A TypeScript package that provides peer-to-peer file sharing capabilities using 
 ## Features
 
 - Share files directly from one peer to another
+- **SHA256-based file identification**: Files are identified by their content hash, ensuring security and deduplication
+- **Content-addressable URLs**: File URLs use SHA256 hashes as paths (`/files/{sha256-hash}`)
 - Automatic port mapping for NAT traversal using UPnP or NAT-PMP
 - Intelligent fallback from NAT-PMP to UPnP when needed
 - Intelligent IP address detection (handles local network access)
@@ -81,14 +83,18 @@ async function startServer() {
     const { externalIp, port } = await host.start();
     console.log(`Server running at http://${externalIp}:${port}`);
     
-    // Share a file
-    const fileId = host.shareFile('/path/to/your/file.pdf');
+    // Share a file and get its SHA256 hash
+    const fileHash = await host.shareFile('/path/to/your/file.pdf');
+    console.log(`File hash: ${fileHash}`); // 64-character hexadecimal string
     
     // Get the public URL for the file
-    const fileUrl = await host.getFileUrl(fileId);
+    // URL format: http://{host}:{port}/files/{sha256-hash}
+    const fileUrl = await host.getFileUrl(fileHash);
     console.log(`File available at: ${fileUrl}`);
+    // Example URL: http://203.0.113.1:30780/files/a1b2c3d4e5f6...
     
     // You can share this URL with others who want to download your file
+    // The file path in the URL is the SHA256 hash of the file content
     return fileUrl;
   } catch (error) {
     console.error('Failed to start server:', error);
@@ -97,9 +103,56 @@ async function startServer() {
 
 // Stop sharing when done
 async function stopSharing() {
+  // Remove files from sharing (but keep hash-named files)
+  const sharedFiles = host.getSharedFiles();
+  sharedFiles.forEach(hash => {
+    host.unshareFile(hash); // Only removes from tracking
+  });
+  
+  // Or remove files and delete hash-named files
+  sharedFiles.forEach(hash => {
+    host.unshareFile(hash, true); // Removes from tracking AND deletes the hash-named file
+  });
+  
   await host.stop();
   console.log('Server stopped');
 }
+```
+
+### File Identification with SHA256 Hashes
+
+This package uses SHA256 hashes as file identifiers, which provides several benefits:
+
+- **Content-based identification**: Files are identified by their content, not arbitrary IDs
+- **Deduplication**: Identical files will have the same hash, preventing duplicates
+- **Security**: SHA256 hashes are cryptographically secure and tamper-evident
+- **URL structure**: File URLs use the format `http://{host}:{port}/files/{sha256-hash}`
+- **Hash-based storage**: Files are copied and stored with their SHA256 hash as the filename
+
+#### File Storage Model
+
+When you share a file, the package:
+1. Calculates the SHA256 hash of the file content
+2. Copies the file to a new location named by its hash (e.g., `a1b2c3d4e5f6...`)
+3. Serves the file directly from the hash-named location
+4. No separate file mapping is maintained - the filesystem itself stores files by hash
+
+Example SHA256 hash: `a1b2c3d4e5f6789abcdef0123456789abcdef0123456789abcdef0123456789ab`
+
+```typescript
+// When you share a file, it gets copied to a hash-named file
+const fileHash = await host.shareFile('./document.pdf');
+console.log(fileHash); // "a1b2c3d4e5f6789abc..."
+
+// The file is now stored as: ./a1b2c3d4e5f6789abc...
+// And served at: http://{host}:{port}/files/a1b2c3d4e5f6789abc...
+
+// The hash becomes part of the download URL
+const url = await host.getFileUrl(fileHash);
+console.log(url); // "http://192.168.1.100:30780/files/a1b2c3d4e5f6789abc..."
+
+// Anyone with this URL can download the file
+// The file path component is the SHA256 hash
 ```
 
 ### Using NAT-PMP
@@ -115,10 +168,11 @@ async function startWithNatPmp() {
     const { externalIp, port } = await host.start();
     console.log(`Server running on ${externalIp}:${port}`);
     
-    // Share files same as before
-    const fileId = host.shareFile('./my-document.pdf');
-    const fileUrl = await host.getFileUrl(fileId);
+    // Share files - returns SHA256 hash
+    const fileHash = await host.shareFile('./my-document.pdf');
+    const fileUrl = await host.getFileUrl(fileHash);
     console.log(`File available at: ${fileUrl}`);
+    // URL will be: http://{host}:{port}/files/{sha256-hash}
     
     // ... rest of your application
     
@@ -143,10 +197,11 @@ async function startLocalOnly() {
     const { externalIp, port } = await host.start();
     console.log(`Server running locally on ${externalIp}:${port}`);
     
-    // Share files same as before
-    const fileId = host.shareFile('./my-document.pdf');
-    const fileUrl = await host.getFileUrl(fileId);
+    // Share files - returns SHA256 hash
+    const fileHash = await host.shareFile('./my-document.pdf');
+    const fileUrl = await host.getFileUrl(fileHash);
     console.log(`File available at: ${fileUrl}`);
+    // URL path contains the SHA256 hash: /files/{sha256-hash}
     
     // ... rest of your application
     
@@ -238,10 +293,10 @@ enum ConnectionMode {
 
 - `start(): Promise<{ externalIp: string, port: number }>` - Starts the file hosting server
 - `stop(): Promise<void>` - Stops the file hosting server
-- `shareFile(filePath: string): string` - Shares a file and returns its unique ID
-- `unshareFile(id: string): boolean` - Removes a shared file
-- `getSharedFiles(): { id: string, path: string }[]` - Gets a list of shared files
-- `getFileUrl(id: string): Promise<string>` - Gets the public URL for a shared file
+- `shareFile(filePath: string): Promise<string>` - Shares a file and returns its SHA256 hash (64-character hex string)
+- `unshareFile(hash: string, deleteFile?: boolean): boolean` - Removes a shared file from tracking, optionally deletes the hash-named file
+- `getSharedFiles(): string[]` - Gets a list of shared file hashes
+- `getFileUrl(hash: string): Promise<string>` - Gets the public URL for a shared file using its SHA256 hash
 
 ### FileClient
 
