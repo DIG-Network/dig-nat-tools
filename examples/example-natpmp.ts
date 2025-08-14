@@ -1,5 +1,5 @@
 // example-natpmp.ts
-import { FileHost } from '../src/host';
+import { FileHost, ConnectionMode } from '../src/host';
 
 async function demonstrateNatPmp(): Promise<void> {
   console.log('=== NAT-PMP File Host Example ===\n');
@@ -8,7 +8,7 @@ async function demonstrateNatPmp(): Promise<void> {
   const fileHost = new FileHost({
     port: 3000,
     ttl: 3600,        // 1 hour port mapping
-    useNatPmp: true   // Enable NAT-PMP instead of UPnP
+    connectionMode: ConnectionMode.NAT_PMP   // Enable NAT-PMP instead of UPnP
   });
 
   try {
@@ -52,7 +52,7 @@ async function demonstrateNatPmp(): Promise<void> {
       console.log('   Try connecting directly to your main router or disable cascaded networking.');
     } else if (err.message.includes('NAT-PMP')) {
       console.log('\n💡 Tip: NAT-PMP might not be supported by your router.');
-      console.log('   Try using UPnP instead by setting useNatPmp: false');
+      console.log('   Try using UPnP instead by setting connectionMode: ConnectionMode.UPNP');
     }
   }
 }
@@ -63,7 +63,7 @@ async function demonstrateFallback(): Promise<void> {
 
   const fileHost = new FileHost({
     port: 3001,
-    useNatPmp: true  // Will fallback to UPnP if NAT-PMP fails
+    connectionMode: ConnectionMode.NAT_PMP  // Will fallback to UPnP if NAT-PMP fails
   });
 
   try {

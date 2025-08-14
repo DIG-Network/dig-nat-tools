@@ -7,18 +7,24 @@ import * as natPmp from 'nat-pmp';
 import express from 'express';
 import os from 'os';
 
+export enum ConnectionMode {
+  UPNP = 'upnp',
+  NAT_PMP = 'natpmp', 
+  PLAIN = 'plain'
+}
+
 export interface HostOptions {
   port?: number;
-  ttl?: number;  // Time to live for UPnP mapping (seconds)
-  useNatPmp?: boolean;  // Use NAT-PMP instead of UPnP for port forwarding
+  ttl?: number;  // Time to live for port mapping (seconds)
+  connectionMode?: ConnectionMode;  // Connection mode for NAT traversal
 }
 
 export class FileHost {
   private app: express.Application;
   private server: http.Server | null = null;
-  private upnpClient: natUpnp.Client;
+  private upnpClient: natUpnp.Client | null = null;
   private natPmpClient: natPmp.Client | null = null;
-  private useNatPmp: boolean;
+  private connectionMode: ConnectionMode;
   private port: number;
   private externalPort: number | null = null;
   private ttl: number;
@@ -27,18 +33,21 @@ export class FileHost {
   constructor(options: HostOptions = {}) {
     this.port = options.port || 0;  // 0 means a random available port
     this.ttl = options.ttl || 3600;  // Default 1 hour
-    this.useNatPmp = options.useNatPmp || false;
+    this.connectionMode = options.connectionMode || ConnectionMode.UPNP;
     
-    // Initialize UPnP client (always available as fallback)
-    this.upnpClient = natUpnp.createClient();
-    
-    // Initialize NAT-PMP client if requested
-    if (this.useNatPmp) {
-      try {
-        this.natPmpClient = natPmp.connect();
-      } catch (error) {
-        console.warn('Failed to initialize NAT-PMP client, falling back to UPnP:', error);
-        this.useNatPmp = false;
+    // Initialize NAT clients based on connection mode
+    if (this.connectionMode !== ConnectionMode.PLAIN) {
+      // Initialize UPnP client (always available as fallback)
+      this.upnpClient = natUpnp.createClient();
+      
+      // Initialize NAT-PMP client if requested
+      if (this.connectionMode === ConnectionMode.NAT_PMP) {
+        try {
+          this.natPmpClient = natPmp.connect();
+        } catch (error) {
+          console.warn('Failed to initialize NAT-PMP client, falling back to UPnP:', error);
+          this.connectionMode = ConnectionMode.UPNP;
+        }
       }
     }
     
@@ -107,18 +116,35 @@ export class FileHost {
         console.log(`HTTP server started on local port ${this.port}`);
         
         try {
-          // Map port using UPnP
-          await this.mapPort();
-          
-          // Get external IP
-          const externalIp = await this.getExternalIp();
-          
-          console.log(`Server accessible at: http://${externalIp}:${this.externalPort || this.port}`);
-          
-          resolve({ 
-            externalIp, 
-            port: this.externalPort || this.port 
-          });
+          if (this.connectionMode === ConnectionMode.PLAIN) {
+            // Skip NAT traversal, use local IP and current port
+            console.log('Using plain connection mode (no NAT traversal)');
+            const localIp = this.detectLocalIp();
+            if (!localIp) {
+              return reject(new Error('Could not determine local IP address'));
+            }
+            
+            this.externalPort = this.port;
+            console.log(`Server accessible at: http://${localIp}:${this.port}`);
+            
+            resolve({ 
+              externalIp: localIp, 
+              port: this.port 
+            });
+          } else {
+            // Map port using NAT traversal
+            await this.mapPort();
+            
+            // Get external IP
+            const externalIp = await this.getExternalIp();
+            
+            console.log(`Server accessible at: http://${externalIp}:${this.externalPort || this.port}`);
+            
+            resolve({ 
+              externalIp, 
+              port: this.externalPort || this.port 
+            });
+          }
         } catch (error) {
           reject(error);
         }
@@ -136,9 +162,14 @@ export class FileHost {
           if (err) {
             reject(err);
           } else {
-            this.unmapPort()
-              .then(() => resolve())
-              .catch(reject);
+            if (this.connectionMode === ConnectionMode.PLAIN) {
+              // No NAT traversal to clean up
+              resolve();
+            } else {
+              this.unmapPort()
+                .then(() => resolve())
+                .catch(reject);
+            }
           }
         });
       });
@@ -181,9 +212,10 @@ export class FileHost {
 
   private async mapPort(): Promise<void> {
     return new Promise<void>((resolve, _reject) => {
-      console.log(`Attempting to map port ${this.port} via ${this.useNatPmp ? 'NAT-PMP' : 'UPnP'}...`);
+      const modeString = this.connectionMode === ConnectionMode.NAT_PMP ? 'NAT-PMP' : 'UPnP';
+      console.log(`Attempting to map port ${this.port} via ${modeString}...`);
       
-      if (this.useNatPmp && this.natPmpClient) {
+      if (this.connectionMode === ConnectionMode.NAT_PMP && this.natPmpClient) {
         // Use NAT-PMP for port mapping
         this.natPmpClient.portMapping({
           type: 1, // TCP
@@ -215,6 +247,13 @@ export class FileHost {
   }
 
   private mapPortUpnp(resolve: () => void): void {
+    if (!this.upnpClient) {
+      console.warn('UPnP client not initialized');
+      this.externalPort = this.port;
+      resolve();
+      return;
+    }
+
     this.upnpClient.portMapping({
       public: this.port,
       private: this.port,
@@ -242,7 +281,7 @@ export class FileHost {
   private async unmapPort(): Promise<void> {
     if (this.externalPort) {
       return new Promise<void>((resolve) => {
-        if (this.useNatPmp && this.natPmpClient) {
+        if (this.connectionMode === ConnectionMode.NAT_PMP && this.natPmpClient) {
           // Use NAT-PMP for port unmapping
           this.natPmpClient.portUnmapping({
             type: 1, // TCP
@@ -258,6 +297,13 @@ export class FileHost {
           });
         } else {
           // Use UPnP for port unmapping
+          if (!this.upnpClient) {
+            console.warn('UPnP client not initialized');
+            this.externalPort = null;
+            resolve();
+            return;
+          }
+
           this.upnpClient.portUnmapping({
             public: this.externalPort
           }, () => {
@@ -272,9 +318,10 @@ export class FileHost {
 
   private async getExternalIp(): Promise<string> {
     return new Promise<string>((resolve, reject) => {
-      console.log(`Getting external IP address via ${this.useNatPmp ? 'NAT-PMP' : 'UPnP'}...`);
+      const modeString = this.connectionMode === ConnectionMode.NAT_PMP ? 'NAT-PMP' : 'UPnP';
+      console.log(`Getting external IP address via ${modeString}...`);
       
-      if (this.useNatPmp && this.natPmpClient) {
+      if (this.connectionMode === ConnectionMode.NAT_PMP && this.natPmpClient) {
         // Try NAT-PMP for external IP first
         this.natPmpClient.externalIp((err: Error | null, result?: natPmp.ExternalIpResult) => {
           if (err || !result) {
@@ -301,6 +348,17 @@ export class FileHost {
   }
 
   private getExternalIpUpnp(resolve: (ip: string) => void, reject: (error: Error) => void): void {
+    if (!this.upnpClient) {
+      console.warn('UPnP client not initialized, falling back to local IP');
+      const localIp = this.detectLocalIp();
+      if (localIp) {
+        resolve(localIp);
+      } else {
+        reject(new Error('Could not determine IP address'));
+      }
+      return;
+    }
+
     this.upnpClient.externalIp((err: Error | null, upnpIp?: string) => {
       if (err || !upnpIp) {
         console.warn('Failed to get external IP via UPnP, falling back to local IP');
@@ -385,7 +443,16 @@ export class FileHost {
       throw new Error('Server is not started or port is not mapped');
     }
 
-    const externalIp = await this.getExternalIp();
-    return `http://${externalIp}:${this.externalPort}/files/${id}`;
+    if (this.connectionMode === ConnectionMode.PLAIN) {
+      // Use local IP since we're not doing NAT traversal
+      const localIp = this.detectLocalIp();
+      if (!localIp) {
+        throw new Error('Could not determine local IP address');
+      }
+      return `http://${localIp}:${this.externalPort}/files/${id}`;
+    } else {
+      const externalIp = await this.getExternalIp();
+      return `http://${externalIp}:${this.externalPort}/files/${id}`;
+    }
   }
 }
