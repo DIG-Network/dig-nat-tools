@@ -59,9 +59,10 @@ export class FileHost implements IFileHost {
   }
 
   private setupRoutes(): void {
-    // Route to serve files
+    // Route to serve files by SHA256 hash
+    // URL format: /files/{64-character-hexadecimal-sha256-hash}
     this.app.get('/files/:hash', (req, res) => {
-      const hash = req.params.hash;
+      const hash = req.params.hash; // SHA256 hash (64-character hex string)
       const filePath = this.fileMappings.get(hash);
       
       if (!filePath) {
@@ -181,6 +182,9 @@ export class FileHost implements IFileHost {
 
   /**
    * Share a file and get the SHA256 hash for it
+   * The returned hash becomes the file identifier in URLs (e.g., /files/{hash})
+   * @param filePath Path to the file to share
+   * @returns SHA256 hash of the file (64-character hexadecimal string)
    */
   public async shareFile(filePath: string): Promise<string> {
     // Check if file exists
@@ -188,13 +192,13 @@ export class FileHost implements IFileHost {
       throw new Error(`File not found: ${filePath}`);
     }
     
-    // Calculate SHA256 hash of the file
+    // Calculate SHA256 hash of the file content
     const hash = await this.calculateFileHash(filePath);
     
-    // Store the mapping
+    // Store the mapping from hash to file path
     this.fileMappings.set(hash, filePath);
     
-    return hash;
+    return hash; // This hash becomes the file path component in URLs
   }
 
   /**
@@ -456,7 +460,11 @@ export class FileHost implements IFileHost {
   }
 
   /**
-   * Get the URL for a shared file
+   * Get the URL for a shared file by its SHA256 hash
+   * The URL format will be: http://{host}:{port}/files/{hash}
+   * where {hash} is the 64-character hexadecimal SHA256 string
+   * @param hash SHA256 hash of the file (64-character hexadecimal string)
+   * @returns URL to download the file (path component contains the SHA256 hash)
    */
   public async getFileUrl(hash: string): Promise<string> {
     if (!this.fileMappings.has(hash)) {

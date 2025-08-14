@@ -15,28 +15,30 @@ export interface IFileHost {
 
   /**
    * Share a file and get the SHA256 hash for it
+   * The returned hash is used as the file identifier in URLs (e.g., /files/{hash})
    * @param filePath Path to the file to share
-   * @returns SHA256 hash of the file
+   * @returns SHA256 hash of the file (64-character hexadecimal string)
    */
   shareFile(filePath: string): Promise<string>;
 
   /**
    * Remove a shared file by its SHA256 hash
-   * @param hash SHA256 hash of the file to unshare
+   * @param hash SHA256 hash of the file to unshare (64-character hexadecimal string)
    * @returns True if file was found and removed, false otherwise
    */
   unshareFile(hash: string): boolean;
 
   /**
    * Get a list of currently shared files with their SHA256 hashes
-   * @returns Array of objects containing hash and file path
+   * @returns Array of objects containing hash (64-character hexadecimal string) and file path
    */
   getSharedFiles(): { hash: string, path: string }[];
 
   /**
    * Get the URL for a shared file by its SHA256 hash
-   * @param hash SHA256 hash of the file
-   * @returns URL to download the file
+   * The URL will be in the format: http://{host}:{port}/files/{hash}
+   * @param hash SHA256 hash of the file (64-character hexadecimal string)
+   * @returns URL to download the file (path component contains the SHA256 hash)
    */
   getFileUrl(hash: string): Promise<string>;
 }
