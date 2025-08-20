@@ -1,4 +1,4 @@
-// Example showing all three connection modes
+// Example showing both connection modes
 import { FileHost, ConnectionMode } from '../src/index';
 
 async function demonstrateConnectionModes(): Promise<void> {
@@ -15,21 +15,10 @@ async function demonstrateConnectionModes(): Promise<void> {
   console.log('   ✓ Works with most home routers');
   console.log('   ✓ Best for general use\n');
 
-  // Example 2: NAT-PMP Mode
-  console.log('2️⃣ NAT-PMP Mode');
-  const natPmpHost = new FileHost({ 
-    port: 3002,
-    connectionMode: ConnectionMode.NAT_PMP
-  });
-  
-  console.log('   ✓ Uses NAT-PMP protocol (Apple routers)');
-  console.log('   ✓ Faster than UPnP, lighter weight');
-  console.log('   ✓ Automatically falls back to UPnP if NAT-PMP fails\n');
-
-  // Example 3: Plain Mode
-  console.log('3️⃣ Plain Mode (Local Network Only)');
+  // Example 2: Plain Mode
+  console.log('2️⃣ Plain Mode (Local Network Only)');
   const plainHost = new FileHost({ 
-    port: 3003,
+    port: 3002,
     connectionMode: ConnectionMode.PLAIN
   });
   
@@ -45,11 +34,6 @@ async function demonstrateConnectionModes(): Promise<void> {
     console.log('Starting UPnP server...');
     // const upnpResult = await upnpHost.start();
     // console.log(`UPnP server: ${upnpResult.externalIp}:${upnpResult.port}`);
-
-    // Start NAT-PMP server  
-    console.log('Starting NAT-PMP server...');
-    // const natPmpResult = await natPmpHost.start();
-    // console.log(`NAT-PMP server: ${natPmpResult.externalIp}:${natPmpResult.port}`);
 
     // Start Plain server
     console.log('Starting Plain server...');
