@@ -1,3 +1,4 @@
+import Gun from 'gun';
 import { HostCapabilities } from '../interfaces';
 
 export interface GunRegistryOptions {
@@ -32,8 +33,6 @@ export class GunRegistry {
 
   private initializeGun(): void {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const Gun = require('gun');
       this.gun = Gun(this.options.peers);
       this.isGunAvailable = true;
       console.log('Gun.js registry initialized');

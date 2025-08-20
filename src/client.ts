@@ -5,27 +5,37 @@ import { URL } from 'url';
 import { Readable } from 'stream';
 import { IFileClient, DownloadOptions, HostCapabilities } from './interfaces';
 import { GunRegistry } from './registry/gun-registry';
+import { WebRTCManager } from './connectivity/webrtc-manager';
 
 export interface FileClientOptions {
   peers?: string[];       // Gun.js peer URLs
   namespace?: string;     // Gun.js namespace
   timeout?: number;       // Download timeout
+  stunServers?: string[]; // WebRTC STUN servers
 }
 
 export class FileClient implements IFileClient {
   private gunRegistry: GunRegistry;
+  private webrtcManager: WebRTCManager;
   private options: FileClientOptions;
 
   constructor(options: FileClientOptions = {}) {
     this.options = {
       peers: options.peers || ['http://localhost:8765/gun'],
       namespace: options.namespace || 'dig-nat-tools',
-      timeout: options.timeout || 30000
+      timeout: options.timeout || 30000,
+      stunServers: options.stunServers || ['stun:stun.l.google.com:19302']
     };
 
     this.gunRegistry = new GunRegistry({
       peers: this.options.peers,
       namespace: this.options.namespace
+    });
+
+    this.webrtcManager = new WebRTCManager({
+      peers: this.options.peers,
+      namespace: this.options.namespace,
+      stunServers: this.options.stunServers
     });
   }
   
@@ -121,15 +131,111 @@ export class FileClient implements IFileClient {
   /**
    * Download a file directly via WebRTC
    */
-  private async downloadViaWebRTCDirect(_storeId: string, _fileHash: string): Promise<Buffer> {
-    // This is a simplified implementation
-    // In a full implementation, you would:
-    // 1. Create WebRTC connection to the peer
-    // 2. Establish data channel
-    // 3. Send HTTP request over data channel
-    // 4. Receive HTTP response over data channel
-    
-    throw new Error('WebRTC file download not yet implemented - this requires the full WebRTC tunnel infrastructure');
+  private async downloadViaWebRTCDirect(storeId: string, fileHash: string): Promise<Buffer> {
+    if (!this.webrtcManager.isWebRTCAvailable()) {
+      throw new Error('WebRTC not available in this environment');
+    }
+
+    try {
+      // Connect to peer via WebRTC
+      const dataChannel = await this.webrtcManager.connectTo(storeId);
+      
+      // Create a promise to handle the file download
+      return new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        let isResolved = false;
+
+        // Set up message handler for the data channel
+        const originalOnMessage = dataChannel.onmessage;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        dataChannel.onmessage = (event: { data: any }): void => {
+          try {
+            const data = event.data;
+            
+            if (typeof data === 'string') {
+              // Parse HTTP response if it's a string
+              const response = JSON.parse(data);
+              if (response.error) {
+                if (!isResolved) {
+                  isResolved = true;
+                  reject(new Error(response.error));
+                }
+                return;
+              }
+              
+              if (response.data) {
+                // Convert base64 back to buffer
+                const buffer = Buffer.from(response.data, 'base64');
+                if (!isResolved) {
+                  isResolved = true;
+                  resolve(buffer);
+                }
+              }
+            } else if (data instanceof ArrayBuffer) {
+              chunks.push(Buffer.from(data));
+            } else if (Buffer.isBuffer(data)) {
+              chunks.push(data);
+            }
+          } catch (error) {
+            if (!isResolved) {
+              isResolved = true;
+              reject(error);
+            }
+          }
+
+          // Call original handler if it exists
+          if (originalOnMessage && typeof originalOnMessage === 'function') {
+            try {
+              originalOnMessage.call(dataChannel, event as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+            } catch {
+              // Ignore errors from original handler
+            }
+          }
+        };
+
+        // Send HTTP request over WebRTC data channel
+        const httpRequest = {
+          method: 'GET',
+          path: `/files/${fileHash}`,
+          headers: {
+            'Host': storeId,
+            'User-Agent': 'dig-nat-tools-client'
+          }
+        };
+
+        // Send request as JSON string
+        dataChannel.send(JSON.stringify(httpRequest));
+
+        // Set timeout
+        const timeout = setTimeout(() => {
+          if (!isResolved) {
+            isResolved = true;
+            reject(new Error('WebRTC download timeout'));
+          }
+        }, this.options.timeout);
+
+        // Ensure timeout is cleared on completion
+        const cleanup = (): void => {
+          clearTimeout(timeout);
+        };
+
+        // Override resolve and reject to include cleanup
+        const originalPromiseResolve = resolve;
+        const originalPromiseReject = reject;
+        
+        resolve = originalPromiseResolve;
+        reject = originalPromiseReject;
+
+        // Add cleanup to both paths
+        Promise.resolve().then(() => {
+          if (isResolved) {
+            cleanup();
+          }
+        });
+      });
+    } catch (error) {
+      throw new Error(`WebRTC connection failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /**

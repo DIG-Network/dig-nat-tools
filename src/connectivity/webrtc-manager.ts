@@ -1,4 +1,6 @@
 import { EventEmitter } from 'events';
+import wrtc, { RTCPeerConnection, RTCDataChannel, RTCPeerConnectionIceEvent, RTCDataChannelEvent, RTCIceCandidate } from '@roamhq/wrtc';
+import Gun from 'gun';
 
 export interface WebRTCManagerOptions {
   peers?: string[];
@@ -23,35 +25,10 @@ export interface WebRTCAnswer {
 export interface WebRTCIceCandidate {
   type: 'ice';
   candidate: string;
-  sdpMLineIndex: number;
-  sdpMid: string;
+  sdpMLineIndex: number | null;
+  sdpMid: string | null;
   fromPeer: string;
   toPeer: string;
-}
-
-interface RTCPeerConnectionLike {
-  createOffer: () => Promise<{ sdp: string }>;
-  createAnswer: () => Promise<{ sdp: string }>;
-  setLocalDescription: (desc: { type: string; sdp: string }) => Promise<void>;
-  setRemoteDescription: (desc: { type: string; sdp: string }) => Promise<void>;
-  addIceCandidate: (candidate: { candidate: string; sdpMLineIndex: number; sdpMid: string }) => Promise<void>;
-  createDataChannel: (label: string, options: { ordered: boolean }) => DataChannelLike;
-  onicecandidate: ((event: { candidate: ICECandidate | null }) => void) | null;
-  ondatachannel: ((event: { channel: DataChannelLike }) => void) | null;
-  close: () => void;
-}
-
-interface DataChannelLike {
-  onopen: (() => void) | null;
-  onclose: (() => void) | null;
-  onerror: ((error: unknown) => void) | null;
-  close: () => void;
-}
-
-interface ICECandidate {
-  candidate: string;
-  sdpMLineIndex: number;
-  sdpMid: string;
 }
 
 interface GunRegistryLike {
@@ -66,8 +43,8 @@ interface GunRegistryLike {
 }
 
 export class WebRTCManager extends EventEmitter {
-  private peerConnection: RTCPeerConnectionLike | null = null;
-  private dataChannel: DataChannelLike | null = null;
+  private peerConnection: RTCPeerConnection | null = null;
+  private dataChannel: RTCDataChannel | null = null;
   private gunRegistry: GunRegistryLike | null = null; // Gun.js instance
   private options: WebRTCManagerOptions;
   private storeId: string;
@@ -83,76 +60,31 @@ export class WebRTCManager extends EventEmitter {
     };
     this.storeId = '';
     
-    this.checkWebRTCAvailability();
-    this.initializeGun();
-  }
-
-  private checkWebRTCAvailability(): void {
-    try {
-      // Check if WebRTC is available in browser environment
-      if (typeof globalThis !== 'undefined' && (globalThis as Record<string, unknown>).RTCPeerConnection) {
-        this.webRTCAvailable = true;
-        return;
-      }
-
-      // Check if wrtc package is available in Node.js
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const wrtc = require('wrtc');
-      if (wrtc && wrtc.RTCPeerConnection) {
-        this.webRTCAvailable = true;
-        return;
-      }
-    } catch {
-      // WebRTC not available
-    }
+    // Initialize WebRTC availability
+    this.webRTCAvailable = typeof wrtc !== 'undefined';
     
-    this.webRTCAvailable = false;
-  }
-
-  private initializeGun(): void {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const Gun = require('gun');
-      this.gunRegistry = Gun(this.options.peers) as GunRegistryLike;
-    } catch (error) {
-      const err = error as Error;
-      console.warn('Gun.js not available, WebRTC signaling will not work:', err.message);
-      this.gunRegistry = null;
+    // Initialize Gun.js
+    if (this.webRTCAvailable) {
+      this.gunRegistry = Gun(this.options.peers) as unknown as GunRegistryLike;
     }
   }
 
-  private createPeerConnection(): RTCPeerConnectionLike {
+  private createPeerConnection(): RTCPeerConnection {
     if (!this.webRTCAvailable) {
       throw new Error('WebRTC not available in this environment');
     }
 
-    let RTCPeerConnectionClass: new (config: { iceServers: { urls: string[] }[] }) => RTCPeerConnectionLike;
-
-    // Try browser environment first
-    if (typeof globalThis !== 'undefined' && (globalThis as Record<string, unknown>).RTCPeerConnection) {
-      RTCPeerConnectionClass = (globalThis as Record<string, unknown>).RTCPeerConnection as typeof RTCPeerConnectionClass;
-    } else {
-      // Try Node.js wrtc package
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const wrtc = require('wrtc');
-        RTCPeerConnectionClass = wrtc.RTCPeerConnection;
-      } catch {
-        throw new Error('WebRTC not available in this environment. Install wrtc package for Node.js support.');
-      }
-    }
-
-    const pc = new RTCPeerConnectionClass({
+    const pc = new wrtc.RTCPeerConnection({
       iceServers: [{ urls: this.options.stunServers! }]
     });
 
-    pc.onicecandidate = (event: { candidate: ICECandidate | null }): void => {
+    pc.onicecandidate = (event: RTCPeerConnectionIceEvent): void => {
       if (event.candidate && this.gunRegistry) {
         this.sendIceCandidate(event.candidate);
       }
     };
 
-    pc.ondatachannel = (event: { channel: DataChannelLike }): void => {
+    pc.ondatachannel = (event: RTCDataChannelEvent): void => {
       const channel = event.channel;
       this.setupDataChannel(channel);
       this.emit('connection', channel);
@@ -195,7 +127,7 @@ export class WebRTCManager extends EventEmitter {
     });
   }
 
-  public async connectTo(peerId: string): Promise<DataChannelLike> {
+  public async connectTo(peerId: string): Promise<RTCDataChannel> {
     if (!this.gunRegistry) {
       throw new Error('Gun.js registry not available');
     }
@@ -215,12 +147,12 @@ export class WebRTCManager extends EventEmitter {
 
     // Create offer
     const offer = await this.peerConnection.createOffer();
-    await this.peerConnection.setLocalDescription({ type: 'offer', sdp: offer.sdp });
+    await this.peerConnection.setLocalDescription(offer);
 
     // Send offer via Gun.js
     this.gunRegistry.get(this.options.namespace!).get('offers').get(peerId).put({
       type: 'offer',
-      sdp: offer.sdp,
+      sdp: offer.sdp!,
       fromPeer: this.storeId,
       toPeer: peerId,
       timestamp: Date.now()
@@ -252,12 +184,12 @@ export class WebRTCManager extends EventEmitter {
     });
 
     const answer = await this.peerConnection.createAnswer();
-    await this.peerConnection.setLocalDescription({ type: 'answer', sdp: answer.sdp });
+    await this.peerConnection.setLocalDescription(answer);
 
     // Send answer via Gun.js
     this.gunRegistry!.get(this.options.namespace!).get('answers').get(offer.fromPeer).put({
       type: 'answer',
-      sdp: answer.sdp,
+      sdp: answer.sdp!,
       fromPeer: this.storeId,
       toPeer: offer.fromPeer,
       timestamp: Date.now()
@@ -274,7 +206,7 @@ export class WebRTCManager extends EventEmitter {
   }
 
   private async handleIceCandidate(ice: WebRTCIceCandidate): Promise<void> {
-    if (this.peerConnection) {
+    if (this.peerConnection && ice.sdpMLineIndex !== null && ice.sdpMid !== null) {
       await this.peerConnection.addIceCandidate({
         candidate: ice.candidate,
         sdpMLineIndex: ice.sdpMLineIndex,
@@ -283,7 +215,7 @@ export class WebRTCManager extends EventEmitter {
     }
   }
 
-  private sendIceCandidate(candidate: ICECandidate): void {
+  private sendIceCandidate(candidate: RTCIceCandidate): void {
     // Note: We need to know which peer to send this to
     // This is a simplified implementation - in practice you'd track active connections
     if (this.gunRegistry) {
@@ -298,7 +230,7 @@ export class WebRTCManager extends EventEmitter {
     }
   }
 
-  private setupDataChannel(channel: DataChannelLike): void {
+  private setupDataChannel(channel: RTCDataChannel): void {
     channel.onopen = (): void => {
       console.log('WebRTC DataChannel opened');
     };
