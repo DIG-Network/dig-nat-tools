@@ -83,7 +83,7 @@ export class FileClient implements IFileClient {
     }
 
     // Method 2: Try UPnP connection (if available)
-    if (peer.upnp?.ok && peer.upnp.externalIp && peer.upnp.externalPort) {
+    if (peer.upnp?.available && peer.upnp.externalIp && peer.upnp.externalPort) {
       try {
         console.log(`Attempting UPnP connection to ${peer.upnp.externalIp}:${peer.upnp.externalPort}`);
         return await this.downloadViaHttp(peer.upnp.externalIp, peer.upnp.externalPort, fileHash, options);
@@ -93,7 +93,7 @@ export class FileClient implements IFileClient {
     }
 
     // Method 3: Fall back to WebRTC (if available)
-    if (peer.webrtc?.ok) {
+    if (peer.webrtc?.available) {
       try {
         console.log(`Attempting WebRTC connection to ${storeId}`);
         return await this.downloadViaWebRTCDirect(storeId, fileHash);
@@ -105,8 +105,8 @@ export class FileClient implements IFileClient {
     throw new Error(`No viable connection method available for peer ${storeId}. Tried: ${
       [
         peer.externalIp && peer.port ? 'Direct HTTP' : null,
-        peer.upnp?.ok ? 'UPnP' : null,
-        peer.webrtc?.ok ? 'WebRTC' : null
+        peer.upnp?.available ? 'UPnP' : null,
+        peer.webrtc?.available ? 'WebRTC' : null
       ].filter(Boolean).join(', ') || 'None'
     }`);
   }

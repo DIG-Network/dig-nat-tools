@@ -3,12 +3,12 @@ import { Readable } from 'stream';
 export interface HostCapabilities {
   storeId?: string;
   upnp?: {
-    ok: boolean;
+    available: boolean;
     externalIp?: string;
     externalPort?: number;
   };
   webrtc?: {
-    ok: boolean;
+    available: boolean;
     stunServers?: string[];
   };
   // For plain connection

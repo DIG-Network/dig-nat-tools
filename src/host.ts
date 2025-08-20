@@ -132,8 +132,8 @@ export class FileHost implements IFileHost {
         try {
           const capabilities: HostCapabilities = {
             storeId: this.storeId,
-            upnp: { ok: false },
-            webrtc: { ok: false }
+            upnp: { available: false },
+            webrtc: { available: false }
           };
 
           if (this.connectionMode === ConnectionMode.PLAIN) {
@@ -156,7 +156,7 @@ export class FileHost implements IFileHost {
             // WebRTC mode - register capabilities but don't expose HTTP directly
             console.log('Using WebRTC connection mode');
             capabilities.webrtc = { 
-              ok: true,
+              available: true,
               stunServers: ['stun:stun.l.google.com:19302']
             };
             
@@ -185,7 +185,7 @@ export class FileHost implements IFileHost {
             const externalIp = await this.getExternalIp();
             
             capabilities.upnp = {
-              ok: true,
+              available: true,
               externalIp,
               externalPort: this.externalPort || this.port
             };
