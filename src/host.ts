@@ -5,17 +5,25 @@ import * as crypto from 'crypto';
 import * as natUpnp from 'nat-upnp';
 import express from 'express';
 import os from 'os';
-import { IFileHost } from './interfaces';
+import { IFileHost, HostCapabilities } from './interfaces';
+import { GunRegistry } from './registry/gun-registry';
 
 export enum ConnectionMode {
   UPNP = 'upnp',
-  PLAIN = 'plain'
+  PLAIN = 'plain',
+  WEBRTC = 'webrtc'
 }
 
 export interface HostOptions {
   port?: number;
   ttl?: number;  // Time to live for port mapping (seconds)
   connectionMode?: ConnectionMode;  // Connection mode for NAT traversal
+  storeId?: string;  // Unique identifier for Gun.js registry
+  gun?: {
+    peers: string[];     // Gun.js peer URLs
+    namespace?: string;  // Registry namespace
+  };
+  enableWebRTC?: boolean;  // Enable WebRTC fallback
 }
 
 export class FileHost implements IFileHost {
@@ -27,16 +35,29 @@ export class FileHost implements IFileHost {
   private externalPort: number | null = null;
   private ttl: number;
   private sharedFiles: Set<string> = new Set(); // Tracks shared file hashes
+  private options: HostOptions;
+  private gunRegistry: GunRegistry | null = null;
+  private storeId: string;
 
   constructor(options: HostOptions = {}) {
+    this.options = options;
     this.port = options.port || 0;  // 0 means a random available port
     this.ttl = options.ttl || 3600;  // Default 1 hour
     this.connectionMode = options.connectionMode || ConnectionMode.UPNP;
+    this.storeId = options.storeId || this.generateUniqueId();
     
     // Initialize NAT clients based on connection mode
-    if (this.connectionMode !== ConnectionMode.PLAIN) {
+    if (this.connectionMode !== ConnectionMode.PLAIN && this.connectionMode !== ConnectionMode.WEBRTC) {
       // Initialize UPnP client
       this.upnpClient = natUpnp.createClient();
+    }
+    
+    // Initialize Gun.js registry if needed
+    if (options.gun && (this.connectionMode === ConnectionMode.WEBRTC || options.enableWebRTC)) {
+      this.gunRegistry = new GunRegistry({
+        peers: options.gun.peers,
+        namespace: options.gun.namespace
+      });
     }
     
     // Initialize Express app
@@ -90,7 +111,7 @@ export class FileHost implements IFileHost {
   /**
    * Start the file hosting server
    */
-  public async start(): Promise<{ externalIp: string, port: number }> {
+  public async start(): Promise<HostCapabilities> {
     return new Promise((resolve, reject) => {
       // Start HTTP server
       console.log(`Starting HTTP server on port ${this.port || 'random'}...`);
@@ -109,6 +130,12 @@ export class FileHost implements IFileHost {
         console.log(`HTTP server started on local port ${this.port}`);
         
         try {
+          const capabilities: HostCapabilities = {
+            storeId: this.storeId,
+            upnp: { ok: false },
+            webrtc: { ok: false }
+          };
+
           if (this.connectionMode === ConnectionMode.PLAIN) {
             // Skip NAT traversal, use local IP and current port
             console.log('Using plain connection mode (no NAT traversal)');
@@ -120,23 +147,64 @@ export class FileHost implements IFileHost {
             this.externalPort = this.port;
             console.log(`Server accessible at: http://${localIp}:${this.port}`);
             
-            resolve({ 
-              externalIp: localIp, 
-              port: this.port 
-            });
+            // Populate legacy fields for backward compatibility
+            capabilities.externalIp = localIp;
+            capabilities.port = this.port;
+            
+            resolve(capabilities);
+          } else if (this.connectionMode === ConnectionMode.WEBRTC) {
+            // WebRTC mode - register capabilities but don't expose HTTP directly
+            console.log('Using WebRTC connection mode');
+            capabilities.webrtc = { 
+              ok: true,
+              stunServers: ['stun:stun.l.google.com:19302']
+            };
+            
+            // Register in Gun.js registry
+            if (this.gunRegistry) {
+              await this.gunRegistry.register({
+                ...capabilities,
+                storeId: this.storeId
+              });
+              console.log(`Registered in Gun.js registry with storeId: ${this.storeId}`);
+            } else {
+              console.warn('Gun.js registry not available, WebRTC signaling will not work');
+            }
+            
+            // For WebRTC mode, we don't have traditional externalIp/port
+            // But set them to localhost for compatibility
+            capabilities.externalIp = 'localhost';
+            capabilities.port = this.port;
+            
+            resolve(capabilities);
           } else {
-            // Map port using NAT traversal
+            // UPnP mode (existing logic)
             await this.mapPort();
             
             // Get external IP
             const externalIp = await this.getExternalIp();
             
+            capabilities.upnp = {
+              ok: true,
+              externalIp,
+              externalPort: this.externalPort || this.port
+            };
+            
+            // Populate legacy fields for backward compatibility
+            capabilities.externalIp = externalIp;
+            capabilities.port = this.externalPort || this.port;
+            
             console.log(`Server accessible at: http://${externalIp}:${this.externalPort || this.port}`);
             
-            resolve({ 
-              externalIp, 
-              port: this.externalPort || this.port 
-            });
+            // Also register in Gun.js if available for hybrid connectivity
+            if (this.gunRegistry) {
+              await this.gunRegistry.register({
+                ...capabilities,
+                storeId: this.storeId
+              });
+            }
+            
+            resolve(capabilities);
           }
         } catch (error) {
           reject(error);
@@ -149,13 +217,22 @@ export class FileHost implements IFileHost {
    * Stop the file hosting server
    */
   public async stop(): Promise<void> {
+    // Unregister from Gun.js registry
+    if (this.gunRegistry) {
+      try {
+        await this.gunRegistry.unregister(this.storeId);
+      } catch (error) {
+        console.warn('Failed to unregister from Gun.js registry:', error);
+      }
+    }
+
     if (this.server) {
       return new Promise((resolve, reject) => {
         this.server?.close((err) => {
           if (err) {
             reject(err);
           } else {
-            if (this.connectionMode === ConnectionMode.PLAIN) {
+            if (this.connectionMode === ConnectionMode.PLAIN || this.connectionMode === ConnectionMode.WEBRTC) {
               // No NAT traversal to clean up
               resolve();
             } else {
@@ -412,6 +489,11 @@ export class FileHost implements IFileHost {
   public async getFileUrl(hash: string): Promise<string> {
     if (!this.sharedFiles.has(hash)) {
       throw new Error(`No file with hash: ${hash}`);
+    }
+
+    if (this.connectionMode === ConnectionMode.WEBRTC) {
+      // For WebRTC mode, return the storeId and hash for peer discovery
+      return `webrtc://${this.storeId}/files/${hash}`;
     }
 
     if (!this.externalPort) {

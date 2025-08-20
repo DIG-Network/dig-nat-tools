@@ -372,10 +372,13 @@ describe('FileHost - Comprehensive Coverage', () => {
         });
 
         const result = await plainHost.start();
-        expect(result).toEqual({
+        expect(result).toEqual(expect.objectContaining({
           externalIp: '192.168.1.100',
-          port: 8080
-        });
+          port: 8080,
+          upnp: { ok: false },
+          webrtc: { ok: false }
+        }));
+        expect(result.storeId).toBeDefined();
         expect((plainHost as any).externalPort).toBe(8080);
       });
 

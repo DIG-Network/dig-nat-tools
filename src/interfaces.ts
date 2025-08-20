@@ -1,11 +1,27 @@
 import { Readable } from 'stream';
 
+export interface HostCapabilities {
+  storeId?: string;
+  upnp?: {
+    ok: boolean;
+    externalIp?: string;
+    externalPort?: number;
+  };
+  webrtc?: {
+    ok: boolean;
+    stunServers?: string[];
+  };
+  // For plain connection
+  externalIp?: string;
+  port?: number;
+}
+
 export interface IFileHost {
   /**
    * Start the file hosting server
-   * @returns Promise that resolves with external IP and port information
+   * @returns Promise that resolves with capabilities information
    */
-  start(): Promise<{ externalIp: string, port: number }>;
+  start(): Promise<HostCapabilities>;
 
   /**
    * Stop the file hosting server
