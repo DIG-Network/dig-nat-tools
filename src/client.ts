@@ -1,54 +1,49 @@
 // client.ts
 import * as http from 'http';
 import * as https from 'https';
+import WebTorrent from 'webtorrent';
 import { URL } from 'url';
 import { Readable } from 'stream';
 import { IFileClient, DownloadOptions, HostCapabilities } from './interfaces';
 import { GunRegistry } from './registry/gun-registry';
-import { WebRTCManager } from './connectivity/webrtc-manager';
 
 export interface FileClientOptions {
   peers?: string[];       // Gun.js peer URLs
   namespace?: string;     // Gun.js namespace
   timeout?: number;       // Download timeout
-  stunServers?: string[]; // WebRTC STUN servers
 }
 
 export class FileClient implements IFileClient {
   private gunRegistry: GunRegistry;
-  private webrtcManager: WebRTCManager;
+  private webTorrentClient: WebTorrent.Instance | null = null;
   private options: FileClientOptions;
 
   constructor(options: FileClientOptions = {}) {
     this.options = {
       peers: options.peers || ['http://localhost:8765/gun'],
       namespace: options.namespace || 'dig-nat-tools',
-      timeout: options.timeout || 30000,
-      stunServers: options.stunServers || ['stun:stun.l.google.com:19302']
+      timeout: options.timeout || 30000
     };
 
     this.gunRegistry = new GunRegistry({
       peers: this.options.peers,
       namespace: this.options.namespace
     });
-
-    this.webrtcManager = new WebRTCManager({
-      peers: this.options.peers,
-      namespace: this.options.namespace,
-      stunServers: this.options.stunServers
-    });
   }
   
   /**
    * Download a file from a peer and return it as a buffer
-   * @param url The URL of the file to download (can be http://, https://, or webrtc://)
+   * Supports both HTTP and WebTorrent magnet URIs
+   * @param url The URL or magnet URI of the file to download
    * @param options Download options
    * @returns A promise that resolves to the file content as a Buffer
    */
   public async downloadAsBuffer(url: string, options: DownloadOptions = {}): Promise<Buffer> {
-    // Check if this is a WebRTC URL
-    if (url.startsWith('webrtc://')) {
-      return this.downloadViaWebRTC(url);
+    console.log(`📥 Downloading file from: ${url}`);
+    
+    // Check if this is a WebTorrent magnet URI
+    if (url.startsWith('magnet:')) {
+      return this.downloadViaWebTorrent(url);
     }
     
     // For HTTP/HTTPS URLs, use direct download
@@ -63,6 +58,8 @@ export class FileClient implements IFileClient {
    * @returns A promise that resolves to the file content as a Buffer
    */
   public async downloadFile(storeId: string, fileHash: string, options: DownloadOptions = {}): Promise<Buffer> {
+    console.log(`🔍 Looking up peer ${storeId} in registry...`);
+    
     // 1. Look up peer in Gun.js registry
     const peer = await this.gunRegistry.findPeer(storeId);
     
@@ -70,172 +67,116 @@ export class FileClient implements IFileClient {
       throw new Error(`Peer ${storeId} not found in registry`);
     }
 
-    // 2. Try connection methods in order of preference: Direct HTTP > UPnP > WebRTC
+    console.log(`🎯 Found peer with capabilities:`, {
+      directHttp: peer.directHttp?.available || false,
+      webTorrent: peer.webTorrent?.available || false
+    });
+
+    // 2. Try connection methods in order of preference: Direct HTTP > WebTorrent
     
-    // Method 1: Try direct HTTP connection (fastest, no NAT traversal needed)
-    if (peer.externalIp && peer.port) {
+    // Method 1: Try direct HTTP connection (fastest, no P2P overhead)
+    if (peer.directHttp?.available) {
       try {
-        console.log(`Attempting direct HTTP connection to ${peer.externalIp}:${peer.port}`);
-        return await this.downloadViaHttp(peer.externalIp, peer.port, fileHash, options);
+        console.log(`🌐 Attempting direct HTTP connection to ${peer.directHttp.ip}:${peer.directHttp.port}`);
+        return await this.downloadViaHttp(peer.directHttp.ip, peer.directHttp.port, fileHash, options);
       } catch (error) {
-        console.warn(`Direct HTTP connection failed:`, error);
+        console.warn(`⚠️ Direct HTTP connection failed:`, error);
       }
     }
 
-    // Method 2: Try UPnP connection (if available)
-    if (peer.upnp?.available && peer.upnp.externalIp && peer.upnp.externalPort) {
+    // Method 2: Fall back to WebTorrent (if available)
+    if (peer.webTorrent?.available && peer.webTorrent.magnetUris) {
       try {
-        console.log(`Attempting UPnP connection to ${peer.upnp.externalIp}:${peer.upnp.externalPort}`);
-        return await this.downloadViaHttp(peer.upnp.externalIp, peer.upnp.externalPort, fileHash, options);
+        // Find the magnet URI for this specific file
+        const magnetUri = peer.webTorrent.magnetUris.find(uri => uri.includes(fileHash));
+        if (magnetUri) {
+          console.log(`🧲 Attempting WebTorrent download via magnet URI`);
+          return await this.downloadViaWebTorrent(magnetUri);
+        } else {
+          console.warn(`⚠️ No magnet URI found for file ${fileHash}`);
+        }
       } catch (error) {
-        console.warn(`UPnP connection failed:`, error);
-      }
-    }
-
-    // Method 3: Fall back to WebRTC (if available)
-    if (peer.webrtc?.available) {
-      try {
-        console.log(`Attempting WebRTC connection to ${storeId}`);
-        return await this.downloadViaWebRTCDirect(storeId, fileHash);
-      } catch (error) {
-        console.warn(`WebRTC connection failed:`, error);
+        console.warn(`⚠️ WebTorrent connection failed:`, error);
       }
     }
     
     throw new Error(`No viable connection method available for peer ${storeId}. Tried: ${
       [
-        peer.externalIp && peer.port ? 'Direct HTTP' : null,
-        peer.upnp?.available ? 'UPnP' : null,
-        peer.webrtc?.available ? 'WebRTC' : null
+        peer.directHttp?.available ? 'Direct HTTP' : null,
+        peer.webTorrent?.available ? 'WebTorrent' : null
       ].filter(Boolean).join(', ') || 'None'
     }`);
   }
 
   /**
-   * Download a file via WebRTC URL parsing
-   * @param webrtcUrl WebRTC URL in format: webrtc://storeId/files/hash
+   * Download a file via WebTorrent
    */
-  private async downloadViaWebRTC(webrtcUrl: string): Promise<Buffer> {
-    // Parse WebRTC URL: webrtc://storeId/files/hash
-    const urlParts = webrtcUrl.replace('webrtc://', '').split('/');
-    if (urlParts.length !== 3 || urlParts[1] !== 'files') {
-      throw new Error('Invalid WebRTC URL format. Expected: webrtc://storeId/files/hash');
-    }
+  private async downloadViaWebTorrent(magnetUri: string): Promise<Buffer> {
+    console.log(`🧲 Starting WebTorrent download...`);
     
-    const storeId = urlParts[0];
-    const fileHash = urlParts[2];
-    
-    return this.downloadViaWebRTCDirect(storeId, fileHash);
-  }
-
-  /**
-   * Download a file directly via WebRTC
-   */
-  private async downloadViaWebRTCDirect(storeId: string, fileHash: string): Promise<Buffer> {
-    if (!this.webrtcManager.isWebRTCAvailable()) {
-      throw new Error('WebRTC not available in this environment');
+    // Initialize WebTorrent client if not already done
+    if (!this.webTorrentClient) {
+      this.webTorrentClient = new WebTorrent();
+      console.log(`✅ WebTorrent client initialized`);
     }
 
-    try {
-      // Connect to peer via WebRTC
-      const dataChannel = await this.webrtcManager.connectTo(storeId);
+    return new Promise<Buffer>((resolve, reject) => {
+      console.log(`🔄 Adding torrent from magnet URI...`);
       
-      // Create a promise to handle the file download
-      return new Promise<Buffer>((resolve, reject) => {
-        const chunks: Buffer[] = [];
-        let isResolved = false;
+      const torrent = this.webTorrentClient!.add(magnetUri);
 
-        // Set up message handler for the data channel
-        const originalOnMessage = dataChannel.onmessage;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        dataChannel.onmessage = (event: { data: any }): void => {
-          try {
-            const data = event.data;
-            
-            if (typeof data === 'string') {
-              // Parse HTTP response if it's a string
-              const response = JSON.parse(data);
-              if (response.error) {
-                if (!isResolved) {
-                  isResolved = true;
-                  reject(new Error(response.error));
-                }
-                return;
-              }
-              
-              if (response.data) {
-                // Convert base64 back to buffer
-                const buffer = Buffer.from(response.data, 'base64');
-                if (!isResolved) {
-                  isResolved = true;
-                  resolve(buffer);
-                }
-              }
-            } else if (data instanceof ArrayBuffer) {
-              chunks.push(Buffer.from(data));
-            } else if (Buffer.isBuffer(data)) {
-              chunks.push(data);
-            }
-          } catch (error) {
-            if (!isResolved) {
-              isResolved = true;
-              reject(error);
-            }
-          }
+      // Timeout handler
+      const timeout = setTimeout(() => {
+        if (torrent) {
+          torrent.destroy();
+        }
+        reject(new Error('WebTorrent download timeout'));
+      }, this.options.timeout);
 
-          // Call original handler if it exists
-          if (originalOnMessage && typeof originalOnMessage === 'function') {
-            try {
-              originalOnMessage.call(dataChannel, event as any); // eslint-disable-line @typescript-eslint/no-explicit-any
-            } catch {
-              // Ignore errors from original handler
-            }
-          }
-        };
-
-        // Send HTTP request over WebRTC data channel
-        const httpRequest = {
-          method: 'GET',
-          path: `/files/${fileHash}`,
-          headers: {
-            'Host': storeId,
-            'User-Agent': 'dig-nat-tools-client'
-          }
-        };
-
-        // Send request as JSON string
-        dataChannel.send(JSON.stringify(httpRequest));
-
-        // Set timeout
-        const timeout = setTimeout(() => {
-          if (!isResolved) {
-            isResolved = true;
-            reject(new Error('WebRTC download timeout'));
-          }
-        }, this.options.timeout);
-
-        // Ensure timeout is cleared on completion
-        const cleanup = (): void => {
-          clearTimeout(timeout);
-        };
-
-        // Override resolve and reject to include cleanup
-        const originalPromiseResolve = resolve;
-        const originalPromiseReject = reject;
+      torrent.on('ready', () => {
+        console.log(`✅ Torrent ready! File: ${torrent.name}, Size: ${torrent.length} bytes`);
         
-        resolve = originalPromiseResolve;
-        reject = originalPromiseReject;
+        if (torrent.files.length === 0) {
+          clearTimeout(timeout);
+          reject(new Error('No files in torrent'));
+          return;
+        }
 
-        // Add cleanup to both paths
-        Promise.resolve().then(() => {
-          if (isResolved) {
-            cleanup();
-          }
+        const file = torrent.files[0]; // Get the first file
+        const chunks: Buffer[] = [];
+
+        console.log(`📥 Starting download of ${file.name}...`);
+
+        // Create a stream to read the file
+        const stream = file.createReadStream();
+
+        stream.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+        });
+
+        stream.on('end', () => {
+          clearTimeout(timeout);
+          const buffer = Buffer.concat(chunks);
+          console.log(`✅ WebTorrent download completed! ${buffer.length} bytes`);
+          
+          // Destroy torrent to clean up
+          torrent.destroy();
+          resolve(buffer);
+        });
+
+        stream.on('error', (error) => {
+          clearTimeout(timeout);
+          torrent.destroy();
+          reject(error);
         });
       });
-    } catch (error) {
-      throw new Error(`WebRTC connection failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
+
+      torrent.on('error', (error) => {
+        clearTimeout(timeout);
+        console.error(`❌ WebTorrent error:`, error);
+        reject(error);
+      });
+    });
   }
 
   /**
@@ -243,6 +184,7 @@ export class FileClient implements IFileClient {
    */
   private async downloadViaHttp(host: string, port: number, fileHash: string, options: DownloadOptions = {}): Promise<Buffer> {
     const url = `http://${host}:${port}/files/${fileHash}`;
+    console.log(`🌐 HTTP download from: ${url}`);
     return FileClient.downloadAsBufferStatic(url, options);
   }
 
@@ -353,7 +295,6 @@ export class FileClient implements IFileClient {
           return reject(new Error(`Failed to download file: ${res.statusCode} ${res.statusMessage}`));
         }
 
-        // Resolve with the response stream directly
         resolve(res);
       });
 
@@ -376,36 +317,39 @@ export class FileClient implements IFileClient {
   public static async isServerOnlineStatic(baseUrl: string): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
       try {
-        // Parse the URL and add the status path
-        const parsedUrl = new URL('/status', baseUrl);
+        const url = `${baseUrl}/status`;
+        
+        // Parse the URL
+        const parsedUrl = new URL(url);
         
         // Select the appropriate protocol
         const protocol = parsedUrl.protocol === 'https:' ? https : http;
         
-        const req = protocol.get(parsedUrl.toString(), { timeout: 5000 }, (res: http.IncomingMessage) => {
+        const req = protocol.get(url, { timeout: 5000 }, (res: http.IncomingMessage) => {
           if (res.statusCode !== 200) {
-            return resolve(false);
+            resolve(false);
+            return;
           }
-          
+
           let data = '';
-          res.on('data', (chunk: Buffer) => {
-            data += chunk.toString();
+          res.on('data', (chunk) => {
+            data += chunk;
           });
-          
+
           res.on('end', () => {
             try {
-              const parsedData = JSON.parse(data);
-              resolve(parsedData && parsedData.status === 'online');
+              const response = JSON.parse(data);
+              resolve(response.status === 'online');
             } catch {
               resolve(false);
             }
           });
         });
-        
+
         req.on('error', () => {
           resolve(false);
         });
-        
+
         req.on('timeout', () => {
           req.destroy();
           resolve(false);
@@ -414,5 +358,16 @@ export class FileClient implements IFileClient {
         resolve(false);
       }
     });
+  }
+
+  /**
+   * Clean up resources
+   */
+  public async destroy(): Promise<void> {
+    if (this.webTorrentClient) {
+      this.webTorrentClient.destroy();
+      this.webTorrentClient = null;
+      console.log('✅ WebTorrent client destroyed');
+    }
   }
 }

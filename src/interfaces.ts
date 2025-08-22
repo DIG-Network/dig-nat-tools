@@ -1,7 +1,18 @@
 import { Readable } from 'stream';
 
 export interface HostCapabilities {
-  storeId?: string;
+  storeId: string;
+  // Connection methods (in order of preference)
+  directHttp?: {
+    available: boolean;
+    ip: string;
+    port: number;
+  };
+  webTorrent?: {
+    available: boolean;
+    magnetUris?: string[]; // Magnet URIs for shared files
+  };
+  // Legacy fields (deprecated)
   upnp?: {
     available: boolean;
     externalIp?: string;
@@ -11,7 +22,6 @@ export interface HostCapabilities {
     available: boolean;
     stunServers?: string[];
   };
-  // For plain connection
   externalIp?: string;
   port?: number;
 }

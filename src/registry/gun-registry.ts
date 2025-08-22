@@ -91,7 +91,7 @@ export class GunRegistry {
         .once((data: Record<string, unknown>) => {
           clearTimeout(timeout);
           if (data && data.storeId === storeId) {
-            resolve(data as HostCapabilities);
+            resolve(data as unknown as HostCapabilities);
           } else {
             resolve(null);
           }
@@ -129,7 +129,7 @@ export class GunRegistry {
                   peerData.lastSeen &&
                   (peerData.lastSeen as number) > fiveMinutesAgo
                 ) {
-                  peers.push(peerData as HostCapabilities);
+                  peers.push(peerData as unknown as HostCapabilities);
                 }
               }
             });

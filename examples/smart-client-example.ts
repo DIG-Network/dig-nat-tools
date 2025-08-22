@@ -22,23 +22,22 @@ async function main(): Promise<void> {
     timeout: 30000
   });
 
-  // Set up a WebRTC host for demonstration
-  const webrtcHost = new FileHost({
-    port: 3001,
-    connectionMode: ConnectionMode.WEBRTC,
-    storeId: 'demo-webrtc-host',
+  // Set up a WebTorrent host for demonstration
+  const webTorrentHost = new FileHost({
+    connectionMode: ConnectionMode.WEBTORRENT_ONLY,
+    storeId: 'demo-webtorrent-host',
     gun: gunOptions
   });
 
   try {
-    console.log('Starting WebRTC host...');
-    const capabilities = await webrtcHost.start();
+    console.log('Starting WebTorrent host...');
+    const capabilities = await webTorrentHost.start();
     console.log('Host started with capabilities:', capabilities);
 
     // Share a file
     const testFile = path.join(__dirname, '..', 'README.md');
     if (fs.existsSync(testFile)) {
-      const fileHash = await webrtcHost.shareFile(testFile);
+      const fileHash = await webTorrentHost.shareFile(testFile);
       console.log(`\nShared file with hash: ${fileHash}`);
 
       // Wait a moment for registration to propagate
@@ -87,7 +86,7 @@ async function main(): Promise<void> {
     console.error('Error:', error);
   } finally {
     console.log('\nStopping host...');
-    await webrtcHost.stop();
+    await webTorrentHost.stop();
     console.log('Example completed!');
   }
 }

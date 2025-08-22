@@ -2,65 +2,64 @@
 import * as fs from 'fs';
 import * as http from 'http';
 import * as crypto from 'crypto';
-import * as natUpnp from 'nat-upnp';
 import express from 'express';
 import os from 'os';
 import { IFileHost, HostCapabilities } from './interfaces';
 import { GunRegistry } from './registry/gun-registry';
+import WebTorrent from 'webtorrent';
+import * as natUpnp from 'nat-upnp';
 
-export enum ConnectionMode {
-  UPNP = 'upnp',
-  PLAIN = 'plain',
-  WEBRTC = 'webrtc'
-}
+// ✅ Replace enum with const object (better ES module support)
+export const ConnectionMode = {
+  AUTO: 'auto',           // Try direct HTTP first, then WebTorrent
+  HTTP_ONLY: 'http',      // Only HTTP (manual port forwarding required)
+  WEBTORRENT_ONLY: 'webtorrent'  // Only WebTorrent
+} as const;
 
 export interface HostOptions {
   port?: number;
   ttl?: number;  // Time to live for port mapping (seconds)
-  connectionMode?: ConnectionMode;  // Connection mode for NAT traversal
+  connectionMode?: typeof ConnectionMode[keyof typeof ConnectionMode];
   storeId?: string;  // Unique identifier for Gun.js registry
   gun?: {
     peers: string[];     // Gun.js peer URLs
     namespace?: string;  // Registry namespace
   };
-  enableWebRTC?: boolean;  // Enable WebRTC fallback
 }
 
 export class FileHost implements IFileHost {
   private app: express.Application;
   private server: http.Server | null = null;
-  private upnpClient: natUpnp.Client | null = null;
-  private connectionMode: ConnectionMode;
+  private connectionMode: typeof ConnectionMode[keyof typeof ConnectionMode];
   private port: number;
-  private externalPort: number | null = null;
-  private ttl: number;
+  private webTorrentClient: WebTorrent.Instance | null = null;
+  private magnetUris: Map<string, string> = new Map(); // fileHash -> magnetURI
   private sharedFiles: Set<string> = new Set(); // Tracks shared file hashes
   private options: HostOptions;
   private gunRegistry: GunRegistry | null = null;
   private storeId: string;
+  private upnpClient: any = null;
+  private externalPort: number | null = null;
+  private capabilities: HostCapabilities | null = null;
 
   constructor(options: HostOptions = {}) {
     this.options = options;
     this.port = options.port || 0;  // 0 means a random available port
-    this.ttl = options.ttl || 3600;  // Default 1 hour
-    this.connectionMode = options.connectionMode || ConnectionMode.UPNP;
+    this.connectionMode = options.connectionMode || ConnectionMode.AUTO;
     this.storeId = options.storeId || this.generateUniqueId();
     
-    // Initialize NAT clients based on connection mode
-    if (this.connectionMode !== ConnectionMode.PLAIN && this.connectionMode !== ConnectionMode.WEBRTC) {
-      // Initialize UPnP client
-      this.upnpClient = natUpnp.createClient();
-    }
+    // Initialize UPnP client
+    this.upnpClient = natUpnp.createClient();
     
-    // Initialize Gun.js registry if needed
-    if (options.gun && (this.connectionMode === ConnectionMode.WEBRTC || options.enableWebRTC)) {
+    // Initialize Gun.js registry for peer discovery
+    if (options.gun) {
       this.gunRegistry = new GunRegistry({
         peers: options.gun.peers,
         namespace: options.gun.namespace
       });
     }
     
-    // Initialize Express app
+    // Initialize Express app for HTTP server
     this.app = express();
     this.setupRoutes();
   }
@@ -109,14 +108,90 @@ export class FileHost implements IFileHost {
   }
 
   /**
-   * Start the file hosting server
+   * Start the file hosting server with connection strategy
    */
   public async start(): Promise<HostCapabilities> {
+    console.log(`🚀 Starting FileHost with connection mode: ${this.connectionMode}`);
+    
+    const capabilities: HostCapabilities = {
+      storeId: this.storeId
+    };
+
+    // Step 1: Try to start HTTP server (for AUTO and HTTP_ONLY modes)
+    if (this.connectionMode === ConnectionMode.AUTO || this.connectionMode === ConnectionMode.HTTP_ONLY) {
+      try {
+        await this.startHttpServer();
+        
+        // Test if HTTP server is externally accessible
+        const localIp = this.detectLocalIp();
+        if (localIp) {
+          console.log(`✅ HTTP server started successfully at ${localIp}:${this.port}`);
+          capabilities.directHttp = {
+            available: true,
+            ip: localIp,
+            port: this.port
+          };
+        }
+      } catch (error) {
+        console.warn(`⚠️ HTTP server failed to start:`, error);
+        if (this.connectionMode === ConnectionMode.HTTP_ONLY) {
+          throw new Error(`HTTP-only mode requested but HTTP server failed: ${error}`);
+        }
+      }
+    }
+
+    // Step 2: Initialize WebTorrent (for AUTO and WEBTORRENT_ONLY modes)
+    if (this.connectionMode === ConnectionMode.AUTO || this.connectionMode === ConnectionMode.WEBTORRENT_ONLY) {
+      try {
+        this.webTorrentClient = new WebTorrent();
+        console.log(`✅ WebTorrent client initialized`);
+        
+        capabilities.webTorrent = {
+          available: true,
+          magnetUris: []
+        };
+      } catch (error) {
+        console.warn(`⚠️ WebTorrent initialization failed:`, error);
+        if (this.connectionMode === ConnectionMode.WEBTORRENT_ONLY) {
+          throw new Error(`WebTorrent-only mode requested but WebTorrent failed: ${error}`);
+        }
+      }
+    }
+
+    // Step 3: Register capabilities in Gun.js registry
+    if (this.gunRegistry) {
+      try {
+        await this.gunRegistry.register(capabilities);
+        console.log(`✅ Registered capabilities in Gun.js registry with storeId: ${this.storeId}`);
+      } catch (error) {
+        console.warn(`⚠️ Failed to register in Gun.js registry:`, error);
+      }
+    }
+
+    // Verify at least one connection method is available
+    if (!capabilities.directHttp?.available && !capabilities.webTorrent?.available) {
+      throw new Error('No connection methods available. Both HTTP and WebTorrent failed to initialize.');
+    }
+
+    console.log(`🎉 FileHost started successfully with methods:`, {
+      directHttp: capabilities.directHttp?.available || false,
+      webTorrent: capabilities.webTorrent?.available || false
+    });
+
+    // Store capabilities for use in other methods
+    this.capabilities = capabilities;
+
+    return capabilities;
+  }
+
+  /**
+   * Start HTTP server
+   */
+  private async startHttpServer(): Promise<void> {
     return new Promise((resolve, reject) => {
-      // Start HTTP server
       console.log(`Starting HTTP server on port ${this.port || 'random'}...`);
-      // Bind to all interfaces (0.0.0.0) instead of just localhost
-      this.server = this.app.listen(this.port, '0.0.0.0', async () => {
+      
+      this.server = this.app.listen(this.port, '0.0.0.0', () => {
         if (!this.server) {
           return reject(new Error('Failed to start server'));
         }
@@ -127,88 +202,12 @@ export class FileHost implements IFileHost {
         }
 
         this.port = address.port;
-        console.log(`HTTP server started on local port ${this.port}`);
-        
-        try {
-          const capabilities: HostCapabilities = {
-            storeId: this.storeId,
-            upnp: { available: false },
-            webrtc: { available: false }
-          };
+        console.log(`HTTP server listening on port ${this.port}`);
+        resolve();
+      });
 
-          if (this.connectionMode === ConnectionMode.PLAIN) {
-            // Skip NAT traversal, use local IP and current port
-            console.log('Using plain connection mode (no NAT traversal)');
-            const localIp = this.detectLocalIp();
-            if (!localIp) {
-              return reject(new Error('Could not determine local IP address'));
-            }
-            
-            this.externalPort = this.port;
-            console.log(`Server accessible at: http://${localIp}:${this.port}`);
-            
-            // Populate legacy fields for backward compatibility
-            capabilities.externalIp = localIp;
-            capabilities.port = this.port;
-            
-            resolve(capabilities);
-          } else if (this.connectionMode === ConnectionMode.WEBRTC) {
-            // WebRTC mode - register capabilities but don't expose HTTP directly
-            console.log('Using WebRTC connection mode');
-            capabilities.webrtc = { 
-              available: true,
-              stunServers: ['stun:stun.l.google.com:19302']
-            };
-            
-            // Register in Gun.js registry
-            if (this.gunRegistry) {
-              await this.gunRegistry.register({
-                ...capabilities,
-                storeId: this.storeId
-              });
-              console.log(`Registered in Gun.js registry with storeId: ${this.storeId}`);
-            } else {
-              console.warn('Gun.js registry not available, WebRTC signaling will not work');
-            }
-            
-            // For WebRTC mode, we don't have traditional externalIp/port
-            // But set them to localhost for compatibility
-            capabilities.externalIp = 'localhost';
-            capabilities.port = this.port;
-            
-            resolve(capabilities);
-          } else {
-            // UPnP mode (existing logic)
-            await this.mapPort();
-            
-            // Get external IP
-            const externalIp = await this.getExternalIp();
-            
-            capabilities.upnp = {
-              available: true,
-              externalIp,
-              externalPort: this.externalPort || this.port
-            };
-            
-            // Populate legacy fields for backward compatibility
-            capabilities.externalIp = externalIp;
-            capabilities.port = this.externalPort || this.port;
-            
-            console.log(`Server accessible at: http://${externalIp}:${this.externalPort || this.port}`);
-            
-            // Also register in Gun.js if available for hybrid connectivity
-            if (this.gunRegistry) {
-              await this.gunRegistry.register({
-                ...capabilities,
-                storeId: this.storeId
-              });
-            }
-            
-            resolve(capabilities);
-          }
-        } catch (error) {
-          reject(error);
-        }
+      this.server.on('error', (error) => {
+        reject(error);
       });
     });
   }
@@ -217,40 +216,52 @@ export class FileHost implements IFileHost {
    * Stop the file hosting server
    */
   public async stop(): Promise<void> {
+    console.log('🛑 Stopping FileHost...');
+
+    // Stop WebTorrent client
+    if (this.webTorrentClient) {
+      try {
+        this.webTorrentClient.destroy();
+        this.webTorrentClient = null;
+        console.log('✅ WebTorrent client stopped');
+      } catch (error) {
+        console.warn('⚠️ Error stopping WebTorrent client:', error);
+      }
+    }
+
     // Unregister from Gun.js registry
     if (this.gunRegistry) {
       try {
         await this.gunRegistry.unregister(this.storeId);
+        console.log('✅ Unregistered from Gun.js registry');
       } catch (error) {
-        console.warn('Failed to unregister from Gun.js registry:', error);
+        console.warn('⚠️ Failed to unregister from Gun.js registry:', error);
       }
     }
 
+    // Stop HTTP server
     if (this.server) {
       return new Promise((resolve, reject) => {
         this.server?.close((err) => {
           if (err) {
+            console.error('❌ Error stopping HTTP server:', err);
             reject(err);
           } else {
-            if (this.connectionMode === ConnectionMode.PLAIN || this.connectionMode === ConnectionMode.WEBRTC) {
-              // No NAT traversal to clean up
-              resolve();
-            } else {
-              this.unmapPort()
-                .then(() => resolve())
-                .catch(reject);
-            }
+            console.log('✅ HTTP server stopped');
+            this.server = null; // Clear the server reference
+            resolve();
           }
         });
       });
     }
+
+    console.log('✅ FileHost stopped successfully');
     return Promise.resolve();
   }
 
   /**
    * Share a file and get the SHA256 hash for it
-   * The file will be copied to a new location named by its SHA256 hash
-   * The returned hash becomes the file identifier in URLs (e.g., /files/{hash})
+   * This will make the file available via both HTTP (if enabled) and WebTorrent (if enabled)
    * @param filePath Path to the file to share
    * @returns SHA256 hash of the file (64-character hexadecimal string)
    */
@@ -260,33 +271,78 @@ export class FileHost implements IFileHost {
       throw new Error(`File not found: ${filePath}`);
     }
     
+    console.log(`📤 Sharing file: ${filePath}`);
+    
     // Calculate SHA256 hash of the file content
     const hash = await this.calculateFileHash(filePath);
+    console.log(`🔑 File hash: ${hash}`);
     
     // Copy the file to a location named by its hash (if not already there)
     if (!fs.existsSync(hash)) {
       fs.copyFileSync(filePath, hash);
+      console.log(`📋 File copied to hash-named location`);
     }
     
     // Track this hash as a shared file
     this.sharedFiles.add(hash);
     
-    return hash; // This hash becomes the file path component in URLs
+    // If WebTorrent is available, seed the file
+    if (this.webTorrentClient) {
+      try {
+        this.webTorrentClient.seed(hash, (torrent) => {
+          const magnetURI = torrent.magnetURI;
+          this.magnetUris.set(hash, magnetURI);
+          console.log(`🧲 WebTorrent seeding started for ${hash}`);
+          console.log(`   Magnet URI: ${magnetURI}`);
+        });
+        
+        // Update capabilities in registry with new magnet URI
+        if (this.gunRegistry) {
+          const currentCapabilities = await this.gunRegistry.findPeer(this.storeId);
+          if (currentCapabilities && currentCapabilities.webTorrent) {
+            currentCapabilities.webTorrent.magnetUris = Array.from(this.magnetUris.values());
+            await this.gunRegistry.register(currentCapabilities);
+          }
+        }
+      } catch (error) {
+        console.warn(`⚠️ Failed to seed file via WebTorrent:`, error);
+      }
+    }
+    
+    return hash;
   }
 
   /**
    * Remove a shared file
-   * This removes the file from tracking and optionally deletes the hash-named file
+   * This removes the file from both HTTP and WebTorrent sharing
    */
   public unshareFile(hash: string, deleteFile: boolean = false): boolean {
+    console.log(`📤 Unsharing file: ${hash}`);
+    
     const wasShared = this.sharedFiles.delete(hash);
+    
+    // Remove from WebTorrent seeding
+    if (this.webTorrentClient && this.magnetUris.has(hash)) {
+      try {
+        const magnetURI = this.magnetUris.get(hash);
+        const torrent = this.webTorrentClient.get(magnetURI!);
+        if (torrent && typeof torrent === 'object' && 'destroy' in torrent) {
+          (torrent as any).destroy();
+          console.log(`🧲 Stopped WebTorrent seeding for ${hash}`);
+        }
+        this.magnetUris.delete(hash);
+      } catch (error) {
+        console.warn(`⚠️ Error stopping WebTorrent seeding:`, error);
+      }
+    }
     
     // Optionally delete the hash-named file
     if (deleteFile && fs.existsSync(hash)) {
       try {
         fs.unlinkSync(hash);
+        console.log(`🗑️ Deleted file ${hash}`);
       } catch (error) {
-        console.warn(`Failed to delete file ${hash}:`, error);
+        console.warn(`⚠️ Failed to delete file ${hash}:`, error);
       }
     }
     
@@ -301,127 +357,38 @@ export class FileHost implements IFileHost {
     return Array.from(this.sharedFiles);
   }
 
-  private async mapPort(): Promise<void> {
-    return new Promise<void>((resolve, _reject) => {
-      console.log(`Attempting to map port ${this.port} via UPnP...`);
-      
-      // Use UPnP for port mapping
-      this.mapPortUpnp(resolve);
-    });
+  /**
+   * Get magnet URIs for all shared files (WebTorrent only)
+   */
+  public getMagnetUris(): string[] {
+    return Array.from(this.magnetUris.values());
   }
 
-  private mapPortUpnp(resolve: () => void): void {
-    if (!this.upnpClient) {
-      console.warn('UPnP client not initialized');
-      this.externalPort = this.port;
-      resolve();
-      return;
+  /**
+   * Get the URL for a shared file by its SHA256 hash
+   * Returns appropriate URL based on available connection methods
+   * @param hash SHA256 hash of the file (64-character hexadecimal string)
+   * @returns URL or magnet URI to download the file
+   */
+  public async getFileUrl(hash: string): Promise<string> {
+    if (!this.sharedFiles.has(hash)) {
+      throw new Error(`No file with hash: ${hash}`);
     }
 
-    this.upnpClient.portMapping({
-      public: this.port,
-      private: this.port,
-      ttl: this.ttl
-    }, (err: Error | null, info?: { public?: number }) => {
-      if (err) {
-        console.warn(`UPnP port mapping failed: ${err.message}`);
-        console.warn('Continuing without port forwarding - you may need to manually forward the port');
-        // Don't reject, continue without port forwarding
-        this.externalPort = this.port;
-        resolve();
-      } else {
-        console.log('UPnP port mapping successful');
-        if (info && info.public) {
-          this.externalPort = info.public;
-          console.log(`External port mapped: ${this.externalPort}`);
-        } else {
-          this.externalPort = this.port;
-        }
-        resolve();
-      }
-    });
-  }
-
-  private async unmapPort(): Promise<void> {
-    if (this.externalPort) {
-      return new Promise<void>((resolve) => {
-        // Use UPnP for port unmapping
-        if (!this.upnpClient) {
-          console.warn('UPnP client not initialized');
-          this.externalPort = null;
-          resolve();
-          return;
-        }
-
-        this.upnpClient.portUnmapping({
-          public: this.externalPort
-        }, () => {
-          this.externalPort = null;
-          resolve();
-        });
-      });
-    }
-    return Promise.resolve();
-  }
-
-  private async getExternalIp(): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
-      console.log(`Getting external IP address via UPnP...`);
-      
-      // Use UPnP for external IP
-      this.getExternalIpUpnp(resolve, reject);
-    });
-  }
-
-  private getExternalIpUpnp(resolve: (ip: string) => void, reject: (error: Error) => void): void {
-    if (!this.upnpClient) {
-      console.warn('UPnP client not initialized, falling back to local IP');
+    // Prefer direct HTTP if available
+    if (this.server) {
       const localIp = this.detectLocalIp();
       if (localIp) {
-        resolve(localIp);
-      } else {
-        reject(new Error('Could not determine IP address'));
+        return `http://${localIp}:${this.port}/files/${hash}`;
       }
-      return;
     }
 
-    this.upnpClient.externalIp((err: Error | null, upnpIp?: string) => {
-      if (err || !upnpIp) {
-        console.warn('Failed to get external IP via UPnP, falling back to local IP');
-        const localIp = this.detectLocalIp();
-        if (localIp) {
-          resolve(localIp);
-        } else {
-          reject(new Error('Could not determine IP address'));
-        }
-      } else {
-        console.log(`UPnP reported external IP: ${upnpIp}`);
-        
-        // Check if the UPnP IP is actually a private/local IP
-        // This indicates we're behind a cascaded router/access point - not supported
-        if (this.isPrivateIp(upnpIp)) {
-          reject(new Error(`Cascading network topology detected (UPnP returned private IP ${upnpIp}). This configuration is not supported. Please ensure the device is directly connected to a router with a public IP address.`));
-        } else {
-          console.log(`Using UPnP external IP: ${upnpIp}`);
-          resolve(upnpIp);
-        }
-      }
-    });
-  }
+    // Fall back to WebTorrent magnet URI
+    if (this.magnetUris.has(hash)) {
+      return this.magnetUris.get(hash)!;
+    }
 
-  // Check if an IP is in private address space
-  private isPrivateIp(ip: string): boolean {
-    const parts = ip.split('.').map(Number);
-    if (parts.length !== 4) return false;
-    
-    // 192.168.x.x
-    if (parts[0] === 192 && parts[1] === 168) return true;
-    // 10.x.x.x
-    if (parts[0] === 10) return true;
-    // 172.16.x.x - 172.31.x.x
-    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
-    
-    return false;
+    throw new Error(`File ${hash} is not available via any connection method`);
   }
 
   private detectLocalIp(): string | null {
@@ -432,7 +399,6 @@ export class FileHost implements IFileHost {
       if (name.toLowerCase().includes('wi-fi') || name.toLowerCase().includes('ethernet')) {
         for (const iface of interfaces[name]!) {
           if (iface.family === 'IPv4' && !iface.internal) {
-            console.log(`Found local IP from ${name}: ${iface.address}`);
             return iface.address;
           }
         }
@@ -443,7 +409,6 @@ export class FileHost implements IFileHost {
     for (const name of Object.keys(interfaces)) {
       for (const iface of interfaces[name]!) {
         if (iface.family === 'IPv4' && !iface.internal) {
-          console.log(`Found fallback local IP from ${name}: ${iface.address}`);
           return iface.address;
         }
       }
@@ -480,36 +445,141 @@ export class FileHost implements IFileHost {
   }
 
   /**
-   * Get the URL for a shared file by its SHA256 hash
-   * The URL format will be: http://{host}:{port}/files/{hash}
-   * where {hash} is the 64-character hexadecimal SHA256 string
-   * @param hash SHA256 hash of the file (64-character hexadecimal string)
-   * @returns URL to download the file (path component contains the SHA256 hash)
+   * Check if an IP address is private (RFC 1918)
    */
-  public async getFileUrl(hash: string): Promise<string> {
-    if (!this.sharedFiles.has(hash)) {
-      throw new Error(`No file with hash: ${hash}`);
+  private isPrivateIp(ip: string): boolean {
+    if (!ip || typeof ip !== 'string') {
+      return false;
     }
 
-    if (this.connectionMode === ConnectionMode.WEBRTC) {
-      // For WebRTC mode, return the storeId and hash for peer discovery
-      return `webrtc://${this.storeId}/files/${hash}`;
+    const ipParts = ip.split('.');
+    
+    // Must have exactly 4 parts
+    if (ipParts.length !== 4) {
+      return false;
     }
 
-    if (!this.externalPort) {
-      throw new Error('Server is not started or port is not mapped');
-    }
-
-    if (this.connectionMode === ConnectionMode.PLAIN) {
-      // Use local IP since we're not doing NAT traversal
-      const localIp = this.detectLocalIp();
-      if (!localIp) {
-        throw new Error('Could not determine local IP address');
+    // Convert to numbers and validate range
+    const numParts = ipParts.map(part => {
+      const num = parseInt(part, 10);
+      if (isNaN(num) || num < 0 || num > 255) {
+        return -1; // Invalid
       }
-      return `http://${localIp}:${this.externalPort}/files/${hash}`;
-    } else {
-      const externalIp = await this.getExternalIp();
-      return `http://${externalIp}:${this.externalPort}/files/${hash}`;
+      return num;
+    });
+
+    // Check if any part is invalid
+    if (numParts.includes(-1)) {
+      return false;
     }
+    
+    // 10.0.0.0 - 10.255.255.255
+    if (numParts[0] === 10) {
+      return true;
+    }
+    
+    // 172.16.0.0 - 172.31.255.255
+    if (numParts[0] === 172 && numParts[1] >= 16 && numParts[1] <= 31) {
+      return true;
+    }
+    
+    // 192.168.0.0 - 192.168.255.255
+    if (numParts[0] === 192 && numParts[1] === 168) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * Get external IP address using UPnP
+   */
+  private async getExternalIp(): Promise<string | null> {
+    return new Promise((resolve, reject) => {
+      if (!this.upnpClient) {
+        // Fall back to local IP when UPnP is not available
+        const localIp = this.detectLocalIp();
+        if (localIp) {
+          resolve(localIp);
+        } else {
+          reject(new Error('Could not determine IP address'));
+        }
+        return;
+      }
+
+      this.upnpClient.externalIp((err: any, ip: string) => {
+        if (err) {
+          console.warn('⚠️ Failed to get external IP:', err);
+          // Fall back to local IP when UPnP fails
+          const localIp = this.detectLocalIp();
+          if (localIp) {
+            resolve(localIp);
+          } else {
+            reject(new Error('Could not determine IP address'));
+          }
+        } else {
+          // Check if UPnP returned a private IP (cascading network)
+          if (this.isPrivateIp(ip)) {
+            reject(new Error(`Cascading network topology detected (UPnP returned private IP ${ip}). This configuration is not supported. Please ensure the device is directly connected to a router with a public IP address.`));
+          } else {
+            resolve(ip);
+          }
+        }
+      });
+    });
+  }
+
+  /**
+   * Map port using UPnP
+   */
+  private async mapPort(): Promise<void> {
+    if (!this.upnpClient) {
+      this.externalPort = this.port;
+      return;
+    }
+
+    return new Promise((resolve) => {
+      const options = {
+        public: this.port,
+        private: this.port,
+        ttl: this.options.ttl || 3600 // 1 hour default
+      };
+
+      this.upnpClient.portMapping(options, (err: any, info: any) => {
+        if (err) {
+          console.warn('⚠️ UPnP port mapping failed:', err);
+          this.externalPort = this.port;
+        } else {
+          console.log('✅ UPnP port mapping successful:', info);
+          this.externalPort = info?.public || this.port;
+        }
+        resolve();
+      });
+    });
+  }
+
+  /**
+   * Unmap port using UPnP
+   */
+  private async unmapPort(): Promise<void> {
+    if (!this.upnpClient || !this.externalPort) {
+      return;
+    }
+
+    return new Promise((resolve) => {
+      const options = {
+        public: this.externalPort
+      };
+
+      this.upnpClient.portUnmapping(options, (err: any) => {
+        if (err) {
+          console.warn('⚠️ UPnP port unmapping failed:', err);
+        } else {
+          console.log('✅ UPnP port unmapped successfully');
+        }
+        this.externalPort = null;
+        resolve();
+      });
+    });
   }
 }

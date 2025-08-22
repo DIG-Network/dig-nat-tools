@@ -519,7 +519,8 @@ describe('FileClient', () => {
 
       mockRequest.on.mockImplementation((event, handler) => {
         if (event === 'timeout') {
-          setTimeout(() => handler(), 10);
+          // Call the timeout handler immediately for testing
+          handler();
         }
         return mockRequest;
       });

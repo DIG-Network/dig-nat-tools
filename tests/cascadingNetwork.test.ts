@@ -26,6 +26,8 @@ jest.mock('os', () => ({
 
 import { FileHost } from '../src/host';
 
+// These tests check the isPrivateIp, getExternalIp, mapPort, and unmapPort 
+// methods that are now restored in the current implementation
 describe('FileHost - Cascading Network Detection', () => {
   let fileHost: FileHost;
 
@@ -78,9 +80,8 @@ describe('FileHost - Cascading Network Detection', () => {
       expect(callIsPrivateIp('192.168.1')).toBe(false); // Missing octet
       expect(callIsPrivateIp('192.168.1.1.1')).toBe(false); // Too many octets
       expect(callIsPrivateIp('')).toBe(false); // Empty string
-      // Note: The current implementation doesn't validate octet ranges (0-255)
-      // This test documents the current behavior - invalid octets are treated as valid numbers
-      expect(callIsPrivateIp('192.168.1.300')).toBe(true); // Invalid octet value, but currently matches 192.168.x.x pattern
+      // Note: The improved implementation now validates octet ranges (0-255)
+      expect(callIsPrivateIp('192.168.1.300')).toBe(false); // Invalid octet value (300 > 255) should be rejected
     });
   });
 

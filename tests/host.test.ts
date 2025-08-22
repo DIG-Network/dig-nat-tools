@@ -90,10 +90,10 @@ describe('FileHost - Comprehensive Coverage', () => {
     });
 
     it('should initialize with plain connection mode enabled', () => {
-      const plainHost = new FileHost({ connectionMode: ConnectionMode.PLAIN, port: 8080 });
+      const plainHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY, port: 8080 });
       expect(plainHost).toBeInstanceOf(FileHost);
-      expect((plainHost as any).connectionMode).toBe(ConnectionMode.PLAIN);
-      expect((plainHost as any).upnpClient).toBeNull();
+      expect((plainHost as any).connectionMode).toBe(ConnectionMode.HTTP_ONLY);
+      expect((plainHost as any).webTorrentClient).toBeNull();
     });
 
     it('should setup routes correctly', () => {
@@ -303,54 +303,49 @@ describe('FileHost - Comprehensive Coverage', () => {
   describe('Server Lifecycle', () => {
     describe('start', () => {
       it('should reject when server fails to start', async () => {
+        // Use HTTP_ONLY mode to force failure when HTTP server fails
+        const httpOnlyHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY });
+        
         mockApp.listen.mockImplementation((port, host, callback) => {
           // Simulate server not being created
-          (fileHost as any).server = null;
+          (httpOnlyHost as any).server = null;
           callback();
           return null;
         });
 
-        await expect(fileHost.start()).rejects.toThrow('Failed to start server');
+        await expect(httpOnlyHost.start()).rejects.toThrow('HTTP-only mode requested but HTTP server failed');
       });
 
       it('should reject when server address is invalid', async () => {
+        // Use HTTP_ONLY mode to force failure when HTTP server fails
+        const httpOnlyHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY });
+        
         mockServer.address.mockReturnValue('string-address');
         
         mockApp.listen.mockImplementation((port, host, callback) => {
           // Properly set the server reference
-          (fileHost as any).server = mockServer;
+          (httpOnlyHost as any).server = mockServer;
           callback();
           return mockServer;
         });
 
-        await expect(fileHost.start()).rejects.toThrow('Invalid server address');
+        await expect(httpOnlyHost.start()).rejects.toThrow('HTTP-only mode requested but HTTP server failed');
       });
 
-      it('should reject when mapPort or getExternalIp throws error', async () => {
-        mockServer.address.mockReturnValue({ port: 3000 });
+      it('should reject when HTTP setup fails in HTTP_ONLY mode', async () => {
+        // Use HTTP_ONLY mode to force failure when HTTP server setup fails
+        const httpOnlyHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY });
         
-        // Mock UPnP client to throw error
-        const mockNatClient = {
-          portMapping: jest.fn((options, callback) => {
-            callback(new Error('UPnP failed'), null);
-          }),
-          portUnmapping: jest.fn(),
-          externalIp: jest.fn((callback) => {
-            callback(new Error('External IP failed'), null);
-          })
-        };
-        (fileHost as any).client = mockNatClient;
-
         mockApp.listen.mockImplementation((port, host, callback) => {
-          callback();
+          callback(new Error('Port binding failed'));
           return mockServer;
         });
 
-        await expect(fileHost.start()).rejects.toThrow();
+        await expect(httpOnlyHost.start()).rejects.toThrow('HTTP-only mode requested but HTTP server failed');
       });
 
       it('should start successfully with plain connection mode', async () => {
-        const plainHost = new FileHost({ connectionMode: ConnectionMode.PLAIN, port: 8080 });
+        const plainHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY, port: 8080 });
         mockServer.address.mockReturnValue({ port: 8080 });
         
         // Mock os.networkInterfaces to return local IP
@@ -373,17 +368,19 @@ describe('FileHost - Comprehensive Coverage', () => {
 
         const result = await plainHost.start();
         expect(result).toEqual(expect.objectContaining({
-          externalIp: '192.168.1.100',
-          port: 8080,
-          upnp: { ok: false },
-          webrtc: { ok: false }
+          directHttp: expect.objectContaining({
+            available: true,
+            ip: '192.168.1.100',
+            port: 8080
+          }),
+          storeId: expect.any(String)
         }));
         expect(result.storeId).toBeDefined();
-        expect((plainHost as any).externalPort).toBe(8080);
+        expect((plainHost as any).port).toBe(8080);
       });
 
       it('should reject when plain connection mode is enabled but local IP cannot be determined', async () => {
-        const plainHost = new FileHost({ connectionMode: ConnectionMode.PLAIN, port: 8080 });
+        const plainHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY, port: 8080 });
         mockServer.address.mockReturnValue({ port: 8080 });
         
         // Mock os.networkInterfaces to return no interfaces
@@ -395,7 +392,7 @@ describe('FileHost - Comprehensive Coverage', () => {
           return mockServer;
         });
 
-        await expect(plainHost.start()).rejects.toThrow('Could not determine local IP address');
+        await expect(plainHost.start()).rejects.toThrow('No connection methods available. Both HTTP and WebTorrent failed to initialize.');
       });
     });
 
@@ -433,11 +430,11 @@ describe('FileHost - Comprehensive Coverage', () => {
         });
 
         await expect(fileHost.stop()).resolves.toBeUndefined();
-        expect((fileHost as any).externalPort).toBeNull();
+        expect((fileHost as any).server).toBeNull();
       });
 
       it('should resolve successfully when plain connection mode is enabled', async () => {
-        const plainHost = new FileHost({ connectionMode: ConnectionMode.PLAIN, port: 8080 });
+        const plainHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY, port: 8080 });
         (plainHost as any).server = mockServer;
 
         mockServer.close.mockImplementation((callback: any) => {
@@ -626,20 +623,25 @@ describe('FileHost - Comprehensive Coverage', () => {
       mockFs.existsSync.mockReturnValue(true);
       const fileHash = await fileHost.shareFile('/test/file.txt');
       
-      // No external port set (server not started)
-      (fileHost as any).externalPort = null;
-      
       await expect(fileHost.getFileUrl(fileHash))
-        .rejects.toThrow('Server is not started or port is not mapped');
+        .rejects.toThrow('File 7603d73072ff1525fdd48d695b2be5b00d8fe20bc79778575b8f514d282f1978 is not available via any connection method');
     });
 
     it('should return correct URL with local IP when plain connection mode is enabled', async () => {
-      const plainHost = new FileHost({ connectionMode: ConnectionMode.PLAIN, port: 8080 });
+      const plainHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY, port: 8080 });
       mockFs.existsSync.mockReturnValue(true);
       const fileHash = await plainHost.shareFile('/test/file.txt');
       
-      // Set up external port
-      (plainHost as any).externalPort = 8080;
+      // Set up server mock and capabilities manually
+      mockServer.address.mockReturnValue({ port: 8080 });
+      (plainHost as any).server = mockServer;
+      (plainHost as any).capabilities = {
+        directHttp: {
+          available: true,
+          ip: '192.168.1.50',
+          port: 8080
+        }
+      };
       
       // Mock os.networkInterfaces to return local IP
       mockOs.networkInterfaces.mockReturnValue({
@@ -658,18 +660,15 @@ describe('FileHost - Comprehensive Coverage', () => {
     });
 
     it('should throw error when plain connection mode is enabled but local IP cannot be determined', async () => {
-      const plainHost = new FileHost({ connectionMode: ConnectionMode.PLAIN, port: 8080 });
+      const plainHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY, port: 8080 });
       mockFs.existsSync.mockReturnValue(true);
       const fileHash = await plainHost.shareFile('/test/file.txt');
-      
-      // Set up external port
-      (plainHost as any).externalPort = 8080;
       
       // Mock os.networkInterfaces to return no valid interfaces
       mockOs.networkInterfaces.mockReturnValue({});
       
       await expect(plainHost.getFileUrl(fileHash))
-        .rejects.toThrow('Could not determine local IP address');
+        .rejects.toThrow('File 7603d73072ff1525fdd48d695b2be5b00d8fe20bc79778575b8f514d282f1978 is not available via any connection method');
     });
   });
 
