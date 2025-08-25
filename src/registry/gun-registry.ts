@@ -324,7 +324,7 @@ export class GunRegistry {
 
   public async unregister(storeId: string): Promise<void> {
     if (!this.isGunAvailable || !this.gun) {
-      return;
+      throw new Error("Gun.js registry not available");
     }
 
     // Remove from registry
