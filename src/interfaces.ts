@@ -1,11 +1,37 @@
 import { Readable } from 'stream';
 
+export interface HostCapabilities {
+  storeId: string;
+  // Connection methods (in order of preference)
+  directHttp?: {
+    available: boolean;
+    ip: string;
+    port: number;
+  };
+  webTorrent?: {
+    available: boolean;
+    magnetUris?: string[]; // Magnet URIs for shared files
+  };
+  // Legacy fields (deprecated)
+  upnp?: {
+    available: boolean;
+    externalIp?: string;
+    externalPort?: number;
+  };
+  webrtc?: {
+    available: boolean;
+    stunServers?: string[];
+  };
+  externalIp?: string;
+  port?: number;
+}
+
 export interface IFileHost {
   /**
    * Start the file hosting server
-   * @returns Promise that resolves with external IP and port information
+   * @returns Promise that resolves with capabilities information
    */
-  start(): Promise<{ externalIp: string, port: number }>;
+  start(): Promise<HostCapabilities>;
 
   /**
    * Stop the file hosting server

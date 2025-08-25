@@ -15,6 +15,8 @@ A TypeScript package that provides peer-to-peer file sharing capabilities using 
 - Robust error handling and fallback mechanisms
 - Real-time download progress tracking
 - Cascading network topology detection and error reporting
+ - Host your own Gun.js relay for decentralized P2P
+ - WebTorrent support for browser-based P2P file sharing
 
 ## Installation
 
@@ -238,6 +240,23 @@ async function checkServer(baseUrl: string) {
 ```
 
 ## API Documentation
+### Gun Relay
+
+You can run a Gun.js relay server using the included `relay.ts` file. This enables decentralized, real-time data sync for your P2P applications.
+
+#### Usage
+
+```bash
+npx ts-node relay.ts
+```
+
+Your Gun.js clients can connect to `http://localhost:8765/gun`.
+
+---
+
+### WebTorrent
+
+WebTorrent is supported for browser-based and Node.js P2P file sharing. See usage examples above.
 
 ### FileHost
 

@@ -1,22 +1,22 @@
-// Example of using plain connection mode for local network only
+// Example of using HTTP-only connection mode for local network
 import { FileHost, ConnectionMode } from '../src/index';
 import * as path from 'path';
 
 async function startLocalOnlyHost(): Promise<void> {
   console.log('Starting local-only file host...');
   
-  // Create host with plain connection mode
-  // This skips all UPnP/NAT-PMP port forwarding and uses local IP only
+  // Create host with HTTP-only connection mode
+  // This uses only HTTP server without WebTorrent
   const host = new FileHost({ 
     port: 3000,
-    connectionMode: ConnectionMode.PLAIN 
+    connectionMode: ConnectionMode.HTTP_ONLY 
   });
 
   try {
-    // Start the server - this will be much faster since it skips NAT protocols
-    const { externalIp, port } = await host.start();
-    console.log(`✅ Server running locally at: http://${externalIp}:${port}`);
-    console.log('⚠️  Note: This server is only accessible within your local network');
+    // Start the server - this will be fast since it's HTTP-only
+    const capabilities = await host.start();
+    console.log(`✅ Server running locally with capabilities:`, capabilities);
+    console.log('⚠️  Note: This server is only accessible via direct HTTP connection');
     console.log('   Make sure to manually forward port 3000 if external access is needed');
 
     // Share some example files

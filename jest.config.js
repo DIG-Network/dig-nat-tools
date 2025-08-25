@@ -6,10 +6,12 @@ module.exports = {
   transform: {
     '^.+\\.ts$': ['ts-jest', {
       tsconfig: {
-        types: ['jest', 'node']
+        types: ['jest', 'node'],
+        module: 'commonjs'
       }
     }],
   },
+  setupFilesAfterEnv: ['<rootDir>/tests/setup.ts'],
   collectCoverageFrom: [
     'src/**/*.ts',
     '!src/**/*.d.ts',
