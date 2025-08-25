@@ -72,6 +72,7 @@ export class GunRegistry {
       directHttp_ip: capabilities.directHttp?.ip || "",
       directHttp_port: capabilities.directHttp?.port || 0,
       webTorrent_available: capabilities.webTorrent?.available || false,
+      webTorrent_magnetUris: capabilities.webTorrent?.magnetUris ? JSON.stringify(capabilities.webTorrent.magnetUris) : "[]",
     };
 
     console.log(`🔧 [GunRegistry] Registration data:`, JSON.stringify(flatEntry, null, 2));
@@ -146,7 +147,9 @@ export class GunRegistry {
                   port: data.directHttp_port as number
                 } : undefined,
                 webTorrent: data.webTorrent_available ? {
-                  available: data.webTorrent_available as boolean
+                  available: data.webTorrent_available as boolean,
+                  magnetUris: data.webTorrent_magnetUris ? 
+                    JSON.parse(data.webTorrent_magnetUris as string) : []
                 } : undefined,
                 // Legacy fields for backward compatibility
                 externalIp: data.externalIp as string,
@@ -236,7 +239,9 @@ export class GunRegistry {
                           port: hostData.directHttp_port as number
                         } : undefined,
                         webTorrent: hostData.webTorrent_available ? {
-                          available: hostData.webTorrent_available as boolean
+                          available: hostData.webTorrent_available as boolean,
+                          magnetUris: hostData.webTorrent_magnetUris ? 
+                            JSON.parse(hostData.webTorrent_magnetUris as string) : []
                         } : undefined,
                         // Legacy fields for backward compatibility
                         externalIp: hostData.externalIp as string,

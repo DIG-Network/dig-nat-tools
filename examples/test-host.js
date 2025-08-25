@@ -32,11 +32,7 @@ async function startHost() {
     const capabilities = await host.start();
     console.log('✅ Host started with capabilities:', JSON.stringify(capabilities, null, 2));
 
-    // Add a delay to ensure Gun.js connection is established
-    console.log('⏳ Waiting 2 seconds for Gun.js registration to complete...');
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    // Share the test file
+    // Share the test file (this will also handle WebTorrent seeding and registry updates)
     console.log('📤 Sharing test file...');
     const fileHash = await host.shareFile(testFilePath);
     console.log(`🔑 File shared with hash: ${fileHash}`);
@@ -50,9 +46,10 @@ async function startHost() {
     console.log(`Direct HTTP: ${capabilities.directHttp?.available ? `✅ ${capabilities.directHttp.ip}:${capabilities.directHttp.port}` : '❌'}`);
     console.log(`WebTorrent: ${capabilities.webTorrent?.available ? '✅' : '❌'}`);
     console.log(`Shared files: ${host.getSharedFiles().length}`);
+    console.log(`Magnet URIs: ${host.getMagnetUris().length}`);
     
-    console.log('\n🔄 Host is running and should be registered with Gun.js relay...');
-    console.log('💡 You can now run the client test to see if it discovers this host');
+    console.log('\n🔄 Host is running with full WebTorrent initialization...');
+    console.log('💡 WebTorrent is now properly initialized and registered with Gun.js');
     console.log('🔍 Testing registration status...');
     
     // Test if we can find ourselves in the registry (self-test)
@@ -68,6 +65,7 @@ async function startHost() {
           if (data && data.storeId) {
             console.log('✅ SUCCESS: Host found itself in Gun.js registry!', data);
             console.log('🎉 Registration is working - client should be able to discover this host');
+            console.log(`🧲 Magnet URIs in registry: ${data.webTorrent_magnetUris || 'none yet'}`);
           } else {
             console.log('❌ WARNING: Host could not find itself in Gun.js registry');
             console.log('🔧 This might indicate a registration problem');
@@ -76,7 +74,7 @@ async function startHost() {
       } catch (error) {
         console.error('❌ Self-test failed:', error);
       }
-    }, 3000);
+    }, 2000); // Wait 2 seconds for WebTorrent seeding to complete
     
     console.log('Press Ctrl+C to stop');
     

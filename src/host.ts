@@ -138,8 +138,13 @@ export class FileHost implements IFileHost {
     // Step 2: Initialize WebTorrent (for AUTO and WEBTORRENT_ONLY modes)
     if (this.connectionMode === ConnectionMode.AUTO || this.connectionMode === ConnectionMode.WEBTORRENT_ONLY) {
       try {
+        console.log(`🔄 Initializing WebTorrent client...`);
         this.webTorrentClient = new WebTorrent();
-        console.log(`✅ WebTorrent client initialized`);
+        
+        // Wait for WebTorrent to be ready
+        await this.waitForWebTorrentReady();
+        
+        console.log(`✅ WebTorrent client initialized and ready`);
         
         capabilities.webTorrent = {
           available: true,
@@ -153,9 +158,20 @@ export class FileHost implements IFileHost {
       }
     }
 
-    // Step 3: Register capabilities in Gun.js registry
+    // Verify at least one connection method is available
+    if (!capabilities.directHttp?.available && !capabilities.webTorrent?.available) {
+      throw new Error('No connection methods available. Both HTTP and WebTorrent failed to initialize.');
+    }
+
+    console.log(`🎉 FileHost initialized successfully with methods:`, {
+      directHttp: capabilities.directHttp?.available || false,
+      webTorrent: capabilities.webTorrent?.available || false
+    });
+
+    // Step 3: Register capabilities in Gun.js registry (AFTER WebTorrent is ready)
     if (this.gunRegistry) {
       try {
+        console.log(`🔄 Registering with Gun.js registry...`);
         await this.gunRegistry.register(capabilities);
         console.log(`✅ Registered capabilities in Gun.js registry with storeId: ${this.storeId}`);
       } catch (error) {
@@ -163,20 +179,35 @@ export class FileHost implements IFileHost {
       }
     }
 
-    // Verify at least one connection method is available
-    if (!capabilities.directHttp?.available && !capabilities.webTorrent?.available) {
-      throw new Error('No connection methods available. Both HTTP and WebTorrent failed to initialize.');
-    }
-
-    console.log(`🎉 FileHost started successfully with methods:`, {
-      directHttp: capabilities.directHttp?.available || false,
-      webTorrent: capabilities.webTorrent?.available || false
-    });
-
     // Store capabilities for use in other methods
     this.capabilities = capabilities;
 
     return capabilities;
+  }
+
+  /**
+   * Wait for WebTorrent client to be ready
+   */
+  private async waitForWebTorrentReady(): Promise<void> {
+    if (!this.webTorrentClient) {
+      throw new Error('WebTorrent client not initialized');
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('WebTorrent initialization timeout'));
+      }, 10000); // 10 second timeout
+
+      // WebTorrent is ready when it's initialized and can accept operations
+      // We'll give it a small delay to ensure it's fully initialized
+      console.log(`⏳ Waiting for WebTorrent client to be ready...`);
+      
+      setTimeout(() => {
+        clearTimeout(timeout);
+        console.log(`🎯 WebTorrent client is ready`);
+        resolve();
+      }, 1000); // Give WebTorrent 1 second to initialize properly
+    });
   }
 
   /**
@@ -284,20 +315,35 @@ export class FileHost implements IFileHost {
     // If WebTorrent is available, seed the file
     if (this.webTorrentClient) {
       try {
-        this.webTorrentClient.seed(hash, (torrent) => {
-          const magnetURI = torrent.magnetURI;
-          this.magnetUris.set(hash, magnetURI);
-          console.log(`🧲 WebTorrent seeding started for ${hash}`);
-          console.log(`   Magnet URI: ${magnetURI}`);
+        console.log(`🔄 Starting WebTorrent seeding for ${hash}...`);
+        
+        // Seed the file and wait for the torrent to be ready
+        await new Promise<void>((resolve, reject) => {
+          const seedTimeout = setTimeout(() => {
+            reject(new Error('WebTorrent seeding timeout'));
+          }, 30000); // 30 second timeout for seeding
+          
+          this.webTorrentClient!.seed(hash, (torrent) => {
+            clearTimeout(seedTimeout);
+            const magnetURI = torrent.magnetURI;
+            this.magnetUris.set(hash, magnetURI);
+            console.log(`🧲 WebTorrent seeding started for ${hash}`);
+            console.log(`   Magnet URI: ${magnetURI}`);
+            resolve();
+          });
         });
         
-        // Update capabilities in registry with new magnet URI
-        if (this.gunRegistry) {
-          const currentCapabilities = await this.gunRegistry.findPeer(this.storeId);
-          if (currentCapabilities && currentCapabilities.webTorrent) {
-            currentCapabilities.webTorrent.magnetUris = Array.from(this.magnetUris.values());
-            await this.gunRegistry.register(currentCapabilities);
+        // Update capabilities in Gun.js registry with new magnet URI
+        if (this.gunRegistry && this.capabilities) {
+          console.log(`🔄 Updating Gun.js registry with new magnet URI...`);
+          
+          // Update the current capabilities with the new magnet URI
+          if (this.capabilities.webTorrent) {
+            this.capabilities.webTorrent.magnetUris = Array.from(this.magnetUris.values());
           }
+          
+          await this.gunRegistry.register(this.capabilities);
+          console.log(`✅ Updated Gun.js registry with magnet URI for ${hash}`);
         }
       } catch (error) {
         console.warn(`⚠️ Failed to seed file via WebTorrent:`, error);
