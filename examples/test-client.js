@@ -7,15 +7,15 @@ async function startClient() {
   
   // Initialize FileClient with Gun.js configuration
   const client = new FileClient({
-    peers: ['nostalgiagame.go.ro:30876/gun'], // Connect to our local relay
+    peers: ['http://nostalgiagame.go.ro:30876/gun'], // Connect to deployed relay
     namespace: 'dig-nat-tools-test', // Use same namespace as host
     timeout: 30000 // 30 second timeout
   });
 
   try {
-    console.log('� Connecting to Gun.js relay at nostalgiagame.go.ro:30876/gun...');
+    console.log('🔗 Connecting to Gun.js relay at http://nostalgiagame.go.ro:30876/gun...');
     console.log('📡 Using namespace: dig-nat-tools-test');
-    console.log('�🔄 Searching for available peers...');
+    console.log('🔄 Searching for available peers...');
     
     // Add a small delay to ensure Gun.js connection is established
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -36,7 +36,7 @@ async function startClient() {
       
       // Manual check using Gun.js directly
       const Gun = (await import('gun')).default;
-      const debugGun = Gun(['http://localhost:8765/gun']);
+      const debugGun = Gun(['http://nostalgiagame.go.ro:30876/gun']);
       
       console.log('🧪 Direct Gun.js registry check...');
       debugGun.get('dig-nat-tools-test').get('hosts').once((data) => {

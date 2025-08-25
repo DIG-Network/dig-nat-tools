@@ -24,7 +24,7 @@ export class GunRegistry {
 
   constructor(options: GunRegistryOptions = {}) {
     this.options = {
-      peers: options.peers || ["http://localhost:8765/gun"],
+      peers: options.peers || ["http://nostalgiagame.go.ro:30876/gun"],
       namespace: options.namespace || "dig-nat-tools",
     };
 
