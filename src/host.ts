@@ -34,13 +34,17 @@ export class FileHost implements IFileHost {
   private webTorrentClient: WebTorrent.Instance | null = null;
   private magnetUris: Map<string, string> = new Map(); // fileHash -> magnetURI
   private sharedFiles: Set<string> = new Set(); // Tracks shared file hashes
+  private options: HostOptions;
   private gunRegistry: GunRegistry | null = null;
   private storeId: string;
+  private capabilities: HostCapabilities | null = null;
 
   constructor(options: HostOptions = {}) {
+    this.options = options;
     this.port = options.port || 0;  // 0 means a random available port
     this.connectionMode = options.connectionMode || ConnectionMode.AUTO;
     this.storeId = options.storeId || this.generateUniqueId();
+    
     
     // Initialize Gun.js registry for peer discovery
     if (options.gun) {
