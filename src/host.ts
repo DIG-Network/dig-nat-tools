@@ -1,4 +1,3 @@
-// host.ts
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as crypto from 'node:crypto';
@@ -368,7 +367,7 @@ export class FileHost implements IFileHost {
         const magnetURI = this.magnetUris.get(hash);
         const torrent = this.webTorrentClient.get(magnetURI!);
         if (torrent && typeof torrent === 'object' && 'destroy' in torrent) {
-          (torrent as any).destroy();
+          (torrent as { destroy(): void }).destroy();
           console.log(`🧲 Stopped WebTorrent seeding for ${hash}`);
         }
         this.magnetUris.delete(hash);

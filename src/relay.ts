@@ -2,6 +2,7 @@ import Gun from 'gun';
 import 'gun/sea.js';
 import 'gun/lib/webrtc.js';
 import express from 'express';
+import type { Client } from 'nat-upnp';
 
 /**
  * Gun relay server with UPnP port forwarding
@@ -18,7 +19,7 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8765;
 const UPNP_ENABLED = process.env.UPNP_ENABLED !== 'false';
 const UPNP_TTL = process.env.UPNP_TTL ? parseInt(process.env.UPNP_TTL, 10) : 7200;
 
-let upnpClient: any = null;
+let upnpClient: Client | null = null;
 let upnpMapped = false;
 
 // Initialize UPnP client
@@ -48,12 +49,12 @@ async function mapPort(port: number): Promise<void> {
   return new Promise((resolve) => {
     console.log(`🔄 Attempting UPnP port mapping for port ${port}...`);
     
-    upnpClient.portMapping({
+    upnpClient!.portMapping({
       public: port,
       private: port,
       ttl: UPNP_TTL,
       description: `Gun.js relay server on port ${port}`
-    }, (err: any) => {
+    }, (err: Error | null) => {
       if (err) {
         console.warn(`⚠️ UPnP port mapping failed for port ${port}:`, err.message);
       } else {
@@ -74,9 +75,9 @@ async function unmapPort(port: number): Promise<void> {
   return new Promise((resolve) => {
     console.log(`🔄 Removing UPnP port mapping for port ${port}...`);
     
-    upnpClient.portUnmapping({
+    upnpClient!.portUnmapping({
       public: port
-    }, (err: any) => {
+    }, (err: Error | null) => {
       if (err) {
         console.warn(`⚠️ UPnP port unmapping failed for port ${port}:`, err.message);
       } else {
@@ -126,6 +127,7 @@ async function startRelay(): Promise<void> {
   });
 
   // Gun relay setup
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const gun = Gun({
     web: server,
     radisk: true, // persistent storage
