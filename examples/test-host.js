@@ -21,7 +21,7 @@ async function startHost() {
     connectionMode: 'auto', // Try both HTTP and WebTorrent
     storeId: 'test-host-1', // Give it a unique ID
     gun: {
-      peers: ['http://localhost:8765/gun'], // Connect to our local relay
+      peers: ['http://nostalgiagame.go.ro:30876/gun'], // Connect to deployed relay
       namespace: 'dig-nat-tools-test' // Use test namespace
     }
   });
@@ -58,7 +58,7 @@ async function startHost() {
         console.log('🧪 Self-test: Checking if host can find itself in Gun.js registry...');
         // We'll use a simple Gun.js check here
         const Gun = (await import('gun')).default;
-        const testGun = Gun(['http://localhost:8765/gun']);
+        const testGun = Gun(['http://nostalgiagame.go.ro:30876/gun']);
         
         // Try to read our own registration
         testGun.get('dig-nat-tools-test').get('hosts').get('test-host-1').once((data) => {
