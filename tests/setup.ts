@@ -23,12 +23,3 @@ jest.mock('webtorrent', () => {
   };
 });
 
-// Mock Gun.js registry
-jest.mock('../src/registry/gun-registry', () => ({
-  GunRegistry: jest.fn().mockImplementation(() => ({
-    connect: jest.fn().mockResolvedValue(undefined),
-    registerHost: jest.fn().mockResolvedValue(undefined),
-    findHosts: jest.fn().mockResolvedValue([]),
-    disconnect: jest.fn().mockResolvedValue(undefined)
-  }))
-}));

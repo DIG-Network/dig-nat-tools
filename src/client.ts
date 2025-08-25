@@ -1,9 +1,9 @@
 // client.ts
-import * as http from 'http';
-import * as https from 'https';
+import http from 'node:http';
+import https from 'node:https';
 import WebTorrent from 'webtorrent';
-import { URL } from 'url';
-import { Readable } from 'stream';
+import { URL } from 'node:url';
+import { Readable } from 'node:stream';
 import { IFileClient, DownloadOptions, HostCapabilities } from './interfaces';
 import { GunRegistry } from './registry/gun-registry';
 
@@ -20,7 +20,7 @@ export class FileClient implements IFileClient {
 
   constructor(options: FileClientOptions = {}) {
     this.options = {
-      peers: options.peers || ['http://localhost:8765/gun'],
+      peers: options.peers || ['http://nostalgiagame.go.ro:30876/gun'],
       namespace: options.namespace || 'dig-nat-tools',
       timeout: options.timeout || 30000
     };

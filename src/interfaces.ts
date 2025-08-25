@@ -24,6 +24,7 @@ export interface HostCapabilities {
   };
   externalIp?: string;
   port?: number;
+  lastSeen?: number; // Timestamp when the host was last seen
 }
 
 export interface IFileHost {

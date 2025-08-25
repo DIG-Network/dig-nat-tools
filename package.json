@@ -1,11 +1,13 @@
 {
   "name": "dig-nat-tools",
+  "type": "module",
   "version": "1.0.0",
   "description": "A peer-to-peer file sharing library using UPnP",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "tsc",
+    "build": "node build.mjs",
+    "build:tsc": "tsc",
     "test": "jest",
     "test:coverage": "jest --coverage",
     "lint": "eslint src/**/*.ts tests/**/*.ts",
@@ -30,10 +32,12 @@
     "@types/node": "^20.4.5",
     "@typescript-eslint/eslint-plugin": "^8.39.0",
     "@typescript-eslint/parser": "^8.39.0",
+    "esbuild": "^0.25.9",
     "eslint": "^9.33.0",
     "jest": "^29.7.0",
     "ts-jest": "^29.4.1",
     "ts-node": "^10.9.2",
+    "tsc-esm-fix": "^3.1.2",
     "typescript": "^5.1.6"
   },
   "dependencies": {

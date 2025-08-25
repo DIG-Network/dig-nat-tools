@@ -138,6 +138,8 @@ Thumbs.db
 temp-file.txt
 *.tmp
 *.temp
+radata/
+gun-data/
 
 # Test files
 test-local.ts

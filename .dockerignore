@@ -1,0 +1,66 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+
+# Build outputs (except dist/ which we need)
+coverage/
+
+# Development files
+*.test.ts
+*.test.js
+tests/
+examples/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+
+# Coverage directory used by tools like istanbul
+coverage/
+
+# Optional npm cache directory
+.npm
+
+# Optional REPL history
+.node_repl_history
+
+# Temporary folders
+tmp/
+temp/
+
+# Gun.js data (will be created in container)
+gun-data/
+gunjs/
+radata/
+
+# Test files
+test-shared-file.txt
+*.test.*
+
+# Documentation
+*.md
+
+# Example files
+examples/
+
+# Only exclude these build files in production stage, not builder stage
+# tsconfig.json - NEEDED for builder stage
+# build.mjs - NEEDED for builder stage  
+# src/ - NEEDED for builder stage
