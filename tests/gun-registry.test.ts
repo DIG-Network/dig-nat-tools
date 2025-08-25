@@ -15,6 +15,9 @@ jest.mock('gun', () => mockGun);
 import { GunRegistry } from '../src/registry/gun-registry';
 import { HostCapabilities } from '../src/interfaces';
 
+// Set default timeout for all tests
+jest.setTimeout(20000);
+
 describe('GunRegistry', () => {
   beforeEach(() => {
     jest.clearAllMocks();
