@@ -1,4 +1,4 @@
-module.exports = {
+export default {
   preset: 'ts-jest',
   testEnvironment: 'node',
   roots: ['<rootDir>/src', '<rootDir>/tests'],
@@ -7,7 +7,7 @@ module.exports = {
     '^.+\\.ts$': ['ts-jest', {
       tsconfig: {
         types: ['jest', 'node'],
-        module: 'commonjs'
+        module: 'esnext'
       }
     }],
   },

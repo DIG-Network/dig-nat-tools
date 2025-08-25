@@ -1,9 +1,9 @@
 // client.ts
-import * as http from 'http';
-import * as https from 'https';
+import http from 'node:http';
+import https from 'node:https';
 import WebTorrent from 'webtorrent';
-import { URL } from 'url';
-import { Readable } from 'stream';
+import { URL } from 'node:url';
+import { Readable } from 'node:stream';
 import { IFileClient, DownloadOptions, HostCapabilities } from './interfaces';
 import { GunRegistry } from './registry/gun-registry';
 

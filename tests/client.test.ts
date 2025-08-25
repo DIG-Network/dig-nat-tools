@@ -27,7 +27,7 @@ jest.mock('url', () => ({
   URL: jest.fn()
 }));
 
-import { FileClient } from '../src/client';
+import { FileClient } from '../src/client.js';
 import { URL } from 'url';
 
 // Get the mocked versions

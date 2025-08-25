@@ -1,13 +1,12 @@
 // host.ts
-import * as fs from 'fs';
-import * as http from 'http';
-import * as crypto from 'crypto';
+import * as fs from 'node:fs';
+import * as http from 'node:http';
+import * as crypto from 'node:crypto';
 import express from 'express';
-import os from 'os';
+import os from 'node:os';
 import { IFileHost, HostCapabilities } from './interfaces';
 import { GunRegistry } from './registry/gun-registry';
 import WebTorrent from 'webtorrent';
-import * as natUpnp from 'nat-upnp';
 
 // ✅ Replace enum with const object (better ES module support)
 export const ConnectionMode = {
@@ -35,21 +34,13 @@ export class FileHost implements IFileHost {
   private webTorrentClient: WebTorrent.Instance | null = null;
   private magnetUris: Map<string, string> = new Map(); // fileHash -> magnetURI
   private sharedFiles: Set<string> = new Set(); // Tracks shared file hashes
-  private options: HostOptions;
   private gunRegistry: GunRegistry | null = null;
   private storeId: string;
-  private upnpClient: any = null;
-  private externalPort: number | null = null;
-  private capabilities: HostCapabilities | null = null;
 
   constructor(options: HostOptions = {}) {
-    this.options = options;
     this.port = options.port || 0;  // 0 means a random available port
     this.connectionMode = options.connectionMode || ConnectionMode.AUTO;
     this.storeId = options.storeId || this.generateUniqueId();
-    
-    // Initialize UPnP client
-    this.upnpClient = natUpnp.createClient();
     
     // Initialize Gun.js registry for peer discovery
     if (options.gun) {
@@ -440,145 +431,6 @@ export class FileHost implements IFileHost {
       
       stream.on('error', (error) => {
         reject(error);
-      });
-    });
-  }
-
-  /**
-   * Check if an IP address is private (RFC 1918)
-   */
-  private isPrivateIp(ip: string): boolean {
-    if (!ip || typeof ip !== 'string') {
-      return false;
-    }
-
-    const ipParts = ip.split('.');
-    
-    // Must have exactly 4 parts
-    if (ipParts.length !== 4) {
-      return false;
-    }
-
-    // Convert to numbers and validate range
-    const numParts = ipParts.map(part => {
-      const num = parseInt(part, 10);
-      if (isNaN(num) || num < 0 || num > 255) {
-        return -1; // Invalid
-      }
-      return num;
-    });
-
-    // Check if any part is invalid
-    if (numParts.includes(-1)) {
-      return false;
-    }
-    
-    // 10.0.0.0 - 10.255.255.255
-    if (numParts[0] === 10) {
-      return true;
-    }
-    
-    // 172.16.0.0 - 172.31.255.255
-    if (numParts[0] === 172 && numParts[1] >= 16 && numParts[1] <= 31) {
-      return true;
-    }
-    
-    // 192.168.0.0 - 192.168.255.255
-    if (numParts[0] === 192 && numParts[1] === 168) {
-      return true;
-    }
-    
-    return false;
-  }
-
-  /**
-   * Get external IP address using UPnP
-   */
-  private async getExternalIp(): Promise<string | null> {
-    return new Promise((resolve, reject) => {
-      if (!this.upnpClient) {
-        // Fall back to local IP when UPnP is not available
-        const localIp = this.detectLocalIp();
-        if (localIp) {
-          resolve(localIp);
-        } else {
-          reject(new Error('Could not determine IP address'));
-        }
-        return;
-      }
-
-      this.upnpClient.externalIp((err: any, ip: string) => {
-        if (err) {
-          console.warn('⚠️ Failed to get external IP:', err);
-          // Fall back to local IP when UPnP fails
-          const localIp = this.detectLocalIp();
-          if (localIp) {
-            resolve(localIp);
-          } else {
-            reject(new Error('Could not determine IP address'));
-          }
-        } else {
-          // Check if UPnP returned a private IP (cascading network)
-          if (this.isPrivateIp(ip)) {
-            reject(new Error(`Cascading network topology detected (UPnP returned private IP ${ip}). This configuration is not supported. Please ensure the device is directly connected to a router with a public IP address.`));
-          } else {
-            resolve(ip);
-          }
-        }
-      });
-    });
-  }
-
-  /**
-   * Map port using UPnP
-   */
-  private async mapPort(): Promise<void> {
-    if (!this.upnpClient) {
-      this.externalPort = this.port;
-      return;
-    }
-
-    return new Promise((resolve) => {
-      const options = {
-        public: this.port,
-        private: this.port,
-        ttl: this.options.ttl || 3600 // 1 hour default
-      };
-
-      this.upnpClient.portMapping(options, (err: any, info: any) => {
-        if (err) {
-          console.warn('⚠️ UPnP port mapping failed:', err);
-          this.externalPort = this.port;
-        } else {
-          console.log('✅ UPnP port mapping successful:', info);
-          this.externalPort = info?.public || this.port;
-        }
-        resolve();
-      });
-    });
-  }
-
-  /**
-   * Unmap port using UPnP
-   */
-  private async unmapPort(): Promise<void> {
-    if (!this.upnpClient || !this.externalPort) {
-      return;
-    }
-
-    return new Promise((resolve) => {
-      const options = {
-        public: this.externalPort
-      };
-
-      this.upnpClient.portUnmapping(options, (err: any) => {
-        if (err) {
-          console.warn('⚠️ UPnP port unmapping failed:', err);
-        } else {
-          console.log('✅ UPnP port unmapped successfully');
-        }
-        this.externalPort = null;
-        resolve();
       });
     });
   }
