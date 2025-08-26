@@ -216,7 +216,7 @@ export class GunRegistry {
       const timeout = setTimeout(() => {
         console.log(`⏰ [GunRegistry] Search timeout reached, found ${peers.length} peers`);
         resolve(peers);
-      }, 10000); // Increase timeout to 10 seconds
+      }, 30000); // Increase timeout to 10 seconds
 
       this.gun!.get(this.options.namespace!)
         .get("hosts")

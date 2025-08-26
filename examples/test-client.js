@@ -31,29 +31,6 @@ async function startClient() {
         webTorrent: p.webTorrent?.available || false,
         lastSeen: p.lastSeen ? new Date(p.lastSeen).toLocaleTimeString() : 'unknown'
       })));
-    } else {
-      console.log('🔍 Detailed debugging - manually checking Gun.js registry...');
-      
-      // Manual check using Gun.js directly
-      const Gun = (await import('gun')).default;
-      const debugGun = Gun(['http://nostalgiagame.go.ro:30876/gun']);
-      
-      console.log('🧪 Direct Gun.js registry check...');
-      debugGun.get('dig-nat-tools-test').get('hosts').once((data) => {
-        console.log('📋 Raw registry data:', data);
-        if (data) {
-          const hosts = Object.keys(data).filter(key => key !== '_');
-          console.log(`🔢 Found ${hosts.length} entries in registry:`, hosts);
-          hosts.forEach(hostKey => {
-            console.log(`   - ${hostKey}:`, data[hostKey]);
-          });
-        } else {
-          console.log('❌ No data found in Gun.js registry at dig-nat-tools-test/hosts');
-        }
-      });
-      
-      // Wait a bit for the debug check
-      await new Promise(resolve => setTimeout(resolve, 2000));
     }
     
     if (peers.length === 0) {
@@ -83,6 +60,49 @@ async function startClient() {
       if (capabilities.directHttp?.available) {
         console.log(`🌐 Direct HTTP available at ${capabilities.directHttp.ip}:${capabilities.directHttp.port}`);
         
+        // Check if there are any magnet URIs to extract file hashes from
+        if (capabilities.webTorrent?.magnetUris && capabilities.webTorrent.magnetUris.length > 0) {
+          const magnetUri = capabilities.webTorrent.magnetUris[0];
+          console.log('🧲 Found magnet URI:', magnetUri);
+          
+          // Extract file hash from the magnet URI filename (dn parameter)
+          const dnMatch = magnetUri.match(/dn=([^&]+)/);
+          if (dnMatch) {
+            const fileHash = decodeURIComponent(dnMatch[1]);
+            console.log(`📥 Attempting to download file with hash: ${fileHash}`);
+            
+            try {
+              // Use the client's downloadFile method which will prefer direct HTTP
+              const fileData = await client.downloadFile(capabilities.storeId, fileHash);
+              console.log(`✅ Successfully downloaded file! Size: ${fileData.length} bytes`);
+              
+              // Save the file locally
+              const outputPath = `downloaded-${fileHash.substring(0, 8)}.bin`;
+              fs.writeFileSync(outputPath, fileData);
+              console.log(`💾 File saved as: ${outputPath}`);
+              
+              // If it appears to be text, show a preview
+              const fileContent = fileData.toString('utf8');
+              if (fileData.length < 1000 && /^[\x20-\x7E\s]*$/.test(fileContent)) {
+                console.log('📄 File content preview:');
+                console.log('─'.repeat(50));
+                console.log(fileContent);
+                console.log('─'.repeat(50));
+              } else {
+                console.log('📄 File appears to be binary data');
+              }
+              
+            } catch (error) {
+              console.error(`❌ Failed to download file: ${error.message}`);
+            }
+          } else {
+            console.log('⚠️ Could not extract file hash from magnet URI');
+          }
+        } else {
+          console.log('📭 No files available for download');
+        }
+      } else {
+        console.log(`❌ Direct HTTP not available`);
         // Check if there are any magnet URIs to extract file hashes from
         if (capabilities.webTorrent?.magnetUris && capabilities.webTorrent.magnetUris.length > 0) {
           const magnetUri = capabilities.webTorrent.magnetUris[0];
