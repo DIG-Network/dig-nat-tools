@@ -1,11 +1,15 @@
-// client.ts
 import http from 'node:http';
 import https from 'node:https';
 import WebTorrent from 'webtorrent';
 import { URL } from 'node:url';
 import { Readable } from 'node:stream';
-import { IFileClient, DownloadOptions, HostCapabilities } from './interfaces';
+import { IFileClient, HostCapabilities } from './interfaces';
 import { GunRegistry } from './registry/gun-registry';
+
+export interface DownloadOptions {
+  timeout?: number;
+  onProgress?: (downloaded: number, total: number) => void;
+}
 
 export interface FileClientOptions {
   peers?: string[];       // Gun.js peer URLs

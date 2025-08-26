@@ -1,4 +1,5 @@
 import { Readable } from 'stream';
+import { DownloadOptions } from './client';
 
 export interface HostCapabilities {
   storeId: string;
@@ -95,9 +96,4 @@ export interface IFileClient {
    * @returns Promise that resolves to a boolean indicating server status
    */
   isServerOnline(baseUrl: string): Promise<boolean>;
-}
-
-export interface DownloadOptions {
-  timeout?: number;
-  onProgress?: (downloaded: number, total: number) => void;
 }

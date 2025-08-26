@@ -3,6 +3,9 @@ import * as http from 'node:http';
 import * as crypto from 'node:crypto';
 import express from 'express';
 import os from 'node:os';
+import axios from 'axios';
+import { publicIpv4 } from 'public-ip';
+import natUpnp from 'nat-upnp';
 import { IFileHost, HostCapabilities } from './interfaces';
 import { GunRegistry } from './registry/gun-registry';
 import WebTorrent from 'webtorrent';
@@ -37,6 +40,9 @@ export class FileHost implements IFileHost {
   private gunRegistry: GunRegistry | null = null;
   private storeId: string;
   private capabilities: HostCapabilities | null = null;
+  private upnpClient: ReturnType<typeof natUpnp.createClient> | null = null;
+  private upnpMapping: { external: number; internal: number } | null = null;
+  private publicIp: string | null = null;
 
   constructor(options: HostOptions = {}) {
     this.options = options;
@@ -102,6 +108,109 @@ export class FileHost implements IFileHost {
   }
 
   /**
+   * Get public IP address
+   */
+  private async getPublicIp(): Promise<string | null> {
+    try {
+      const ip = await publicIpv4();
+      console.log(`🌐 Detected public IP: ${ip}`);
+      return ip;
+    } catch (error) {
+      console.warn(`⚠️ Failed to detect public IP:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Check if a port is accessible from the internet
+   */
+  private async checkPortAccessibility(ip: string, port: number): Promise<boolean> {
+    try {
+      console.log(`🔍 Checking port accessibility for ${ip}:${port}...`);
+      
+      // Try to connect to our own server from a public service
+      // This is a simple check using a HTTP request with a timeout
+      const response = await axios.get(`http://${ip}:${port}/status`, {
+        timeout: 10000, // 10 second timeout
+        headers: {
+          'User-Agent': 'dig-nat-tools-port-check'
+        }
+      });
+      
+      console.log(`✅ Port ${port} is accessible from the internet`);
+      return response.status === 200;
+    } catch (error) {
+      console.log(`❌ Port ${port} is not accessible from the internet:`, (error as Error).message);
+      return false;
+    }
+  }
+
+  /**
+   * Attempt to open port using UPnP
+   */
+  private async tryUpnpPortMapping(port: number): Promise<boolean> {
+    try {
+      console.log(`🔧 Attempting UPnP port mapping for port ${port}...`);
+      
+      this.upnpClient = natUpnp.createClient();
+      
+      // Try to map the port
+      await new Promise<void>((resolve, reject) => {
+        this.upnpClient!.portMapping({
+          public: port,
+          private: port,
+          ttl: this.options.ttl || 3600, // 1 hour default
+          description: 'dig-nat-tools file host'
+        }, (err: Error | null) => {
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
+
+      this.upnpMapping = { external: port, internal: port };
+      console.log(`✅ UPnP port mapping successful for port ${port}`);
+      return true;
+    } catch (error) {
+      console.warn(`⚠️ UPnP port mapping failed:`, error);
+      this.upnpClient = null;
+      return false;
+    }
+  }
+
+  /**
+   * Remove UPnP port mapping
+   */
+  private async removeUpnpPortMapping(): Promise<void> {
+    if (this.upnpClient && this.upnpMapping) {
+      try {
+        console.log(`🔧 Removing UPnP port mapping for port ${this.upnpMapping.external}...`);
+        
+        await new Promise<void>((resolve, reject) => {
+          this.upnpClient!.portUnmapping({
+            public: this.upnpMapping!.external
+          }, (err: Error | null) => {
+            if (err) {
+              reject(err);
+            } else {
+              resolve();
+            }
+          });
+        });
+        
+        console.log(`✅ UPnP port mapping removed`);
+      } catch (error) {
+        console.warn(`⚠️ Failed to remove UPnP port mapping:`, error);
+      } finally {
+        this.upnpClient = null;
+        this.upnpMapping = null;
+      }
+    }
+  }
+
+  /**
    * Start the file hosting server with connection strategy
    */
   public async start(): Promise<HostCapabilities> {
@@ -115,16 +224,46 @@ export class FileHost implements IFileHost {
     if (this.connectionMode === ConnectionMode.AUTO || this.connectionMode === ConnectionMode.HTTP_ONLY) {
       try {
         await this.startHttpServer();
+        console.log(`✅ HTTP server started locally on port ${this.port}`);
         
-        // Test if HTTP server is externally accessible
-        const localIp = this.detectLocalIp();
-        if (localIp) {
-          console.log(`✅ HTTP server started successfully at ${localIp}:${this.port}`);
-          capabilities.directHttp = {
-            available: true,
-            ip: localIp,
-            port: this.port
-          };
+        // Get public IP
+        this.publicIp = await this.getPublicIp();
+        
+        if (this.publicIp) {
+          // Check if the port is already accessible from the internet
+          let isPortAccessible = await this.checkPortAccessibility(this.publicIp, this.port);
+          
+          // If not accessible, try UPnP
+          if (!isPortAccessible) {
+            console.log(`🔧 Port ${this.port} not accessible, attempting UPnP...`);
+            const upnpSuccess = await this.tryUpnpPortMapping(this.port);
+            
+            if (upnpSuccess) {
+              // Wait a bit for the mapping to take effect, then check again
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              isPortAccessible = await this.checkPortAccessibility(this.publicIp, this.port);
+            }
+          }
+          
+          // Only set directHttp as available if port is accessible from internet
+          if (isPortAccessible) {
+            console.log(`✅ HTTP server is publicly accessible at ${this.publicIp}:${this.port}`);
+            capabilities.directHttp = {
+              available: true,
+              ip: this.publicIp,
+              port: this.port
+            };
+          } else {
+            console.warn(`⚠️ HTTP server is running locally but not accessible from the internet`);
+            if (this.connectionMode === ConnectionMode.HTTP_ONLY) {
+              throw new Error('HTTP-only mode requested but port is not accessible from internet and UPnP failed');
+            }
+          }
+        } else {
+          console.warn(`⚠️ Could not determine public IP address`);
+          if (this.connectionMode === ConnectionMode.HTTP_ONLY) {
+            throw new Error('HTTP-only mode requested but could not determine public IP');
+          }
         }
       } catch (error) {
         console.warn(`⚠️ HTTP server failed to start:`, error);
@@ -242,6 +381,9 @@ export class FileHost implements IFileHost {
    */
   public async stop(): Promise<void> {
     console.log('🛑 Stopping FileHost...');
+
+    // Remove UPnP port mapping first
+    await this.removeUpnpPortMapping();
 
     // Stop WebTorrent client
     if (this.webTorrentClient) {
@@ -415,11 +557,11 @@ export class FileHost implements IFileHost {
       throw new Error(`No file with hash: ${hash}`);
     }
 
-    // Prefer direct HTTP if available
-    if (this.server) {
-      const localIp = this.detectLocalIp();
-      if (localIp) {
-        return `http://${localIp}:${this.port}/files/${hash}`;
+    // Prefer direct HTTP if available (use public IP if we have it)
+    if (this.server && this.capabilities?.directHttp?.available) {
+      const ip = this.publicIp || this.detectLocalIp();
+      if (ip) {
+        return `http://${ip}:${this.port}/files/${hash}`;
       }
     }
 
