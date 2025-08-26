@@ -21,7 +21,7 @@ async function runExample() {
     connectionMode: ConnectionMode.AUTO,
     ttl: 3600, // UPnP mapping TTL: 1 hour
     gun: {
-      peers: ['http://nostalgiagame.go.ro:8765/gun'] // Gun.js peer for registry
+      peers: ['http://nostalgiagame.go.ro:30876/gun'] // Gun.js peer for registry
     }
   });
 
