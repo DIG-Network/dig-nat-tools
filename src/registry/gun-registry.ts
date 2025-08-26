@@ -63,11 +63,6 @@ export class GunRegistry {
     const flatEntry = {
       storeId: capabilities.storeId,
       lastSeen: Date.now(),
-      externalIp: capabilities.externalIp || "localhost",
-      port: capabilities.port || 0,
-      upnp_available: capabilities.upnp?.available || false,
-      webrtc_available: capabilities.webrtc?.available || false,
-      // Add new fields for better compatibility
       directHttp_available: capabilities.directHttp?.available || false,
       directHttp_ip: capabilities.directHttp?.ip || "",
       directHttp_port: capabilities.directHttp?.port || 0,
