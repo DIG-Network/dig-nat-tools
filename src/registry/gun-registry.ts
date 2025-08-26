@@ -4,6 +4,17 @@ import { HostCapabilities } from "../interfaces";
 export interface GunRegistryOptions {
   peers?: string[];
   namespace?: string;
+  /**
+   * When true, registration will aggressively override any existing values
+   * for the same storeId by first clearing known fields before writing fresh ones.
+   * This helps when restarting a host with a fixed storeId and avoids stale data lingering.
+   */
+  forceOverride?: boolean;
+  /**
+   * Optional delay (ms) between clearing old fields and writing fresh values,
+   * giving the network a moment to propagate deletes. Defaults to 150ms.
+   */
+  overrideDelayMs?: number;
 }
 
 interface GunInstance {
@@ -26,6 +37,8 @@ export class GunRegistry {
     this.options = {
       peers: options.peers || ["http://nostalgiagame.go.ro:30876/gun"],
       namespace: options.namespace || "dig-nat-tools",
+      forceOverride: options.forceOverride ?? true,
+      overrideDelayMs: options.overrideDelayMs ?? 150,
     };
 
     this.initializeGun();
@@ -73,12 +86,37 @@ export class GunRegistry {
     console.log(`🔧 [GunRegistry] Registration data:`, JSON.stringify(flatEntry, null, 2));
 
     try {
-      // Store in Gun.js
-      this.gun
+      const hostRef = this.gun
         .get(this.options.namespace!)
         .get("hosts")
-        .get(capabilities.storeId)
-        .put(flatEntry);
+        .get(capabilities.storeId);
+
+      // Optionally clear known fields to ensure our fresh values win on restart
+      if (this.options.forceOverride) {
+        try {
+          const fieldsToClear = [
+            "directHttp_available",
+            "directHttp_ip",
+            "directHttp_port",
+            "webTorrent_available",
+            "webTorrent_magnetUris",
+            "externalIp",
+            "port",
+            "lastSeen",
+            "storeId",
+          ];
+          fieldsToClear.forEach((k) => hostRef.get(k).put(null));
+          const delay = Math.max(0, this.options.overrideDelayMs || 0);
+          if (delay > 0) {
+            await new Promise((r) => setTimeout(r, delay));
+          }
+        } catch (e) {
+          console.warn("⚠️ [GunRegistry] Failed clearing existing fields before override:", e);
+        }
+      }
+
+      // Store in Gun.js
+      hostRef.put(flatEntry);
 
       console.log(`✅ [GunRegistry] Successfully registered host ${capabilities.storeId} in Gun.js registry`);
       
