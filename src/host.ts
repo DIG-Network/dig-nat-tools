@@ -3,7 +3,6 @@ import * as http from 'node:http';
 import * as crypto from 'node:crypto';
 import express from 'express';
 import os from 'node:os';
-import axios from 'axios';
 import { publicIpv4 } from 'public-ip';
 import natUpnp from 'nat-upnp';
 import { IFileHost, HostCapabilities } from './interfaces';
@@ -122,30 +121,6 @@ export class FileHost implements IFileHost {
   }
 
   /**
-   * Check if a port is accessible from the internet
-   */
-  private async checkPortAccessibility(ip: string, port: number): Promise<boolean> {
-    try {
-      console.log(`🔍 Checking port accessibility for ${ip}:${port}...`);
-      
-      // Try to connect to our own server from a public service
-      // This is a simple check using a HTTP request with a timeout
-      const response = await axios.get(`http://${ip}:${port}/status`, {
-        timeout: 10000, // 10 second timeout
-        headers: {
-          'User-Agent': 'dig-nat-tools-port-check'
-        }
-      });
-      
-      console.log(`✅ Port ${port} is accessible from the internet`);
-      return response.status === 200;
-    } catch (error) {
-      console.log(`❌ Port ${port} is not accessible from the internet:`, (error as Error).message);
-      return false;
-    }
-  }
-
-  /**
    * Attempt to open port using UPnP
    */
   private async tryUpnpPortMapping(port: number): Promise<boolean> {
@@ -230,33 +205,39 @@ export class FileHost implements IFileHost {
         this.publicIp = await this.getPublicIp();
         
         if (this.publicIp) {
-          // Check if the port is already accessible from the internet
-          let isPortAccessible = await this.checkPortAccessibility(this.publicIp, this.port);
+          let isPortAccessible = false;
           
-          // If not accessible, try UPnP
-          if (!isPortAccessible) {
-            console.log(`🔧 Port ${this.port} not accessible, attempting UPnP...`);
+          // Different logic based on connection mode
+          if (this.connectionMode === ConnectionMode.HTTP_ONLY) {
+            // User explicitly requested HTTP-only mode, assume port is manually forwarded
+            console.log(`🔧 HTTP-only mode: assuming port ${this.port} is manually forwarded`);
+            isPortAccessible = true;
+          } else {
+            // AUTO mode: try UPnP first, assume it worked if no errors
+            console.log(`🔧 AUTO mode: attempting UPnP port mapping for port ${this.port}...`);
             const upnpSuccess = await this.tryUpnpPortMapping(this.port);
             
             if (upnpSuccess) {
-              // Wait a bit for the mapping to take effect, then check again
-              await new Promise(resolve => setTimeout(resolve, 2000));
-              isPortAccessible = await this.checkPortAccessibility(this.publicIp, this.port);
+              console.log(`✅ UPnP port mapping successful, assuming port is accessible`);
+              isPortAccessible = true;
+            } else {
+              console.warn(`⚠️ UPnP failed, HTTP will not be available`);
+              isPortAccessible = false;
             }
           }
           
-          // Only set directHttp as available if port is accessible from internet
+          // Set directHttp based on our determination
           if (isPortAccessible) {
-            console.log(`✅ HTTP server is publicly accessible at ${this.publicIp}:${this.port}`);
+            console.log(`✅ HTTP server will be registered as publicly accessible at ${this.publicIp}:${this.port}`);
             capabilities.directHttp = {
               available: true,
               ip: this.publicIp,
               port: this.port
             };
           } else {
-            console.warn(`⚠️ HTTP server is running locally but not accessible from the internet`);
+            console.warn(`⚠️ HTTP server is running locally but will not be registered as publicly accessible`);
             if (this.connectionMode === ConnectionMode.HTTP_ONLY) {
-              throw new Error('HTTP-only mode requested but port is not accessible from internet and UPnP failed');
+              throw new Error('HTTP-only mode requested but UPnP failed and no manual port forwarding assumed');
             }
           }
         } else {
