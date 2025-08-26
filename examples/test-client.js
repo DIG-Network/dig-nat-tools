@@ -79,9 +79,53 @@ async function startClient() {
         webTorrent: capabilities.webTorrent?.available || false
       });
       
-      // If the peer has shared files, try to download one
-      // Note: In a real scenario, you'd get the file hash from the peer somehow
-      // For this test, we'll just demonstrate the client connecting
+      // Try to download a file if the peer has any available
+      if (capabilities.directHttp?.available) {
+        console.log(`🌐 Direct HTTP available at ${capabilities.directHttp.ip}:${capabilities.directHttp.port}`);
+        
+        // Check if there are any magnet URIs to extract file hashes from
+        if (capabilities.webTorrent?.magnetUris && capabilities.webTorrent.magnetUris.length > 0) {
+          const magnetUri = capabilities.webTorrent.magnetUris[0];
+          console.log('🧲 Found magnet URI:', magnetUri);
+          
+          // Extract file hash from the magnet URI filename (dn parameter)
+          const dnMatch = magnetUri.match(/dn=([^&]+)/);
+          if (dnMatch) {
+            const fileHash = decodeURIComponent(dnMatch[1]);
+            console.log(`📥 Attempting to download file with hash: ${fileHash}`);
+            
+            try {
+              // Use the client's downloadFile method which will prefer direct HTTP
+              const fileData = await client.downloadFile(capabilities.storeId, fileHash);
+              console.log(`✅ Successfully downloaded file! Size: ${fileData.length} bytes`);
+              
+              // Save the file locally
+              const outputPath = `downloaded-${fileHash.substring(0, 8)}.bin`;
+              fs.writeFileSync(outputPath, fileData);
+              console.log(`💾 File saved as: ${outputPath}`);
+              
+              // If it appears to be text, show a preview
+              const fileContent = fileData.toString('utf8');
+              if (fileData.length < 1000 && /^[\x20-\x7E\s]*$/.test(fileContent)) {
+                console.log('📄 File content preview:');
+                console.log('─'.repeat(50));
+                console.log(fileContent);
+                console.log('─'.repeat(50));
+              } else {
+                console.log('📄 File appears to be binary data');
+              }
+              
+            } catch (error) {
+              console.error(`❌ Failed to download file: ${error.message}`);
+            }
+          } else {
+            console.log('⚠️ Could not extract file hash from magnet URI');
+          }
+        } else {
+          console.log('📭 No files available for download');
+        }
+      }
+      
       console.log('✅ Successfully connected to peer via Gun.js!');
       console.log('🎉 Gun.js connectivity test passed!');
       

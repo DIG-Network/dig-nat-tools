@@ -129,12 +129,13 @@ export class FileHost implements IFileHost {
       
       this.upnpClient = natUpnp.createClient();
       
-      // Try to map the port
+      // Try to map the port with proper protocol specification
       await new Promise<void>((resolve, reject) => {
         this.upnpClient!.portMapping({
           public: port,
           private: port,
           ttl: this.options.ttl || 3600, // 1 hour default
+          protocol: 'TCP', // Explicitly specify TCP protocol for HTTP traffic
           description: 'dig-nat-tools file host'
         }, (err: Error | null) => {
           if (err) {
@@ -145,8 +146,30 @@ export class FileHost implements IFileHost {
         });
       });
 
+      // Verify the mapping worked by getting external IP
+      const externalIp = await new Promise<string>((resolve, reject) => {
+        this.upnpClient!.externalIp((err: Error | null, ip?: string) => {
+          if (err) {
+            reject(err);
+          } else if (ip) {
+            resolve(ip);
+          } else {
+            reject(new Error('No external IP returned from UPnP'));
+          }
+        });
+      });
+
       this.upnpMapping = { external: port, internal: port };
       console.log(`✅ UPnP port mapping successful for port ${port}`);
+      console.log(`🌐 External IP from UPnP: ${externalIp}`);
+      console.log(`🔗 File should be accessible at: http://${externalIp}:${port}/files/{hash}`);
+      
+      // Update our public IP if we got it from UPnP
+      if (externalIp && (!this.publicIp || this.publicIp !== externalIp)) {
+        console.log(`📡 Updating public IP from UPnP: ${this.publicIp} -> ${externalIp}`);
+        this.publicIp = externalIp;
+      }
+      
       return true;
     } catch (error) {
       console.warn(`⚠️ UPnP port mapping failed:`, error);
