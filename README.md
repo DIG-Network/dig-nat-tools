@@ -503,7 +503,362 @@ const p2pHost = new FileHost({
 2. **Router UPnP**: Check router settings to enable UPnP/IGD
 3. **Port Conflicts**: Use a different port if the default port is in use
 
-## Requirements
+## Running the Client
 
-- Node.js 14 or newer
-- Router with UPnP support for NAT traversal (widely supported on consumer routers)
+### Test Client Example
+
+The package includes a test client that demonstrates peer discovery and file downloading:
+
+#### 1. Build the Project
+
+```bash
+npm install
+npm run build
+```
+
+#### 2. Run the Test Client
+
+```bash
+node .\examples\test-client.js
+```
+
+**What the test client does:**
+- Connects to the Gun.js relay for peer discovery
+- Searches for available peers in the registry
+- Displays peer capabilities (HTTP, WebTorrent)
+- Attempts to download files from discovered peers
+- Shows detailed logging of the discovery process
+
+**Example Output:**
+```
+🔍 Starting test client...
+🔗 Connecting to Gun.js relay at http://nostalgiagame.go.ro:30876/gun...
+📡 Using namespace: dig-nat-tools-test
+🔄 Searching for available peers...
+📊 Search completed. Found 2 peer(s)
+🎯 Peer details: [
+  {
+    storeId: 'test-host-1',
+    directHttp: true,
+    webTorrent: true,
+    lastSeen: '3:45:22 PM'
+  }
+]
+✅ Successfully connected to peer via Gun.js!
+```
+
+#### 3. Configuration Options
+
+You can modify the test client configuration:
+
+```javascript
+// In examples/test-client.js
+const client = new FileClient({
+  peers: ['http://nostalgiagame.go.ro:30876/gun'], // Gun.js relay URL
+  namespace: 'dig-nat-tools-test',                 // Registry namespace
+  timeout: 30000                                   // 30 second timeout
+});
+```
+
+**Custom relay:** Replace with your own Gun.js relay URL
+**Namespace:** Use different namespaces to separate different applications
+**Timeout:** Adjust based on network conditions
+
+### Custom Client Implementation
+
+#### Basic Peer Discovery
+
+```javascript
+const { FileClient } = require('dig-nat-tools');
+
+async function discoverPeers() {
+  const client = new FileClient({
+    peers: ['http://nostalgiagame.go.ro:30876/gun'],
+    namespace: 'my-app',
+    timeout: 30000
+  });
+
+  try {
+    // Find all available peers
+    const peers = await client.findAvailablePeers();
+    console.log(`Found ${peers.length} peers:`);
+    
+    peers.forEach(peer => {
+      console.log(`- ${peer.storeId}`);
+      console.log(`  HTTP: ${peer.directHttp?.available || false}`);
+      console.log(`  WebTorrent: ${peer.webTorrent?.available || false}`);
+      console.log(`  Last seen: ${new Date(peer.lastSeen).toLocaleString()}`);
+    });
+    
+    return peers;
+  } catch (error) {
+    console.error('Discovery failed:', error);
+    return [];
+  } finally {
+    await client.destroy();
+  }
+}
+
+discoverPeers();
+```
+
+#### Download Files from Specific Peer
+
+```javascript
+const { FileClient } = require('dig-nat-tools');
+const fs = require('fs');
+
+async function downloadFromPeer() {
+  const client = new FileClient({
+    peers: ['http://nostalgiagame.go.ro:30876/gun'],
+    namespace: 'my-app'
+  });
+
+  try {
+    // Check specific peer capabilities
+    const storeId = 'target-host-id';
+    const capabilities = await client.checkPeerCapabilities(storeId);
+    
+    if (capabilities) {
+      console.log('Peer found:', capabilities);
+      
+      // Download a specific file by its SHA256 hash
+      const fileHash = 'a1b2c3d4e5f6...'; // SHA256 hash of the file
+      const fileBuffer = await client.downloadFile(storeId, fileHash, {
+        timeout: 60000,
+        onProgress: (downloaded, total) => {
+          const percent = Math.round((downloaded / total) * 100);
+          console.log(`Download progress: ${percent}%`);
+        }
+      });
+      
+      // Save the downloaded file
+      fs.writeFileSync(`downloaded-${fileHash.substring(0, 8)}.bin`, fileBuffer);
+      console.log(`Downloaded ${fileBuffer.length} bytes`);
+      
+    } else {
+      console.log('Peer not found or offline');
+    }
+    
+  } catch (error) {
+    console.error('Download failed:', error);
+  } finally {
+    await client.destroy();
+  }
+}
+
+downloadFromPeer();
+```
+
+#### Monitor Peer Registry in Real-time
+
+```javascript
+const { FileClient } = require('dig-nat-tools');
+
+async function monitorPeers() {
+  const client = new FileClient({
+    peers: ['http://nostalgiagame.go.ro:30876/gun'],
+    namespace: 'my-app'
+  });
+
+  // Check for peers every 30 seconds
+  setInterval(async () => {
+    try {
+      const peers = await client.findAvailablePeers();
+      console.log(`\n[${new Date().toLocaleTimeString()}] Active peers: ${peers.length}`);
+      
+      peers.forEach(peer => {
+        const lastSeen = new Date(peer.lastSeen).toLocaleTimeString();
+        console.log(`  📡 ${peer.storeId} (last seen: ${lastSeen})`);
+      });
+      
+    } catch (error) {
+      console.error('Monitoring error:', error);
+    }
+  }, 30000);
+
+  // Keep the process running
+  console.log('🔍 Monitoring peers... Press Ctrl+C to stop');
+  process.on('SIGINT', async () => {
+    console.log('\n🛑 Stopping monitor...');
+    await client.destroy();
+    process.exit(0);
+  });
+}
+
+monitorPeers();
+```
+
+### TypeScript Client Example
+
+```typescript
+import { FileClient, HostCapabilities } from 'dig-nat-tools';
+import * as fs from 'fs';
+
+class P2PFileManager {
+  private client: FileClient;
+
+  constructor(relayUrl: string, namespace: string) {
+    this.client = new FileClient({
+      peers: [relayUrl],
+      namespace: namespace,
+      timeout: 45000
+    });
+  }
+
+  async searchAndDownload(targetStoreId: string, fileHash: string): Promise<boolean> {
+    try {
+      // First, check if the specific peer is available
+      const peer = await this.client.checkPeerCapabilities(targetStoreId);
+      
+      if (!peer) {
+        console.log(`❌ Peer ${targetStoreId} not found`);
+        return false;
+      }
+
+      console.log(`✅ Found peer ${targetStoreId}`);
+      console.log(`   HTTP available: ${peer.directHttp?.available || false}`);
+      console.log(`   WebTorrent available: ${peer.webTorrent?.available || false}`);
+
+      // Download the file
+      const fileData = await this.client.downloadFile(targetStoreId, fileHash, {
+        onProgress: (downloaded, total) => {
+          const percent = Math.round((downloaded / total) * 100);
+          process.stdout.write(`\r📥 Downloading: ${percent}%`);
+        }
+      });
+
+      console.log(`\n✅ Download complete: ${fileData.length} bytes`);
+
+      // Save to disk
+      const filename = `downloaded-${fileHash.substring(0, 12)}.bin`;
+      fs.writeFileSync(filename, fileData);
+      console.log(`💾 Saved as: ${filename}`);
+
+      return true;
+
+    } catch (error) {
+      console.error('❌ Download failed:', error);
+      return false;
+    }
+  }
+
+  async listAllPeers(): Promise<HostCapabilities[]> {
+    try {
+      const peers = await this.client.findAvailablePeers();
+      
+      console.log(`\n📋 Found ${peers.length} active peers:`);
+      peers.forEach((peer, index) => {
+        console.log(`\n${index + 1}. Store ID: ${peer.storeId}`);
+        console.log(`   Last seen: ${new Date(peer.lastSeen || 0).toLocaleString()}`);
+        console.log(`   Capabilities:`);
+        console.log(`     - Direct HTTP: ${peer.directHttp?.available || false}`);
+        if (peer.directHttp?.available) {
+          console.log(`       IP: ${peer.directHttp.ip}:${peer.directHttp.port}`);
+        }
+        console.log(`     - WebTorrent: ${peer.webTorrent?.available || false}`);
+        if (peer.webTorrent?.available && peer.webTorrent.magnetUris?.length) {
+          console.log(`       Files: ${peer.webTorrent.magnetUris.length} available`);
+        }
+      });
+
+      return peers;
+
+    } catch (error) {
+      console.error('❌ Failed to list peers:', error);
+      return [];
+    }
+  }
+
+  async cleanup(): Promise<void> {
+    await this.client.destroy();
+  }
+}
+
+// Usage example
+async function main() {
+  const manager = new P2PFileManager(
+    'http://nostalgiagame.go.ro:30876/gun',
+    'my-application'
+  );
+
+  try {
+    // List all available peers
+    await manager.listAllPeers();
+
+    // Download a specific file
+    const success = await manager.searchAndDownload(
+      'target-peer-id',
+      'sha256-hash-of-file'
+    );
+
+    if (success) {
+      console.log('🎉 File downloaded successfully!');
+    }
+
+  } finally {
+    await manager.cleanup();
+  }
+}
+
+main().catch(console.error);
+```
+
+### Client Troubleshooting
+
+#### Common Issues
+
+**No peers found:**
+```bash
+❌ No peers found. Possible issues:
+   1. Host is not running
+   2. Host failed to register with Gun.js relay
+   3. Gun.js relay is not accessible
+   4. Namespace mismatch between host and client
+   5. Timing issue - try waiting longer after starting host
+```
+
+**Solutions:**
+1. **Check relay connectivity:** Verify the Gun.js relay URL is accessible
+2. **Verify namespace:** Ensure client and host use the same namespace
+3. **Wait for registration:** Hosts may take a few seconds to appear in the registry
+4. **Check network:** Ensure firewall/proxy isn't blocking connections
+
+**Timeout issues:**
+```javascript
+// Increase timeouts for slow networks
+const client = new FileClient({
+  peers: ['http://your-relay.com/gun'],
+  namespace: 'your-app',
+  timeout: 60000  // 60 seconds instead of default 30
+});
+```
+
+**Connection method selection:**
+```javascript
+// If direct HTTP fails, the client automatically tries WebTorrent
+// You can check which method was used in the logs
+const fileData = await client.downloadFile(storeId, fileHash);
+// Look for logs like:
+// "🌐 Attempting direct HTTP download..."
+// "🧲 Falling back to WebTorrent download..."
+```
+
+### Debug Mode
+
+Enable verbose logging by setting the DEBUG environment variable:
+
+```bash
+# Windows
+set DEBUG=dig-nat-tools:*
+node .\examples\test-client.js
+
+# Linux/Mac
+DEBUG=dig-nat-tools:* node ./examples/test-client.js
+```
+
+This will show detailed information about:
+- Gun.js connection status
+- Peer discovery process
+- Download attempts and fallbacks
+- Network timeouts and retries

@@ -20,4 +20,13 @@ export default {
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov', 'json-summary'],
   testTimeout: 30000,
+  transformIgnorePatterns: [
+    'node_modules/(?!(public-ip|gun)/)'
+  ],
+  extensionsToTreatAsEsm: ['.ts'],
+  globals: {
+    'ts-jest': {
+      useESM: true
+    }
+  }
 };
