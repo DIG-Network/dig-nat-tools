@@ -19,16 +19,16 @@ const mockHttps = {
   get: jest.fn()
 };
 
-jest.mock('http', () => mockHttp);
-jest.mock('https', () => mockHttps);
+jest.mock('node:http', () => mockHttp);
+jest.mock('node:https', () => mockHttps);
 
 // Mock URL
-jest.mock('url', () => ({
+jest.mock('node:url', () => ({
   URL: jest.fn()
 }));
 
 import { FileClient } from '../src/client';
-import { URL } from 'url';
+import { URL } from 'node:url';
 
 // Get the mocked versions
 const mockURL = URL as jest.MockedClass<typeof URL>;

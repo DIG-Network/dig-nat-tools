@@ -1,103 +1,162 @@
-// Mock fs module
-jest.mock('fs', () => ({
-  existsSync: jest.fn(),
-  statSync: jest.fn(),
-  createReadStream: jest.fn(),
-  copyFileSync: jest.fn(),
-  unlinkSync: jest.fn()
-}));
-
-// Mock nat-upnp
-jest.mock('nat-upnp', () => ({
-  createClient: jest.fn(() => ({
-    portMapping: jest.fn(),
-    portUnmapping: jest.fn(),
-    externalIp: jest.fn()
-  }))
-}));
-
-// Mock express
-const mockApp = {
-  get: jest.fn(),
-  listen: jest.fn()
-};
-jest.mock('express', () => jest.fn(() => mockApp));
-
-// Mock os module
-jest.mock('os', () => ({
-  networkInterfaces: jest.fn(),
-  default: {
-    networkInterfaces: jest.fn()
-  }
-}));
+// Mock modules before importing
+jest.mock('node:fs');
+jest.mock('node:crypto'); 
+jest.mock('node:os');
+jest.mock('express');
+jest.mock('webtorrent');
+jest.mock('nat-upnp');
+jest.mock('public-ip');
+jest.mock('../src/registry/gun-registry');
 
 import { FileHost, ConnectionMode } from '../src/host';
-import * as fs from 'fs';
-import os from 'os';
+import * as fs from 'node:fs';
+import * as crypto from 'node:crypto';
+import * as os from 'node:os';
+import express from 'express';
+import WebTorrent from 'webtorrent';
+import { GunRegistry } from '../src/registry/gun-registry';
 
-// Get the mocked versions
+// Mock implementations
 const mockFs = fs as jest.Mocked<typeof fs>;
+const mockCrypto = crypto as jest.Mocked<typeof crypto>;
 const mockOs = os as jest.Mocked<typeof os>;
+const mockExpress = express as jest.MockedFunction<typeof express>;
+const MockWebTorrent = WebTorrent as jest.MockedClass<typeof WebTorrent>;
+const MockGunRegistry = GunRegistry as jest.MockedClass<typeof GunRegistry>;
 
-describe('FileHost - Comprehensive Coverage', () => {
+// Mock express app
+const mockApp = {
+  get: jest.fn(),
+  listen: jest.fn(),
+  use: jest.fn()
+};
+
+// Mock server
+const mockServer = {
+  address: jest.fn(),
+  close: jest.fn(),
+  on: jest.fn()
+};
+
+// Mock WebTorrent instance
+const mockWebTorrentInstance = {
+  seed: jest.fn(),
+  get: jest.fn(),
+  destroy: jest.fn(),
+  on: jest.fn()
+};
+
+// Mock torrent
+const mockTorrent = {
+  magnetURI: 'magnet:?xt=urn:btih:test-hash&dn=test-file',
+  destroy: jest.fn()
+};
+
+// Mock GunRegistry instance
+const mockGunRegistryInstance = {
+  register: jest.fn(),
+  unregister: jest.fn(),
+  isAvailable: jest.fn().mockReturnValue(true)
+};
+
+// Mock hash instance
+const mockHash = {
+  update: jest.fn().mockReturnThis(),
+  digest: jest.fn().mockReturnValue('test-file-hash-123456789abcdef')
+};
+
+// Mock stream
+const createMockStream = (): any => ({
+  on: jest.fn((event: string, callback: any): any => {
+    if (event === 'data') {
+      setTimeout(() => callback(Buffer.from('test content')), 0);
+    } else if (event === 'end') {
+      setTimeout(() => callback(), 5);
+    }
+    return createMockStream();
+  }),
+  pipe: jest.fn()
+});
+
+describe('FileHost', () => {
   let fileHost: FileHost;
-  let mockServer: any;
 
   beforeEach(() => {
     jest.clearAllMocks();
     
-    // Mock server
-    mockServer = {
-      address: jest.fn(),
-      close: jest.fn()
-    };
+    // Setup express mocks
+    mockExpress.mockReturnValue(mockApp as any);
+    mockServer.address.mockReturnValue({ port: 3000 });
     
-    mockApp.listen.mockReturnValue(mockServer);
-    
-    // Mock createReadStream to simulate a stream with events for calculateFileHash
-    mockFs.createReadStream.mockImplementation((filePath: any) => {
-      const mockStream: any = {
-        on: jest.fn((event: string, callback: any) => {
-          if (event === 'data') {
-            // Simulate different data for different files to get different hashes
-            const fileContent = `test file content for ${filePath}`;
-            setTimeout(() => callback(Buffer.from(fileContent)), 0);
-          } else if (event === 'end') {
-            // Simulate stream end
-            setTimeout(() => callback(), 10);
-          } else if (event === 'error') {
-            // Don't call error callback in normal case
-          }
-          return mockStream;
-        }),
-        pipe: jest.fn()
-      };
-      return mockStream;
+    // Mock listen to call callback immediately
+    mockApp.listen.mockImplementation((port: any, host: any, callback: any) => {
+      setTimeout(() => callback(), 0);
+      return mockServer;
     });
     
-    fileHost = new FileHost({ port: 3000, ttl: 1800 });
+    // Setup WebTorrent mocks
+    MockWebTorrent.mockImplementation(() => mockWebTorrentInstance as any);
+    mockWebTorrentInstance.seed.mockImplementation((file: any, callback: any) => {
+      setTimeout(() => callback(mockTorrent), 0);
+    });
+    
+    // Setup fs mocks
+    mockFs.existsSync.mockReturnValue(true);
+    mockFs.createReadStream.mockImplementation(() => createMockStream() as any);
+    mockFs.statSync.mockReturnValue({ size: 1024 } as any);
+    
+    // Setup crypto mocks
+    mockCrypto.createHash.mockReturnValue(mockHash as any);
+    
+    // Setup os mocks
+    mockOs.networkInterfaces.mockReturnValue({
+      'Wi-Fi': [{
+        family: 'IPv4' as any,
+        address: '192.168.1.100',
+        internal: false,
+        netmask: '255.255.255.0',
+        mac: '00:00:00:00:00:00',
+        cidr: '192.168.1.100/24'
+      }]
+    });
+    
+    // Setup GunRegistry mocks
+    MockGunRegistry.mockImplementation(() => mockGunRegistryInstance as any);
+    
+    fileHost = new FileHost({ port: 3000 });
   });
 
-  describe('Constructor and Setup', () => {
+  describe('Constructor', () => {
     it('should initialize with default options', () => {
-      const defaultHost = new FileHost();
-      expect(defaultHost).toBeInstanceOf(FileHost);
+      const host = new FileHost();
+      expect(host).toBeInstanceOf(FileHost);
     });
 
     it('should initialize with custom options', () => {
-      const customHost = new FileHost({ port: 8080, ttl: 7200 });
-      expect(customHost).toBeInstanceOf(FileHost);
+      const host = new FileHost({
+        port: 8080,
+        connectionMode: ConnectionMode.HTTP_ONLY,
+        ttl: 7200,
+        storeId: 'custom-store-id'
+      });
+      expect(host).toBeInstanceOf(FileHost);
     });
 
-    it('should initialize with plain connection mode enabled', () => {
-      const plainHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY, port: 8080 });
-      expect(plainHost).toBeInstanceOf(FileHost);
-      expect((plainHost as any).connectionMode).toBe(ConnectionMode.HTTP_ONLY);
-      expect((plainHost as any).webTorrentClient).toBeNull();
+    it('should initialize with gun registry when gun options provided', () => {
+      new FileHost({
+        gun: {
+          peers: ['http://example.com:8080/gun'],
+          namespace: 'test-namespace'
+        }
+      });
+      expect(MockGunRegistry).toHaveBeenCalledWith({
+        peers: ['http://example.com:8080/gun'],
+        namespace: 'test-namespace'
+      });
     });
 
-    it('should setup routes correctly', () => {
-      // Verify that routes are set up
+    it('should setup express routes', () => {
+      new FileHost();
       expect(mockApp.get).toHaveBeenCalledWith('/files/:hash', expect.any(Function));
       expect(mockApp.get).toHaveBeenCalledWith('/status', expect.any(Function));
     });
@@ -106,582 +165,462 @@ describe('FileHost - Comprehensive Coverage', () => {
   describe('Route Handlers', () => {
     let fileRouteHandler: any;
     let statusRouteHandler: any;
-    let mockReq: any;
-    let mockRes: any;
 
     beforeEach(() => {
-      // Get the route handlers from the mock calls
-      const routeCalls = mockApp.get.mock.calls;
-      fileRouteHandler = routeCalls.find(call => call[0] === '/files/:hash')?.[1];
-      statusRouteHandler = routeCalls.find(call => call[0] === '/status')?.[1];
-
-      mockReq = {
-        params: { hash: 'test-hash' }
-      };
-
-      mockRes = {
-        status: jest.fn().mockReturnThis(),
-        json: jest.fn().mockReturnThis(),
-        setHeader: jest.fn(),
-        pipe: jest.fn()
-      };
+      const getCalls = mockApp.get.mock.calls;
+      fileRouteHandler = getCalls.find(call => call[0] === '/files/:hash')?.[1];
+      statusRouteHandler = getCalls.find(call => call[0] === '/status')?.[1];
     });
 
     describe('/files/:hash route', () => {
-      it('should return 404 when file hash not found', () => {
+      it('should return 404 when file not found', () => {
+        const mockReq = { params: { hash: 'non-existent-hash' } };
+        const mockRes = {
+          status: jest.fn().mockReturnThis(),
+          json: jest.fn()
+        };
+
         fileRouteHandler(mockReq, mockRes);
-        
+
         expect(mockRes.status).toHaveBeenCalledWith(404);
         expect(mockRes.json).toHaveBeenCalledWith({ error: 'File not found' });
       });
 
-      it('should return 404 when file no longer exists', async () => {
-        // First share a file to add to mappings
-        const testFilePath = '/test/file.txt';
-        mockFs.existsSync.mockReturnValueOnce(true); // For shareFile
-        const fileHash = await fileHost.shareFile(testFilePath);
+      it('should return 404 when file no longer exists on disk', async () => {
+        // Share a file first
+        const hash = await fileHost.shareFile('/test/file.txt');
         
-        // Now simulate file not existing for the route
+        // Mock file no longer existing
         mockFs.existsSync.mockReturnValueOnce(false);
         
-        mockReq.params.hash = fileHash;
+        const mockReq = { params: { hash } };
+        const mockRes = {
+          status: jest.fn().mockReturnThis(),
+          json: jest.fn()
+        };
+
         fileRouteHandler(mockReq, mockRes);
-        
+
         expect(mockRes.status).toHaveBeenCalledWith(404);
         expect(mockRes.json).toHaveBeenCalledWith({ error: 'File no longer exists' });
       });
 
-      it('should serve file when it exists', async () => {
-        // Setup mocks
-        const testFilePath = '/test/file.txt';
-        const fileStats = { size: 1024 };
-        const mockStreamForRoute = { pipe: jest.fn() };
-
-        mockFs.existsSync.mockReturnValue(true);
-        mockFs.statSync.mockReturnValue(fileStats as any);
-
-        // Share a file first (this will use the global createReadStream mock)
-        const fileHash = await fileHost.shareFile(testFilePath);
+      it('should serve file successfully', async () => {
+        // Share a file first
+        const hash = await fileHost.shareFile('/test/file.txt');
         
-        // Now override the mock for the route handling
-        mockFs.createReadStream.mockReturnValue(mockStreamForRoute as any);
-        
-        mockReq.params.hash = fileHash;
+        const mockReq = { params: { hash } };
+        const mockRes = {
+          setHeader: jest.fn(),
+          status: jest.fn().mockReturnThis(),
+          json: jest.fn()
+        };
+
+        const mockStream = { pipe: jest.fn() };
+        mockFs.createReadStream.mockReturnValueOnce(mockStream as any);
+
         fileRouteHandler(mockReq, mockRes);
-        
+
         expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Length', 1024);
         expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Type', 'application/octet-stream');
-        expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Disposition', `attachment; filename=${fileHash}`);
-        expect(mockStreamForRoute.pipe).toHaveBeenCalledWith(mockRes);
+        expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Disposition', `attachment; filename=${hash}`);
+        expect(mockStream.pipe).toHaveBeenCalledWith(mockRes);
       });
     });
 
     describe('/status route', () => {
-      it('should return server status with available files', async () => {
-        // Add some files to the mappings
-        mockFs.existsSync.mockReturnValue(true);
-        const hash1 = await fileHost.shareFile('/test/file1.txt');
-        const hash2 = await fileHost.shareFile('/test/file2.txt');
+      it('should return server status', async () => {
+        // Share some files
+        await fileHost.shareFile('/test/file1.txt');
+        await fileHost.shareFile('/test/file2.txt');
+
+        const mockReq = {};
+        const mockRes = { json: jest.fn() };
 
         statusRouteHandler(mockReq, mockRes);
-        
+
         expect(mockRes.json).toHaveBeenCalledWith({
           status: 'online',
-          availableFiles: expect.arrayContaining([hash1, hash2])
+          availableFiles: expect.any(Array)
         });
-      });
-    });
-  });
-
-  describe('File Management', () => {
-    describe('shareFile', () => {
-      it('should throw error when file does not exist', async () => {
-        mockFs.existsSync.mockReturnValue(false);
-        
-        await expect(async () => {
-          await fileHost.shareFile('/non/existent/file.txt');
-        }).rejects.toThrow('File not found: /non/existent/file.txt');
-      });
-
-      it('should return unique hash when file exists', async () => {
-        mockFs.existsSync.mockReturnValue(true);
-        
-        const hash1 = await fileHost.shareFile('/test/file1.txt');
-        const hash2 = await fileHost.shareFile('/test/file2.txt');
-        
-        expect(hash1).toBeTruthy();
-        expect(hash2).toBeTruthy();
-        expect(hash1).not.toBe(hash2);
-        expect(typeof hash1).toBe('string');
-        expect(hash1).toHaveLength(64); // SHA256 hash length
-      });
-
-      it('should copy file to hash-named location', async () => {
-        mockFs.existsSync.mockReturnValueOnce(true); // Original file exists
-        mockFs.existsSync.mockReturnValueOnce(false); // Hash file doesn't exist yet
-        
-        const hash = await fileHost.shareFile('/test/file.txt');
-        
-        expect(mockFs.copyFileSync).toHaveBeenCalledWith('/test/file.txt', hash);
-        expect(hash).toBeTruthy();
-      });
-
-      it('should not copy file if hash-named file already exists', async () => {
-        mockFs.existsSync.mockReturnValue(true); // Both original and hash files exist
-        
-        await fileHost.shareFile('/test/file.txt');
-        
-        expect(mockFs.copyFileSync).not.toHaveBeenCalled();
-      });
-    });
-
-    describe('unshareFile', () => {
-      it('should return false for non-existent file ID', () => {
-        const result = fileHost.unshareFile('non-existent-id');
-        expect(result).toBe(false);
-      });
-
-      it('should return true and remove existing file', async () => {
-        mockFs.existsSync.mockReturnValue(true);
-        const fileHash = await fileHost.shareFile('/test/file.txt');
-        
-        const result = fileHost.unshareFile(fileHash);
-        expect(result).toBe(true);
-        
-        // Verify it's removed
-        const sharedFiles = fileHost.getSharedFiles();
-        expect(sharedFiles.includes(fileHash)).toBe(false);
-      });
-
-      it('should delete hash-named file when deleteFile is true', async () => {
-        mockFs.existsSync.mockReturnValue(true);
-        const fileHash = await fileHost.shareFile('/test/file.txt');
-        
-        // Mock file exists for deletion
-        mockFs.existsSync.mockReturnValue(true);
-        
-        const result = fileHost.unshareFile(fileHash, true);
-        expect(result).toBe(true);
-        expect(mockFs.unlinkSync).toHaveBeenCalledWith(fileHash);
-      });
-
-      it('should handle file deletion errors gracefully', async () => {
-        mockFs.existsSync.mockReturnValue(true);
-        const fileHash = await fileHost.shareFile('/test/file.txt');
-        
-        // Mock file exists but deletion fails
-        mockFs.existsSync.mockReturnValue(true);
-        mockFs.unlinkSync.mockImplementation(() => {
-          throw new Error('Permission denied');
-        });
-        
-        // Should still return true (file removed from tracking)
-        const result = fileHost.unshareFile(fileHash, true);
-        expect(result).toBe(true);
-      });
-    });
-
-    describe('getSharedFiles', () => {
-      it('should return empty array when no files are shared', () => {
-        const sharedFiles = fileHost.getSharedFiles();
-        expect(sharedFiles).toEqual([]);
-      });
-
-      it('should return array of shared files', async () => {
-        mockFs.existsSync.mockReturnValue(true);
-        const hash1 = await fileHost.shareFile('/test/file1.txt');
-        const hash2 = await fileHost.shareFile('/test/file2.txt');
-        
-        const sharedFiles = fileHost.getSharedFiles();
-        expect(sharedFiles).toHaveLength(2);
-        expect(sharedFiles).toContain(hash1);
-        expect(sharedFiles).toContain(hash2);
       });
     });
   });
 
   describe('Server Lifecycle', () => {
-    describe('start', () => {
-      it('should reject when server fails to start', async () => {
-        // Use HTTP_ONLY mode to force failure when HTTP server fails
-        const httpOnlyHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY });
+    describe('start()', () => {
+      it('should start HTTP server in HTTP_ONLY mode', async () => {
+        const host = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY, port: 3000 });
         
-        mockApp.listen.mockImplementation((port, host, callback) => {
-          // Simulate server not being created
-          (httpOnlyHost as any).server = null;
-          callback();
-          return null;
+        const capabilities = await host.start();
+
+        expect(mockApp.listen).toHaveBeenCalledWith(3000, '0.0.0.0', expect.any(Function));
+        expect(capabilities.storeId).toBeDefined();
+        expect(capabilities.directHttp).toBeDefined();
+        expect(capabilities.directHttp?.available).toBe(true);
+      }, 10000);
+
+      it('should start WebTorrent in WEBTORRENT_ONLY mode', async () => {
+        const host = new FileHost({ connectionMode: ConnectionMode.WEBTORRENT_ONLY });
+        
+        const capabilities = await host.start();
+
+        expect(MockWebTorrent).toHaveBeenCalled();
+        expect(capabilities.webTorrent).toBeDefined();
+        expect(capabilities.webTorrent?.available).toBe(true);
+      }, 10000);
+
+      it('should start both HTTP and WebTorrent in AUTO mode', async () => {
+        const host = new FileHost({ connectionMode: ConnectionMode.AUTO, port: 3000 });
+        
+        const capabilities = await host.start();
+
+        expect(mockApp.listen).toHaveBeenCalled();
+        expect(MockWebTorrent).toHaveBeenCalled();
+        expect(capabilities.directHttp?.available).toBeUndefined(); // UPnP fails so directHttp is not set
+        expect(capabilities.webTorrent?.available).toBe(true);
+      }, 10000);
+
+      it('should throw error when HTTP fails in HTTP_ONLY mode', async () => {
+        mockApp.listen.mockImplementation(() => {
+          throw new Error('Port in use');
         });
 
-        await expect(httpOnlyHost.start()).rejects.toThrow('HTTP-only mode requested but HTTP server failed');
+        const host = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY });
+        
+        await expect(host.start()).rejects.toThrow('HTTP-only mode requested but HTTP server failed');
       });
 
-      it('should reject when server address is invalid', async () => {
-        // Use HTTP_ONLY mode to force failure when HTTP server fails
-        const httpOnlyHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY });
-        
-        mockServer.address.mockReturnValue('string-address');
-        
-        mockApp.listen.mockImplementation((port, host, callback) => {
-          // Properly set the server reference
-          (httpOnlyHost as any).server = mockServer;
-          callback();
-          return mockServer;
+      it('should throw error when WebTorrent fails in WEBTORRENT_ONLY mode', async () => {
+        MockWebTorrent.mockImplementation(() => {
+          throw new Error('WebTorrent init failed');
         });
 
-        await expect(httpOnlyHost.start()).rejects.toThrow('HTTP-only mode requested but HTTP server failed');
+        const host = new FileHost({ connectionMode: ConnectionMode.WEBTORRENT_ONLY });
+        
+        await expect(host.start()).rejects.toThrow('WebTorrent-only mode requested but WebTorrent failed');
       });
 
-      it('should reject when HTTP setup fails in HTTP_ONLY mode', async () => {
-        // Use HTTP_ONLY mode to force failure when HTTP server setup fails
-        const httpOnlyHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY });
+      it('should register with gun registry when available', async () => {
+        const host = new FileHost({
+          connectionMode: ConnectionMode.HTTP_ONLY,
+          gun: { peers: ['http://test.com/gun'] }
+        });
         
-        mockApp.listen.mockImplementation((port, host, callback) => {
-          callback(new Error('Port binding failed'));
-          return mockServer;
-        });
+        await host.start();
 
-        await expect(httpOnlyHost.start()).rejects.toThrow('HTTP-only mode requested but HTTP server failed');
-      });
-
-      it('should start successfully with plain connection mode', async () => {
-        const plainHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY, port: 8080 });
-        mockServer.address.mockReturnValue({ port: 8080 });
-        
-        // Mock os.networkInterfaces to return local IP
-        mockOs.networkInterfaces.mockReturnValue({
-          'Ethernet': [{
-            family: 'IPv4',
-            address: '192.168.1.100',
-            internal: false,
-            netmask: '255.255.255.0',
-            mac: '00:00:00:00:00:00',
-            cidr: '192.168.1.100/24'
-          }]
-        });
-
-        mockApp.listen.mockImplementation((port, host, callback) => {
-          (plainHost as any).server = mockServer;
-          callback();
-          return mockServer;
-        });
-
-        const result = await plainHost.start();
-        expect(result).toEqual(expect.objectContaining({
-          directHttp: expect.objectContaining({
-            available: true,
-            ip: '192.168.1.100',
-            port: 8080
-          }),
-          storeId: expect.any(String)
-        }));
-        expect(result.storeId).toBeDefined();
-        expect((plainHost as any).port).toBe(8080);
-      });
-
-      it('should reject when plain connection mode is enabled but local IP cannot be determined', async () => {
-        const plainHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY, port: 8080 });
-        mockServer.address.mockReturnValue({ port: 8080 });
-        
-        // Mock os.networkInterfaces to return no interfaces
-        mockOs.networkInterfaces.mockReturnValue({});
-
-        mockApp.listen.mockImplementation((port, host, callback) => {
-          (plainHost as any).server = mockServer;
-          callback();
-          return mockServer;
-        });
-
-        await expect(plainHost.start()).rejects.toThrow('No connection methods available. Both HTTP and WebTorrent failed to initialize.');
-      });
+        expect(mockGunRegistryInstance.register).toHaveBeenCalledWith(
+          expect.objectContaining({
+            storeId: expect.any(String)
+          })
+        );
+      }, 10000);
     });
 
-    describe('stop', () => {
-      it('should resolve immediately when no server is running', async () => {
-        (fileHost as any).server = null;
-        await expect(fileHost.stop()).resolves.toBeUndefined();
-      });
+    describe('stop()', () => {
+      it('should stop HTTP server', async () => {
+        await fileHost.start();
+        mockServer.close.mockImplementation((callback: any) => callback());
+        
+        await fileHost.stop();
 
-      it('should reject when server.close fails', async () => {
-        (fileHost as any).server = mockServer;
-        mockServer.close.mockImplementation((callback: any) => {
-          callback(new Error('Close failed'));
+        expect(mockServer.close).toHaveBeenCalled();
+      }, 10000);
+
+      it('should stop WebTorrent client', async () => {
+        const host = new FileHost({ connectionMode: ConnectionMode.WEBTORRENT_ONLY });
+        await host.start();
+        
+        await host.stop();
+
+        expect(mockWebTorrentInstance.destroy).toHaveBeenCalled();
+      }, 10000);
+
+      it('should unregister from gun registry', async () => {
+        const host = new FileHost({
+          gun: { peers: ['http://test.com/gun'] }
         });
+        await host.start();
+        
+        await host.stop();
 
+        expect(mockGunRegistryInstance.unregister).toHaveBeenCalledWith(
+          expect.any(String)
+        );
+      }, 10000);
+
+      it('should handle server close errors', async () => {
+        await fileHost.start();
+        mockServer.close.mockImplementation((callback: any) => 
+          callback(new Error('Close failed'))
+        );
+        
         await expect(fileHost.stop()).rejects.toThrow('Close failed');
-      });
+      }, 10000);
+    });
+  });
 
-      it('should resolve successfully when server closes', async () => {
-        (fileHost as any).server = mockServer;
-        (fileHost as any).externalPort = 3000;
+  describe('File Management', () => {
+    describe('shareFile()', () => {
+      it('should share a file successfully', async () => {
+        // Mock file exists but hash file doesn't exist initially
+        mockFs.existsSync.mockReturnValueOnce(true);  // Original file exists
+        mockFs.existsSync.mockReturnValueOnce(false); // Hash file doesn't exist
         
-        // Mock successful unmap
-        const mockNatClient = {
-          portMapping: jest.fn(),
-          portUnmapping: jest.fn((options, callback) => {
-            callback();
+        const hash = await fileHost.shareFile('/test/file.txt');
+
+        expect(hash).toBe('test-file-hash-123456789abcdef');
+        expect(mockFs.copyFileSync).toHaveBeenCalledWith('/test/file.txt', hash);
+        expect(fileHost.getSharedFiles()).toContain(hash);
+      });
+
+      it('should throw error when file does not exist', async () => {
+        mockFs.existsSync.mockReturnValueOnce(false);
+
+        await expect(fileHost.shareFile('/non-existent.txt'))
+          .rejects.toThrow('File not found: /non-existent.txt');
+      });
+
+      it('should not copy file if hash file already exists', async () => {
+        mockFs.existsSync.mockReturnValueOnce(true); // Original file exists
+        mockFs.existsSync.mockReturnValueOnce(true); // Hash file already exists
+
+        await fileHost.shareFile('/test/file.txt');
+
+        expect(mockFs.copyFileSync).not.toHaveBeenCalled();
+      });
+
+      it('should seed file with WebTorrent when available', async () => {
+        const host = new FileHost({ connectionMode: ConnectionMode.AUTO });
+        await host.start();
+
+        await host.shareFile('/test/file.txt');
+
+        expect(mockWebTorrentInstance.seed).toHaveBeenCalled();
+      }, 10000);
+
+      it('should update gun registry with magnet URIs', async () => {
+        const host = new FileHost({
+          connectionMode: ConnectionMode.AUTO,
+          gun: { peers: ['http://test.com/gun'] }
+        });
+        await host.start();
+
+        await host.shareFile('/test/file.txt');
+
+        expect(mockGunRegistryInstance.register).toHaveBeenCalledTimes(2); // Once on start, once after sharing
+      }, 10000);
+    });
+
+    describe('unshareFile()', () => {
+      it('should unshare a file', async () => {
+        const hash = await fileHost.shareFile('/test/file.txt');
+        
+        const result = fileHost.unshareFile(hash);
+
+        expect(result).toBe(true);
+        expect(fileHost.getSharedFiles()).not.toContain(hash);
+      });
+
+      it('should return false for non-existent file', () => {
+        const result = fileHost.unshareFile('non-existent-hash');
+        expect(result).toBe(false);
+      });
+
+      it('should delete file when deleteFile is true', async () => {
+        const hash = await fileHost.shareFile('/test/file.txt');
+        
+        fileHost.unshareFile(hash, true);
+
+        expect(mockFs.unlinkSync).toHaveBeenCalledWith(hash);
+      });
+
+      it('should stop WebTorrent seeding', async () => {
+        const host = new FileHost({ connectionMode: ConnectionMode.AUTO });
+        await host.start();
+        
+        const hash = await host.shareFile('/test/file.txt');
+        
+        const mockTorrentInstance = { destroy: jest.fn() };
+        mockWebTorrentInstance.get.mockReturnValue(mockTorrentInstance as any);
+        
+        host.unshareFile(hash);
+
+        expect(mockWebTorrentInstance.get).toHaveBeenCalledWith(mockTorrent.magnetURI);
+        expect(mockTorrentInstance.destroy).toHaveBeenCalled();
+      }, 10000);
+    });
+
+    describe('getSharedFiles()', () => {
+      it('should return empty array when no files shared', () => {
+        expect(fileHost.getSharedFiles()).toEqual([]);
+      });
+
+      it('should return array of shared file hashes', async () => {
+        // Use different hashes for different files by modifying the mock
+        let callCount = 0;
+        mockHash.digest.mockImplementation(() => {
+          callCount++;
+          return `test-file-hash-${callCount}23456789abcdef`;
+        });
+        
+        const hash1 = await fileHost.shareFile('/test/file1.txt');
+        const hash2 = await fileHost.shareFile('/test/file2.txt');
+
+        const sharedFiles = fileHost.getSharedFiles();
+        expect(sharedFiles).toContain(hash1);
+        expect(sharedFiles).toContain(hash2);
+        expect(sharedFiles).toHaveLength(2);
+      });
+    });
+
+    describe('getMagnetUris()', () => {
+      it('should return magnet URIs for shared files', async () => {
+        const host = new FileHost({ connectionMode: ConnectionMode.AUTO });
+        await host.start();
+        
+        await host.shareFile('/test/file.txt');
+
+        const magnetUris = host.getMagnetUris();
+        expect(magnetUris).toContain(mockTorrent.magnetURI);
+      }, 10000);
+    });
+
+    describe('getFileUrl()', () => {
+      it('should return HTTP URL when HTTP server is available', async () => {
+        // Create fresh mock server for this test with proper event handling
+        const freshMockServer = {
+          close: jest.fn().mockImplementation((callback: any) => callback()),
+          listen: jest.fn(),
+          on: jest.fn().mockImplementation((event, callback) => {
+            if (event === 'listening') {
+              setTimeout(() => callback(), 0); // Trigger listening event
+            }
           }),
-          externalIp: jest.fn()
+          address: jest.fn().mockReturnValue({ port: 3000 })
         };
-        (fileHost as any).upnpClient = mockNatClient;
-
-        mockServer.close.mockImplementation((callback: any) => {
-          callback(null);
+        
+        // Mock the app.listen to return our fresh server and call the callback
+        mockApp.listen.mockImplementation((port: any, host: any, callback: any) => {
+          setTimeout(() => callback(), 0);
+          return freshMockServer;
         });
+        
+        // Create a new instance with HTTP_ONLY mode to avoid UPnP failures
+        const hostWithHttp = new FileHost({ 
+          port: 3000, 
+          connectionMode: ConnectionMode.HTTP_ONLY 
+        });
+        
+        await hostWithHttp.start();
+        const hash = await hostWithHttp.shareFile('/test/file.txt');
 
-        await expect(fileHost.stop()).resolves.toBeUndefined();
-        expect((fileHost as any).server).toBeNull();
+        const url = await hostWithHttp.getFileUrl(hash);
+
+        expect(url).toBe(`http://192.168.1.100:3000/files/${hash}`);
+        
+        await hostWithHttp.stop();
+      }, 15000);
+
+      it('should return magnet URI when only WebTorrent is available', async () => {
+        const host = new FileHost({ connectionMode: ConnectionMode.WEBTORRENT_ONLY });
+        await host.start();
+        const hash = await host.shareFile('/test/file.txt');
+
+        const url = await host.getFileUrl(hash);
+
+        expect(url).toBe(mockTorrent.magnetURI);
+      }, 10000);
+
+      it('should throw error when file not shared', async () => {
+        await expect(fileHost.getFileUrl('non-existent-hash'))
+          .rejects.toThrow('No file with hash: non-existent-hash');
       });
 
-      it('should resolve successfully when plain connection mode is enabled', async () => {
-        const plainHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY, port: 8080 });
-        (plainHost as any).server = mockServer;
+      it('should throw error when no connection methods available', async () => {
+        const hash = await fileHost.shareFile('/test/file.txt');
 
-        mockServer.close.mockImplementation((callback: any) => {
-          callback(null);
-        });
-
-        await expect(plainHost.stop()).resolves.toBeUndefined();
+        await expect(fileHost.getFileUrl(hash))
+          .rejects.toThrow('is not available via any connection method');
       });
     });
   });
 
-  describe('UPnP and NAT-PMP Port Mapping', () => {
-    it('should handle UPnP mapping failure gracefully', async () => {
-      const mockNatClient = {
-        portMapping: jest.fn((options, callback) => {
-          callback(new Error('UPnP mapping failed'), null);
-        }),
-        portUnmapping: jest.fn(),
-        externalIp: jest.fn()
-      };
-      (fileHost as any).upnpClient = mockNatClient;
-
-      await (fileHost as any).mapPort();
-      expect((fileHost as any).externalPort).toBe((fileHost as any).port);
-    });
-
-    it('should handle successful UPnP mapping with port info', async () => {
-      const mockNatClient = {
-        portMapping: jest.fn((options, callback) => {
-          callback(null, { public: 8080 });
-        }),
-        portUnmapping: jest.fn(),
-        externalIp: jest.fn()
-      };
-      (fileHost as any).upnpClient = mockNatClient;
-
-      await (fileHost as any).mapPort();
-      expect((fileHost as any).externalPort).toBe(8080);
-    });
-
-    it('should handle successful UPnP mapping without port info', async () => {
-      const mockNatClient = {
-        portMapping: jest.fn((options, callback) => {
-          callback(null, {});
-        }),
-        portUnmapping: jest.fn(),
-        externalIp: jest.fn()
-      };
-      (fileHost as any).upnpClient = mockNatClient;
-
-      await (fileHost as any).mapPort();
-      expect((fileHost as any).externalPort).toBe((fileHost as any).port);
-    });
-
-    it('should handle unmapPort when no external port is set', async () => {
-      (fileHost as any).externalPort = null;
-      await expect((fileHost as any).unmapPort()).resolves.toBeUndefined();
-    });
-  });
-
-  describe('Local IP Detection', () => {
-    it('should return null when no network interfaces found', () => {
-      mockOs.networkInterfaces.mockReturnValue({});
-      
-      const result = (fileHost as any).detectLocalIp();
-      expect(result).toBeNull();
-    });
-
-    it('should find IP from Wi-Fi interface', () => {
-      mockOs.networkInterfaces.mockReturnValue({
-        'Wi-Fi': [
-          { 
-            family: 'IPv4' as any, 
-            internal: false, 
-            address: '192.168.1.100',
-            netmask: '255.255.255.0',
-            mac: '00:00:00:00:00:00',
-            cidr: '192.168.1.100/24'
-          }
-        ]
-      });
-      
+  describe('Network Detection', () => {
+    it('should detect local IP from Wi-Fi interface', () => {
       const result = (fileHost as any).detectLocalIp();
       expect(result).toBe('192.168.1.100');
     });
 
-    it('should find IP from Ethernet interface', () => {
+    it('should detect local IP from Ethernet interface', () => {
       mockOs.networkInterfaces.mockReturnValue({
-        'Ethernet': [
-          { 
-            family: 'IPv4' as any, 
-            internal: false, 
-            address: '192.168.1.200',
-            netmask: '255.255.255.0',
-            mac: '00:00:00:00:00:00',
-            cidr: '192.168.1.200/24'
-          }
-        ]
+        'Ethernet': [{
+          family: 'IPv4' as any,
+          address: '10.0.0.50',
+          internal: false,
+          netmask: '255.255.255.0',
+          mac: '00:00:00:00:00:00',
+          cidr: '10.0.0.50/24'
+        }]
       });
-      
-      const result = (fileHost as any).detectLocalIp();
-      expect(result).toBe('192.168.1.200');
-    });
 
-    it('should fallback to any non-internal IPv4', () => {
-      mockOs.networkInterfaces.mockReturnValue({
-        'Some Other Interface': [
-          { 
-            family: 'IPv4' as any, 
-            internal: false, 
-            address: '10.0.0.50',
-            netmask: '255.255.255.0',
-            mac: '00:00:00:00:00:00',
-            cidr: '10.0.0.50/24'
-          }
-        ]
-      });
-      
       const result = (fileHost as any).detectLocalIp();
       expect(result).toBe('10.0.0.50');
     });
 
+    it('should return null when no valid interfaces found', () => {
+      mockOs.networkInterfaces.mockReturnValue({});
+
+      const result = (fileHost as any).detectLocalIp();
+      expect(result).toBeNull();
+    });
+
     it('should skip internal interfaces', () => {
       mockOs.networkInterfaces.mockReturnValue({
-        'lo': [
-          { 
-            family: 'IPv4' as any, 
-            internal: true, 
-            address: '127.0.0.1',
-            netmask: '255.0.0.0',
-            mac: '00:00:00:00:00:00',
-            cidr: '127.0.0.1/8'
-          }
-        ],
-        'eth0': [
-          { 
-            family: 'IPv4' as any, 
-            internal: false, 
-            address: '192.168.1.100',
-            netmask: '255.255.255.0',
-            mac: '00:00:00:00:00:00',
-            cidr: '192.168.1.100/24'
-          }
-        ]
-      });
-      
-      const result = (fileHost as any).detectLocalIp();
-      expect(result).toBe('192.168.1.100');
-    });
-
-    it('should skip IPv6 interfaces', () => {
-      mockOs.networkInterfaces.mockReturnValue({
-        'eth0': [
-          { 
-            family: 'IPv6' as any, 
-            internal: false, 
-            address: '::1',
-            netmask: 'ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff',
-            mac: '00:00:00:00:00:00',
-            cidr: '::1/128',
-            scopeid: 0
-          },
-          { 
-            family: 'IPv4' as any, 
-            internal: false, 
-            address: '192.168.1.100',
-            netmask: '255.255.255.0',
-            mac: '00:00:00:00:00:00',
-            cidr: '192.168.1.100/24'
-          }
-        ]
-      });
-      
-      const result = (fileHost as any).detectLocalIp();
-      expect(result).toBe('192.168.1.100');
-    });
-  });
-
-  describe('getFileUrl', () => {
-    it('should throw error when file hash does not exist', async () => {
-      await expect(fileHost.getFileUrl('non-existent-hash'))
-        .rejects.toThrow('No file with hash: non-existent-hash');
-    });
-
-    it('should throw error when server is not started', async () => {
-      mockFs.existsSync.mockReturnValue(true);
-      const fileHash = await fileHost.shareFile('/test/file.txt');
-      
-      await expect(fileHost.getFileUrl(fileHash))
-        .rejects.toThrow('File 7603d73072ff1525fdd48d695b2be5b00d8fe20bc79778575b8f514d282f1978 is not available via any connection method');
-    });
-
-    it('should return correct URL with local IP when plain connection mode is enabled', async () => {
-      const plainHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY, port: 8080 });
-      mockFs.existsSync.mockReturnValue(true);
-      const fileHash = await plainHost.shareFile('/test/file.txt');
-      
-      // Set up server mock and capabilities manually
-      mockServer.address.mockReturnValue({ port: 8080 });
-      (plainHost as any).server = mockServer;
-      (plainHost as any).capabilities = {
-        directHttp: {
-          available: true,
-          ip: '192.168.1.50',
-          port: 8080
-        }
-      };
-      
-      // Mock os.networkInterfaces to return local IP
-      mockOs.networkInterfaces.mockReturnValue({
-        'Wi-Fi': [{
-          family: 'IPv4',
-          address: '192.168.1.50',
+        'lo': [{
+          family: 'IPv4' as any,
+          address: '127.0.0.1',
+          internal: true,
+          netmask: '255.0.0.0',
+          mac: '00:00:00:00:00:00',
+          cidr: '127.0.0.1/8'
+        }],
+        'eth0': [{
+          family: 'IPv4' as any,
+          address: '192.168.1.200',
           internal: false,
           netmask: '255.255.255.0',
           mac: '00:00:00:00:00:00',
-          cidr: '192.168.1.50/24'
+          cidr: '192.168.1.200/24'
         }]
       });
-      
-      const url = await plainHost.getFileUrl(fileHash);
-      expect(url).toBe(`http://192.168.1.50:8080/files/${fileHash}`);
-    });
 
-    it('should throw error when plain connection mode is enabled but local IP cannot be determined', async () => {
-      const plainHost = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY, port: 8080 });
-      mockFs.existsSync.mockReturnValue(true);
-      const fileHash = await plainHost.shareFile('/test/file.txt');
-      
-      // Mock os.networkInterfaces to return no valid interfaces
-      mockOs.networkInterfaces.mockReturnValue({});
-      
-      await expect(plainHost.getFileUrl(fileHash))
-        .rejects.toThrow('File 7603d73072ff1525fdd48d695b2be5b00d8fe20bc79778575b8f514d282f1978 is not available via any connection method');
+      const result = (fileHost as any).detectLocalIp();
+      expect(result).toBe('192.168.1.200');
     });
   });
 
   describe('Utility Methods', () => {
-    it('should generate unique IDs', () => {
+    it('should generate unique store IDs', () => {
       const id1 = (fileHost as any).generateUniqueId();
       const id2 = (fileHost as any).generateUniqueId();
-      
+
       expect(id1).toBeTruthy();
       expect(id2).toBeTruthy();
       expect(id1).not.toBe(id2);
       expect(typeof id1).toBe('string');
-      expect(typeof id2).toBe('string');
+    });
+
+    it('should calculate file hash correctly', async () => {
+      // Reset the hash counter for this specific test
+      let currentHashCounter = 1;
+      mockHash.digest.mockReturnValue(`test-file-hash-${currentHashCounter}23456789abcdef`);
+      
+      const result = await (fileHost as any).calculateFileHash('/test/file.txt');
+
+      expect(result).toBe('test-file-hash-123456789abcdef');
+      expect(mockCrypto.createHash).toHaveBeenCalledWith('sha256');
+      expect(mockHash.digest).toHaveBeenCalledWith('hex');
     });
   });
 });

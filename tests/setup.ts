@@ -23,12 +23,38 @@ jest.mock('webtorrent', () => {
   };
 });
 
-// Mock Gun.js registry
-jest.mock('../src/registry/gun-registry', () => ({
-  GunRegistry: jest.fn().mockImplementation(() => ({
-    connect: jest.fn().mockResolvedValue(undefined),
-    registerHost: jest.fn().mockResolvedValue(undefined),
-    findHosts: jest.fn().mockResolvedValue([]),
-    disconnect: jest.fn().mockResolvedValue(undefined)
-  }))
+// Mock Gun.js module 
+jest.mock('gun', () => {
+  const mockGunChain = {
+    get: jest.fn(),
+    put: jest.fn(),
+    once: jest.fn(),
+    on: jest.fn(),
+  };
+
+  const mockGun = jest.fn().mockReturnValue(mockGunChain);
+  
+  return {
+    default: mockGun,
+    __esModule: true
+  };
+});
+
+// Mock public-ip module to avoid ES module import issues
+jest.mock('public-ip', () => ({
+  publicIpv4: jest.fn().mockResolvedValue('192.168.1.100'),
+  publicIpv6: jest.fn().mockResolvedValue('::1'),
+  __esModule: true
 }));
+
+// Mock nat-upnp module
+jest.mock('nat-upnp', () => ({
+  createClient: jest.fn().mockReturnValue({
+    portMapping: jest.fn(),
+    externalIp: jest.fn(),
+    getMappings: jest.fn(),
+    destroy: jest.fn()
+  }),
+  __esModule: true
+}));
+

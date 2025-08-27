@@ -66,58 +66,103 @@ The example will:
 
 ## Usage
 
-### Hosting Files
+### Hosting Files with Gun.js Registry
 
 ```typescript
-import { FileHost } from 'dig-nat-tools';
+import { FileHost, ConnectionMode } from 'dig-nat-tools';
 
-// Create a file host instance
+// Create a file host with Gun.js peer discovery
 const host = new FileHost({ 
-  port: 30780,  // Optional: specific port to use
-  ttl: 3600    // Optional: time to live for UPnP mapping (in seconds)
+  port: 30780,
+  connectionMode: ConnectionMode.AUTO, // Try HTTP first, then WebTorrent
+  storeId: 'my-unique-host-id',
+  gun: {
+    peers: ['http://nostalgiagame.go.ro:30876/gun'], // Your Gun.js relay
+    namespace: 'my-app-namespace'
+  }
 });
 
 // Start the server
 async function startServer() {
   try {
-    // Start the host and get external access info
-    const { externalIp, port } = await host.start();
-    console.log(`Server running at http://${externalIp}:${port}`);
+    // Start the host and register with Gun.js
+    const capabilities = await host.start();
+    console.log('Host capabilities:', capabilities);
     
     // Share a file and get its SHA256 hash
     const fileHash = await host.shareFile('/path/to/your/file.pdf');
-    console.log(`File hash: ${fileHash}`); // 64-character hexadecimal string
+    console.log(`File hash: ${fileHash}`);
     
-    // Get the public URL for the file
-    // URL format: http://{host}:{port}/files/{sha256-hash}
+    // Get URLs (HTTP and/or WebTorrent magnet URI)
     const fileUrl = await host.getFileUrl(fileHash);
     console.log(`File available at: ${fileUrl}`);
-    // Example URL: http://203.0.113.1:30780/files/a1b2c3d4e5f6...
     
-    // You can share this URL with others who want to download your file
-    // The file path in the URL is the SHA256 hash of the file content
     return fileUrl;
   } catch (error) {
     console.error('Failed to start server:', error);
   }
 }
+```
 
-// Stop sharing when done
-async function stopSharing() {
-  // Remove files from sharing (but keep hash-named files)
-  const sharedFiles = host.getSharedFiles();
-  sharedFiles.forEach(hash => {
-    host.unshareFile(hash); // Only removes from tracking
-  });
-  
-  // Or remove files and delete hash-named files
-  sharedFiles.forEach(hash => {
-    host.unshareFile(hash, true); // Removes from tracking AND deletes the hash-named file
-  });
-  
-  await host.stop();
-  console.log('Server stopped');
+### Discovering and Downloading from Peers
+
+```typescript
+import { FileClient } from 'dig-nat-tools';
+
+// Create a client that discovers hosts via Gun.js
+const client = new FileClient({
+  peers: ['http://nostalgiagame.go.ro:30876/gun'], // Same Gun.js relay
+  namespace: 'my-app-namespace',
+  timeout: 30000
+});
+
+async function discoverAndDownload() {
+  try {
+    // Find available peers in the Gun.js registry
+    const peers = await client.findAvailablePeers();
+    console.log(`Found ${peers.length} peers`);
+    
+    // Download from a specific peer by store ID and file hash
+    const storeId = 'my-unique-host-id';
+    const fileHash = 'sha256-hash-of-file';
+    
+    const fileBuffer = await client.downloadFile(storeId, fileHash);
+    console.log(`Downloaded ${fileBuffer.length} bytes`);
+    
+    // Client automatically chooses best connection method:
+    // 1. Direct HTTP (fastest)
+    // 2. WebTorrent (P2P fallback)
+    
+  } catch (error) {
+    console.error('Download failed:', error);
+  } finally {
+    await client.destroy(); // Clean up WebTorrent resources
+  }
 }
+```
+
+### Connection Modes
+
+```typescript
+import { ConnectionMode } from 'dig-nat-tools';
+
+// AUTO: Try Direct HTTP first, then WebTorrent (recommended)
+const autoHost = new FileHost({ 
+  connectionMode: ConnectionMode.AUTO,
+  gun: { peers: ['http://nostalgiagame.go.ro:30876/gun'] }
+});
+
+// HTTP_ONLY: Direct HTTP connections only
+const httpHost = new FileHost({ 
+  connectionMode: ConnectionMode.HTTP_ONLY,
+  gun: { peers: ['http://nostalgiagame.go.ro:30876/gun'] }
+});
+
+// WEBTORRENT_ONLY: WebTorrent P2P only
+const p2pHost = new FileHost({ 
+  connectionMode: ConnectionMode.WEBTORRENT_ONLY,
+  gun: { peers: ['http://nostalgiagame.go.ro:30876/gun'] }
+});
 ```
 
 ### File Identification with SHA256 Hashes
@@ -244,13 +289,60 @@ async function checkServer(baseUrl: string) {
 
 You can run a Gun.js relay server using the included `relay.ts` file. This enables decentralized, real-time data sync for your P2P applications.
 
-#### Usage
+#### Local Development
 
 ```bash
-npx ts-node relay.ts
+npx ts-node src/relay.ts
 ```
 
-Your Gun.js clients can connect to `http://localhost:8765/gun`.
+Your Gun.js clients can connect to `http://localhost:8765/gun` for local development.
+
+**Production Relay**: A public relay is available at `http://nostalgiagame.go.ro:30876/gun` for testing and development.
+
+#### Docker Deployment
+
+The relay includes UPnP support for automatic port forwarding and can be deployed as a Docker container.
+
+**Build Docker Image:**
+```bash
+# Build the project first
+npm run build
+
+# Build Docker image
+docker build -f Dockerfile.relay -t your-registry/gun-relay:latest .
+
+# Push to registry
+docker push your-registry/gun-relay:latest
+```
+
+**Environment Variables:**
+- `PORT`: Server port (default: 8765)
+- `UPNP_ENABLED`: Enable UPnP port forwarding (default: true)
+- `UPNP_TTL`: UPnP mapping TTL in seconds (default: 7200)
+- `NODE_ENV`: Node environment (default: production)
+
+**Docker Run Example:**
+```bash
+docker run -d \
+  --name gun-relay \
+  -p 8765:8765 \
+  -e UPNP_ENABLED=true \
+  -e UPNP_TTL=7200 \
+  your-registry/gun-relay:latest
+```
+
+The relay automatically:
+- ✅ Maps the specified port via UPnP when starting
+- ✅ Removes the port mapping on graceful shutdown  
+- ✅ Handles SIGTERM, SIGINT signals properly
+- ✅ Provides health check endpoints at `/health`
+
+**Features:**
+- **UPnP Port Forwarding**: Automatically opens/closes ports on router
+- **Graceful Shutdown**: Properly cleans up UPnP mappings
+- **Health Checks**: Built-in health endpoints for monitoring
+- **Security**: Runs as non-root user in container
+- **Persistent Storage**: Gun.js data persisted in `/app/gun-data`
 
 ---
 
@@ -268,31 +360,60 @@ import { FileHost, ConnectionMode } from 'dig-nat-tools';
 new FileHost(options?: {
   port?: number;                    // Port to use (default: random available port)
   ttl?: number;                     // Time to live for port mapping in seconds (default: 3600)
-  connectionMode?: ConnectionMode;  // Connection mode for NAT traversal (default: ConnectionMode.UPNP)
+  connectionMode?: ConnectionMode;  // Connection mode (default: ConnectionMode.AUTO)
+  storeId?: string;                 // Unique identifier for Gun.js registry
+  gun?: {
+    peers: string[];                // Gun.js peer URLs (e.g., ['http://nostalgiagame.go.ro:30876/gun'])
+    namespace?: string;             // Registry namespace (default: 'dig-nat-tools')
+  };
 })
 
 enum ConnectionMode {
-  UPNP = 'upnp',      // Use UPnP for port forwarding
-  PLAIN = 'plain'     // Skip NAT traversal, use local IP only
+  AUTO = 'auto',                    // Try HTTP first, then WebTorrent
+  HTTP_ONLY = 'http',              // Only HTTP (manual port forwarding required)
+  WEBTORRENT_ONLY = 'webtorrent'   // Only WebTorrent P2P
 }
 ```
 
 #### Methods
 
-- `start(): Promise<{ externalIp: string, port: number }>` - Starts the file hosting server
-- `stop(): Promise<void>` - Stops the file hosting server
+- `start(): Promise<HostCapabilities>` - Starts the file hosting server and registers with Gun.js
+- `stop(): Promise<void>` - Stops the file hosting server and unregisters from Gun.js
 - `shareFile(filePath: string): Promise<string>` - Shares a file and returns its SHA256 hash (64-character hex string)
 - `unshareFile(hash: string, deleteFile?: boolean): boolean` - Removes a shared file from tracking, optionally deletes the hash-named file
 - `getSharedFiles(): string[]` - Gets a list of shared file hashes
 - `getFileUrl(hash: string): Promise<string>` - Gets the public URL for a shared file using its SHA256 hash
+- `getMagnetUris(): string[]` - Gets WebTorrent magnet URIs for shared files
 
 ### FileClient
 
-#### Methods (Static)
+#### Constructor
 
+```typescript
+import { FileClient } from 'dig-nat-tools';
+
+new FileClient(options?: {
+  peers?: string[];        // Gun.js peer URLs (default: ['http://nostalgiagame.go.ro:30876/gun'])
+  namespace?: string;      // Gun.js namespace (default: 'dig-nat-tools')
+  timeout?: number;        // Download timeout (default: 30000)
+})
+```
+
+#### Methods
+
+- `downloadFile(storeId: string, fileHash: string, options?: DownloadOptions): Promise<Buffer>` - Download from a specific peer
 - `downloadAsBuffer(url: string, options?: DownloadOptions): Promise<Buffer>` - Downloads a file as a buffer
 - `downloadAsStream(url: string, options?: DownloadOptions): Promise<Readable>` - Downloads a file as a readable stream
 - `isServerOnline(baseUrl: string): Promise<boolean>` - Checks if a server is online
+- `findAvailablePeers(): Promise<HostCapabilities[]>` - Find all available peers in Gun.js registry
+- `checkPeerCapabilities(storeId: string): Promise<HostCapabilities | null>` - Check capabilities of a specific peer
+- `destroy(): Promise<void>` - Clean up WebTorrent resources
+
+#### Static Methods
+
+- `downloadAsBufferStatic(url: string, options?: DownloadOptions): Promise<Buffer>` - Downloads a file as a buffer (static)
+- `downloadAsStreamStatic(url: string, options?: DownloadOptions): Promise<Readable>` - Downloads a file as a readable stream (static)
+- `isServerOnlineStatic(baseUrl: string): Promise<boolean>` - Checks if a server is online (static)
 
 #### Download Options
 
@@ -301,36 +422,72 @@ interface DownloadOptions {
   timeout?: number;  // Timeout in milliseconds (default: 30000)
   onProgress?: (downloaded: number, total: number) => void;  // Progress callback
 }
+
+interface HostCapabilities {
+  storeId: string;
+  directHttp?: {
+    available: boolean;
+    ip: string;
+    port: number;
+  };
+  webTorrent?: {
+    available: boolean;
+    magnetUris?: string[];  // Magnet URIs for shared files
+  };
+  externalIp?: string;      // Legacy field
+  port?: number;            // Legacy field
+  lastSeen?: number;        // Timestamp when last seen in registry
+}
 ```
 
-## NAT Traversal Protocol
+## Connection Methods
 
-This package uses UPnP (Universal Plug and Play) for NAT traversal:
+This package supports multiple connection methods for peer-to-peer file sharing:
 
-### UPnP (Universal Plug and Play) - Default
-- **Widely Supported**: Works with most consumer routers
-- **Automatic Discovery**: Finds compatible devices automatically
-- **Mature Protocol**: Well-established standard
+### AUTO Mode (Recommended)
+- **Intelligent Fallback**: Tries Direct HTTP first, then WebTorrent
+- **Best Performance**: Direct HTTP provides fastest transfers
+- **P2P Backup**: WebTorrent ensures connectivity when direct connections fail
+- **UPnP Support**: Automatically handles port forwarding when possible
 
-### Local Network Only (Skip NAT Traversal)
-- **Manual Setup**: For when ports are already manually forwarded
-- **Local Networks**: For use within the same network/LAN only
-- **Fastest Start**: No protocol negotiation, immediate server start
-- **Pre-configured**: When you've already set up port forwarding manually
+### HTTP_ONLY Mode
+- **Direct Connections**: HTTP-only file transfers
+- **Manual Setup**: Requires manual port forwarding or same network
+- **Fastest Speed**: No P2P overhead
+- **Simple Protocol**: Standard HTTP file serving
 
-### Protocol Selection
+### WEBTORRENT_ONLY Mode
+- **Pure P2P**: WebTorrent-based file sharing
+- **NAT Traversal**: Works through firewalls and NATs
+- **Browser Compatible**: Can connect to web-based clients
+- **Distributed**: No central server required
+
+### Connection Method Selection
 
 ```typescript
 import { FileHost, ConnectionMode } from 'dig-nat-tools';
 
-// Use UPnP (default)
-const host = new FileHost({ port: 3000 });
-// or explicitly:
-const host = new FileHost({ port: 3000, connectionMode: ConnectionMode.UPNP });
+// AUTO: Try HTTP first, then WebTorrent (recommended)
+const host = new FileHost({ 
+  connectionMode: ConnectionMode.AUTO,
+  gun: { peers: ['http://nostalgiagame.go.ro:30876/gun'] }
+});
 
-// Plain connection (local network only)
-const host = new FileHost({ port: 3000, connectionMode: ConnectionMode.PLAIN });
+// HTTP only: Direct connections
+const httpHost = new FileHost({ 
+  connectionMode: ConnectionMode.HTTP_ONLY 
+});
+
+// WebTorrent only: Pure P2P
+const p2pHost = new FileHost({ 
+  connectionMode: ConnectionMode.WEBTORRENT_ONLY 
+});
 ```
+
+### UPnP (Universal Plug and Play)
+- **Automatic Port Forwarding**: Works with most consumer routers
+- **Relay Server Support**: Gun.js relay includes UPnP for Docker/Kubernetes deployment
+- **Graceful Cleanup**: Automatically removes port mappings on shutdown
 
 ## Troubleshooting
 
@@ -346,7 +503,362 @@ const host = new FileHost({ port: 3000, connectionMode: ConnectionMode.PLAIN });
 2. **Router UPnP**: Check router settings to enable UPnP/IGD
 3. **Port Conflicts**: Use a different port if the default port is in use
 
-## Requirements
+## Running the Client
 
-- Node.js 14 or newer
-- Router with UPnP support for NAT traversal (widely supported on consumer routers)
+### Test Client Example
+
+The package includes a test client that demonstrates peer discovery and file downloading:
+
+#### 1. Build the Project
+
+```bash
+npm install
+npm run build
+```
+
+#### 2. Run the Test Client
+
+```bash
+node .\examples\test-client.js
+```
+
+**What the test client does:**
+- Connects to the Gun.js relay for peer discovery
+- Searches for available peers in the registry
+- Displays peer capabilities (HTTP, WebTorrent)
+- Attempts to download files from discovered peers
+- Shows detailed logging of the discovery process
+
+**Example Output:**
+```
+🔍 Starting test client...
+🔗 Connecting to Gun.js relay at http://nostalgiagame.go.ro:30876/gun...
+📡 Using namespace: dig-nat-tools-test
+🔄 Searching for available peers...
+📊 Search completed. Found 2 peer(s)
+🎯 Peer details: [
+  {
+    storeId: 'test-host-1',
+    directHttp: true,
+    webTorrent: true,
+    lastSeen: '3:45:22 PM'
+  }
+]
+✅ Successfully connected to peer via Gun.js!
+```
+
+#### 3. Configuration Options
+
+You can modify the test client configuration:
+
+```javascript
+// In examples/test-client.js
+const client = new FileClient({
+  peers: ['http://nostalgiagame.go.ro:30876/gun'], // Gun.js relay URL
+  namespace: 'dig-nat-tools-test',                 // Registry namespace
+  timeout: 30000                                   // 30 second timeout
+});
+```
+
+**Custom relay:** Replace with your own Gun.js relay URL
+**Namespace:** Use different namespaces to separate different applications
+**Timeout:** Adjust based on network conditions
+
+### Custom Client Implementation
+
+#### Basic Peer Discovery
+
+```javascript
+const { FileClient } = require('dig-nat-tools');
+
+async function discoverPeers() {
+  const client = new FileClient({
+    peers: ['http://nostalgiagame.go.ro:30876/gun'],
+    namespace: 'my-app',
+    timeout: 30000
+  });
+
+  try {
+    // Find all available peers
+    const peers = await client.findAvailablePeers();
+    console.log(`Found ${peers.length} peers:`);
+    
+    peers.forEach(peer => {
+      console.log(`- ${peer.storeId}`);
+      console.log(`  HTTP: ${peer.directHttp?.available || false}`);
+      console.log(`  WebTorrent: ${peer.webTorrent?.available || false}`);
+      console.log(`  Last seen: ${new Date(peer.lastSeen).toLocaleString()}`);
+    });
+    
+    return peers;
+  } catch (error) {
+    console.error('Discovery failed:', error);
+    return [];
+  } finally {
+    await client.destroy();
+  }
+}
+
+discoverPeers();
+```
+
+#### Download Files from Specific Peer
+
+```javascript
+const { FileClient } = require('dig-nat-tools');
+const fs = require('fs');
+
+async function downloadFromPeer() {
+  const client = new FileClient({
+    peers: ['http://nostalgiagame.go.ro:30876/gun'],
+    namespace: 'my-app'
+  });
+
+  try {
+    // Check specific peer capabilities
+    const storeId = 'target-host-id';
+    const capabilities = await client.checkPeerCapabilities(storeId);
+    
+    if (capabilities) {
+      console.log('Peer found:', capabilities);
+      
+      // Download a specific file by its SHA256 hash
+      const fileHash = 'a1b2c3d4e5f6...'; // SHA256 hash of the file
+      const fileBuffer = await client.downloadFile(storeId, fileHash, {
+        timeout: 60000,
+        onProgress: (downloaded, total) => {
+          const percent = Math.round((downloaded / total) * 100);
+          console.log(`Download progress: ${percent}%`);
+        }
+      });
+      
+      // Save the downloaded file
+      fs.writeFileSync(`downloaded-${fileHash.substring(0, 8)}.bin`, fileBuffer);
+      console.log(`Downloaded ${fileBuffer.length} bytes`);
+      
+    } else {
+      console.log('Peer not found or offline');
+    }
+    
+  } catch (error) {
+    console.error('Download failed:', error);
+  } finally {
+    await client.destroy();
+  }
+}
+
+downloadFromPeer();
+```
+
+#### Monitor Peer Registry in Real-time
+
+```javascript
+const { FileClient } = require('dig-nat-tools');
+
+async function monitorPeers() {
+  const client = new FileClient({
+    peers: ['http://nostalgiagame.go.ro:30876/gun'],
+    namespace: 'my-app'
+  });
+
+  // Check for peers every 30 seconds
+  setInterval(async () => {
+    try {
+      const peers = await client.findAvailablePeers();
+      console.log(`\n[${new Date().toLocaleTimeString()}] Active peers: ${peers.length}`);
+      
+      peers.forEach(peer => {
+        const lastSeen = new Date(peer.lastSeen).toLocaleTimeString();
+        console.log(`  📡 ${peer.storeId} (last seen: ${lastSeen})`);
+      });
+      
+    } catch (error) {
+      console.error('Monitoring error:', error);
+    }
+  }, 30000);
+
+  // Keep the process running
+  console.log('🔍 Monitoring peers... Press Ctrl+C to stop');
+  process.on('SIGINT', async () => {
+    console.log('\n🛑 Stopping monitor...');
+    await client.destroy();
+    process.exit(0);
+  });
+}
+
+monitorPeers();
+```
+
+### TypeScript Client Example
+
+```typescript
+import { FileClient, HostCapabilities } from 'dig-nat-tools';
+import * as fs from 'fs';
+
+class P2PFileManager {
+  private client: FileClient;
+
+  constructor(relayUrl: string, namespace: string) {
+    this.client = new FileClient({
+      peers: [relayUrl],
+      namespace: namespace,
+      timeout: 45000
+    });
+  }
+
+  async searchAndDownload(targetStoreId: string, fileHash: string): Promise<boolean> {
+    try {
+      // First, check if the specific peer is available
+      const peer = await this.client.checkPeerCapabilities(targetStoreId);
+      
+      if (!peer) {
+        console.log(`❌ Peer ${targetStoreId} not found`);
+        return false;
+      }
+
+      console.log(`✅ Found peer ${targetStoreId}`);
+      console.log(`   HTTP available: ${peer.directHttp?.available || false}`);
+      console.log(`   WebTorrent available: ${peer.webTorrent?.available || false}`);
+
+      // Download the file
+      const fileData = await this.client.downloadFile(targetStoreId, fileHash, {
+        onProgress: (downloaded, total) => {
+          const percent = Math.round((downloaded / total) * 100);
+          process.stdout.write(`\r📥 Downloading: ${percent}%`);
+        }
+      });
+
+      console.log(`\n✅ Download complete: ${fileData.length} bytes`);
+
+      // Save to disk
+      const filename = `downloaded-${fileHash.substring(0, 12)}.bin`;
+      fs.writeFileSync(filename, fileData);
+      console.log(`💾 Saved as: ${filename}`);
+
+      return true;
+
+    } catch (error) {
+      console.error('❌ Download failed:', error);
+      return false;
+    }
+  }
+
+  async listAllPeers(): Promise<HostCapabilities[]> {
+    try {
+      const peers = await this.client.findAvailablePeers();
+      
+      console.log(`\n📋 Found ${peers.length} active peers:`);
+      peers.forEach((peer, index) => {
+        console.log(`\n${index + 1}. Store ID: ${peer.storeId}`);
+        console.log(`   Last seen: ${new Date(peer.lastSeen || 0).toLocaleString()}`);
+        console.log(`   Capabilities:`);
+        console.log(`     - Direct HTTP: ${peer.directHttp?.available || false}`);
+        if (peer.directHttp?.available) {
+          console.log(`       IP: ${peer.directHttp.ip}:${peer.directHttp.port}`);
+        }
+        console.log(`     - WebTorrent: ${peer.webTorrent?.available || false}`);
+        if (peer.webTorrent?.available && peer.webTorrent.magnetUris?.length) {
+          console.log(`       Files: ${peer.webTorrent.magnetUris.length} available`);
+        }
+      });
+
+      return peers;
+
+    } catch (error) {
+      console.error('❌ Failed to list peers:', error);
+      return [];
+    }
+  }
+
+  async cleanup(): Promise<void> {
+    await this.client.destroy();
+  }
+}
+
+// Usage example
+async function main() {
+  const manager = new P2PFileManager(
+    'http://nostalgiagame.go.ro:30876/gun',
+    'my-application'
+  );
+
+  try {
+    // List all available peers
+    await manager.listAllPeers();
+
+    // Download a specific file
+    const success = await manager.searchAndDownload(
+      'target-peer-id',
+      'sha256-hash-of-file'
+    );
+
+    if (success) {
+      console.log('🎉 File downloaded successfully!');
+    }
+
+  } finally {
+    await manager.cleanup();
+  }
+}
+
+main().catch(console.error);
+```
+
+### Client Troubleshooting
+
+#### Common Issues
+
+**No peers found:**
+```bash
+❌ No peers found. Possible issues:
+   1. Host is not running
+   2. Host failed to register with Gun.js relay
+   3. Gun.js relay is not accessible
+   4. Namespace mismatch between host and client
+   5. Timing issue - try waiting longer after starting host
+```
+
+**Solutions:**
+1. **Check relay connectivity:** Verify the Gun.js relay URL is accessible
+2. **Verify namespace:** Ensure client and host use the same namespace
+3. **Wait for registration:** Hosts may take a few seconds to appear in the registry
+4. **Check network:** Ensure firewall/proxy isn't blocking connections
+
+**Timeout issues:**
+```javascript
+// Increase timeouts for slow networks
+const client = new FileClient({
+  peers: ['http://your-relay.com/gun'],
+  namespace: 'your-app',
+  timeout: 60000  // 60 seconds instead of default 30
+});
+```
+
+**Connection method selection:**
+```javascript
+// If direct HTTP fails, the client automatically tries WebTorrent
+// You can check which method was used in the logs
+const fileData = await client.downloadFile(storeId, fileHash);
+// Look for logs like:
+// "🌐 Attempting direct HTTP download..."
+// "🧲 Falling back to WebTorrent download..."
+```
+
+### Debug Mode
+
+Enable verbose logging by setting the DEBUG environment variable:
+
+```bash
+# Windows
+set DEBUG=dig-nat-tools:*
+node .\examples\test-client.js
+
+# Linux/Mac
+DEBUG=dig-nat-tools:* node ./examples/test-client.js
+```
+
+This will show detailed information about:
+- Gun.js connection status
+- Peer discovery process
+- Download attempts and fallbacks
+- Network timeouts and retries
