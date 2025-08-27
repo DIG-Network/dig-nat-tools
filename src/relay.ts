@@ -111,6 +111,13 @@ async function startRelay(): Promise<void> {
   console.log(`🔧 UPnP enabled: ${UPNP_ENABLED}`);
   console.log('🔗 WebRTC enabled with mesh networking for peer-to-peer connections');
   console.log('📊 This relay serves as discovery point only - data flows peer-to-peer');
+  console.log('📝 Logging enabled for:');
+  console.log('   • TCP connections and disconnections');
+  console.log('   • Gun.js peer connections (hi/bye events)');
+  console.log('   • HTTP requests to /gun endpoints');
+  console.log('   • Data write/update operations');
+  console.log('   • Host registrations and unregistrations');
+  console.log('   • Data changes in dig-nat-tools and dig-nat-tools-test namespaces');
   if (UPNP_ENABLED) {
     console.log(`⏰ UPnP TTL: ${UPNP_TTL} seconds`);
   }
@@ -129,7 +136,8 @@ async function startRelay(): Promise<void> {
   });
 
   // Gun relay setup with WebRTC and mesh networking support
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  console.log('🔧 Initializing Gun.js database with WebRTC support...');
+  
   const gun = Gun({
     web: server,
     radisk: true, // persistent storage
@@ -144,6 +152,121 @@ async function startRelay(): Promise<void> {
     },
     localStorage: false // Relay doesn't need local storage
   });
+
+  // Add connection logging
+  server.on('connection', (socket) => {
+    const clientAddress = socket.remoteAddress;
+    const clientPort = socket.remotePort;
+    console.log(`🔌 New TCP connection from ${clientAddress}:${clientPort}`);
+    
+    socket.on('close', () => {
+      console.log(`🔌 TCP connection closed from ${clientAddress}:${clientPort}`);
+    });
+    
+    socket.on('error', (error) => {
+      console.log(`❌ TCP connection error from ${clientAddress}:${clientPort}:`, error.message);
+    });
+  });
+
+  // Monitor Gun.js events for data operations
+  gun.on('hi', (peer: { id?: string; url?: string }) => {
+    console.log(`🤝 New Gun.js peer connected:`, {
+      id: peer.id || 'unknown',
+      url: peer.url || 'unknown'
+    });
+  });
+
+  gun.on('bye', (peer: { id?: string; url?: string }) => {
+    console.log(`👋 Gun.js peer disconnected:`, {
+      id: peer.id || 'unknown',
+      url: peer.url || 'unknown'
+    });
+  });
+
+  // Add middleware to log HTTP requests to Gun endpoints
+  app.use('/gun', (req, res, next) => {
+    const timestamp = new Date().toISOString();
+    const clientIp = req.ip || req.connection.remoteAddress || 'unknown';
+    console.log(`📡 [${timestamp}] Gun.js HTTP request: ${req.method} ${req.url} from ${clientIp}`);
+    
+    // Log request body for POST/PUT requests (data writes)
+    if ((req.method === 'POST' || req.method === 'PUT') && req.body) {
+      try {
+        const bodyStr = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+        if (bodyStr.length > 200) {
+          console.log(`📝 Data write operation (${bodyStr.length} chars): ${bodyStr.substring(0, 200)}...`);
+        } else {
+          console.log(`📝 Data write operation:`, bodyStr);
+        }
+      } catch {
+        console.log(`📝 Data write operation (could not parse body)`);
+      }
+    }
+    
+    next();
+  });
+
+  // Monitor data changes with Gun.js map/on
+  console.log('🔍 Setting up data monitoring...');
+  
+  // Monitor all data changes in the registry
+  gun.get('dig-nat-tools').map().on((data: Record<string, unknown> | null, key: string) => {
+    if (data && key) {
+      const timestamp = new Date().toISOString();
+      console.log(`📊 [${timestamp}] Data updated in 'dig-nat-tools':`, {
+        key: key,
+        hasData: !!data,
+        dataKeys: data ? Object.keys(data).filter(k => k !== '_') : []
+      });
+    }
+  });
+
+  // Monitor test namespace as well
+  gun.get('dig-nat-tools-test').map().on((data: Record<string, unknown> | null, key: string) => {
+    if (data && key) {
+      const timestamp = new Date().toISOString();
+      console.log(`📊 [${timestamp}] Data updated in 'dig-nat-tools-test':`, {
+        key: key,
+        hasData: !!data,
+        dataKeys: data ? Object.keys(data).filter(k => k !== '_') : []
+      });
+    }
+  });
+
+  // Monitor host registrations specifically
+  gun.get('dig-nat-tools').get('hosts').map().on((data: Record<string, unknown> | null, key: string) => {
+    if (data && key) {
+      const timestamp = new Date().toISOString();
+      if (data === null || data === undefined) {
+        console.log(`🗑️ [${timestamp}] Host unregistered: ${key}`);
+      } else {
+        console.log(`🏠 [${timestamp}] Host registered/updated: ${key}`, {
+          storeId: data.storeId || 'unknown',
+          lastSeen: data.lastSeen ? new Date(data.lastSeen as number).toLocaleString() : 'unknown',
+          directHttp: data.directHttp_available || false,
+          webTorrent: data.webTorrent_available || false
+        });
+      }
+    }
+  });
+
+  gun.get('dig-nat-tools-test').get('hosts').map().on((data: Record<string, unknown> | null, key: string) => {
+    if (data && key) {
+      const timestamp = new Date().toISOString();
+      if (data === null || data === undefined) {
+        console.log(`🗑️ [${timestamp}] Test host unregistered: ${key}`);
+      } else {
+        console.log(`🏠 [${timestamp}] Test host registered/updated: ${key}`, {
+          storeId: data.storeId || 'unknown',
+          lastSeen: data.lastSeen ? new Date(data.lastSeen as number).toLocaleString() : 'unknown',
+          directHttp: data.directHttp_available || false,
+          webTorrent: data.webTorrent_available || false
+        });
+      }
+    }
+  });
+
+  console.log('✅ Gun.js database initialized with comprehensive logging');
 
   app.get('/', (req, res) => {
     res.json({
