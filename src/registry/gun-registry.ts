@@ -1,4 +1,5 @@
 import Gun from "gun";
+import "gun/lib/webrtc.js";
 import { HostCapabilities } from "../interfaces";
 
 export interface GunRegistryOptions {
@@ -15,6 +16,17 @@ export interface GunRegistryOptions {
    * giving the network a moment to propagate deletes. Defaults to 150ms.
    */
   overrideDelayMs?: number;
+  /**
+   * WebRTC configuration for peer-to-peer connections
+   * When enabled, mesh networking is automatic
+   */
+  webrtc?: {
+    iceServers?: Array<{ urls: string | string[] }>;
+  };
+  /**
+   * Enable local storage for offline capabilities
+   */
+  localStorage?: boolean;
 }
 
 interface GunInstance {
@@ -39,6 +51,14 @@ export class GunRegistry {
       namespace: options.namespace || "dig-nat-tools",
       forceOverride: options.forceOverride ?? true,
       overrideDelayMs: options.overrideDelayMs ?? 150,
+      webrtc: options.webrtc || {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' }
+        ]
+      },
+      localStorage: options.localStorage ?? true,
     };
 
     this.initializeGun();
@@ -46,9 +66,16 @@ export class GunRegistry {
 
   private initializeGun(): void {
     try {
-      this.gun = Gun(this.options.peers);
+      this.gun = Gun({
+        peers: this.options.peers,
+        rtc: this.options.webrtc, // Enable WebRTC with ICE servers
+        localStorage: this.options.localStorage // Enable local storage for offline capabilities
+      });
       this.isGunAvailable = true;
-      console.log("Gun.js registry initialized");
+      console.log("Gun.js registry initialized with WebRTC and mesh networking");
+      console.log(`🔧 WebRTC enabled with ${this.options.webrtc?.iceServers?.length || 0} ICE servers`);
+      console.log(`🔧 Mesh networking: enabled (automatic with WebRTC)`);
+      console.log(`🔧 Local storage: ${this.options.localStorage ? 'enabled' : 'disabled'}`);
     } catch {
       console.warn("Gun.js not available, peer discovery will not work");
       this.isGunAvailable = false;
@@ -119,21 +146,6 @@ export class GunRegistry {
       hostRef.put(flatEntry);
 
       console.log(`✅ [GunRegistry] Successfully registered host ${capabilities.storeId} in Gun.js registry`);
-      
-      // Add a verification step
-      setTimeout(() => {
-        console.log(`🔍 [GunRegistry] Verifying registration for ${capabilities.storeId}...`);
-        this.gun!.get(this.options.namespace!)
-          .get("hosts")
-          .get(capabilities.storeId)
-          .once((data: Record<string, unknown>) => {
-            if (data && data.storeId) {
-              console.log(`✅ [GunRegistry] Registration verified for ${capabilities.storeId}`);
-            } else {
-              console.log(`❌ [GunRegistry] Registration verification failed for ${capabilities.storeId}`);
-            }
-          });
-      }, 1000);
       
     } catch (error) {
       console.error(`❌ [GunRegistry] Registration failed for ${capabilities.storeId}:`, error);

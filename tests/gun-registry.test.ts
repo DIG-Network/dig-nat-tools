@@ -63,7 +63,17 @@ describe('GunRegistry', () => {
   describe('constructor', () => {
     it('should initialize with default options', () => {
       registry = new GunRegistry();
-      expect(mockGun).toHaveBeenCalledWith(["http://nostalgiagame.go.ro:30876/gun"]);
+      expect(mockGun).toHaveBeenCalledWith({
+        peers: ["http://nostalgiagame.go.ro:30876/gun"],
+        rtc: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' }
+          ]
+        },
+        localStorage: true
+      });
       expect(registry.isAvailable()).toBe(true);
     });
 
@@ -76,7 +86,40 @@ describe('GunRegistry', () => {
       };
       
       registry = new GunRegistry(options);
-      expect(mockGun).toHaveBeenCalledWith(['http://test-peer.com:8080/gun']);
+      expect(mockGun).toHaveBeenCalledWith({
+        peers: ['http://test-peer.com:8080/gun'],
+        rtc: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' }
+          ]
+        },
+        localStorage: true
+      });
+    });
+
+    it('should initialize with custom WebRTC configuration', () => {
+      const options: GunRegistryOptions = {
+        peers: ['http://test-peer.com:8080/gun'],
+        webrtc: {
+          iceServers: [
+            { urls: 'stun:custom.stun.server:3478' }
+          ]
+        },
+        localStorage: false
+      };
+      
+      registry = new GunRegistry(options);
+      expect(mockGun).toHaveBeenCalledWith({
+        peers: ['http://test-peer.com:8080/gun'],
+        rtc: {
+          iceServers: [
+            { urls: 'stun:custom.stun.server:3478' }
+          ]
+        },
+        localStorage: false
+      });
     });
 
     it('should handle Gun.js initialization failure', () => {
