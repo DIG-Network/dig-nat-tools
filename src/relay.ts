@@ -1,7 +1,7 @@
 import Gun from 'gun';
 import 'gun/sea.js';
 import 'gun/lib/webrtc.js';
-import express from 'express';
+import http from 'http';
 import type { Client } from 'nat-upnp';
 
 /**
@@ -125,19 +125,13 @@ async function startRelay(): Promise<void> {
   // Initialize UPnP
   await initializeUpnp();
 
-  const app = express();
-  const server = app.listen(PORT, '0.0.0.0', async () => {
-    console.log(`🚀 Gun relay server running on http://0.0.0.0:${PORT}/gun`);
-    
-    // Map port via UPnP
-    await mapPort(PORT);
-    
-    console.log('✅ Gun relay server fully initialized and ready for connections');
-  });
+  // Create a simple HTTP server for Gun.js
+  const server = http.createServer();
 
   // Gun relay setup with WebRTC and mesh networking support
   console.log('🔧 Initializing Gun.js database with WebRTC support...');
   
+  // Initialize Gun with the HTTP server
   const gun = Gun({
     web: server,
     radisk: true, // persistent storage
@@ -151,6 +145,60 @@ async function startRelay(): Promise<void> {
       ]
     },
     localStorage: false // Relay doesn't need local storage
+  });
+
+  // Add custom routes by intercepting requests before Gun handles them
+  const originalListeners = server.listeners('request');
+  server.removeAllListeners('request');
+  
+  server.on('request', (req: http.IncomingMessage, res: http.ServerResponse) => {
+    // Handle our custom routes
+    if (req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'online',
+        service: 'Gun.js relay server',
+        endpoint: '/gun',
+        port: PORT,
+        features: {
+          webrtc: true,
+          mesh: true, // Automatic with WebRTC
+          discoveryOnly: true
+        },
+        upnp: {
+          enabled: UPNP_ENABLED,
+          mapped: upnpMapped
+        }
+      }));
+      return;
+    }
+    
+    if (req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'healthy', timestamp: new Date().toISOString() }));
+      return;
+    }
+
+    // Log all requests
+    const timestamp = new Date().toISOString();
+    const clientIp = req.socket.remoteAddress || 'unknown';
+    console.log(`📡 [${timestamp}] HTTP request: ${req.method} ${req.url} from ${clientIp}`);
+
+    // Let Gun.js handle all other requests (including /gun)
+    for (const listener of originalListeners) {
+      (listener as (req: http.IncomingMessage, res: http.ServerResponse) => void).call(server, req, res);
+    }
+  });
+
+  // Start the server
+  server.listen(PORT, '0.0.0.0', async () => {
+    console.log(`🚀 Gun relay server running on http://0.0.0.0:${PORT}`);
+    console.log(`🔗 Gun.js endpoint available at: http://0.0.0.0:${PORT}/gun`);
+    
+    // Map port via UPnP
+    await mapPort(PORT);
+    
+    console.log('✅ Gun relay server fully initialized and ready for connections');
   });
 
   // Add connection logging
@@ -181,29 +229,6 @@ async function startRelay(): Promise<void> {
       id: peer.id || 'unknown',
       url: peer.url || 'unknown'
     });
-  });
-
-  // Add middleware to log HTTP requests to Gun endpoints
-  app.use('/gun', (req, res, next) => {
-    const timestamp = new Date().toISOString();
-    const clientIp = req.ip || req.connection.remoteAddress || 'unknown';
-    console.log(`📡 [${timestamp}] Gun.js HTTP request: ${req.method} ${req.url} from ${clientIp}`);
-    
-    // Log request body for POST/PUT requests (data writes)
-    if ((req.method === 'POST' || req.method === 'PUT') && req.body) {
-      try {
-        const bodyStr = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
-        if (bodyStr.length > 200) {
-          console.log(`📝 Data write operation (${bodyStr.length} chars): ${bodyStr.substring(0, 200)}...`);
-        } else {
-          console.log(`📝 Data write operation:`, bodyStr);
-        }
-      } catch {
-        console.log(`📝 Data write operation (could not parse body)`);
-      }
-    }
-    
-    next();
   });
 
   // Monitor data changes with Gun.js map/on
@@ -267,28 +292,6 @@ async function startRelay(): Promise<void> {
   });
 
   console.log('✅ Gun.js database initialized with comprehensive logging');
-
-  app.get('/', (req, res) => {
-    res.json({
-      status: 'online',
-      service: 'Gun.js relay server',
-      endpoint: '/gun',
-      port: PORT,
-      features: {
-        webrtc: true,
-        mesh: true, // Automatic with WebRTC
-        discoveryOnly: true
-      },
-      upnp: {
-        enabled: UPNP_ENABLED,
-        mapped: upnpMapped
-      }
-    });
-  });
-
-  app.get('/health', (req, res) => {
-    res.json({ status: 'healthy', timestamp: new Date().toISOString() });
-  });
 
   // Handle server errors
   server.on('error', (error) => {
