@@ -281,7 +281,16 @@ export class FileHost implements IFileHost {
     if (this.connectionMode === ConnectionMode.AUTO || this.connectionMode === ConnectionMode.WEBTORRENT_ONLY) {
       try {
         console.log(`🔄 Initializing WebTorrent client...`);
-        this.webTorrentClient = new WebTorrent();
+        this.webTorrentClient = new WebTorrent({
+          utp: false, // Disable UTP to avoid permission denied errors on Windows
+          dht: false  // Disable DHT which can also cause network issues
+        });
+        
+        // Add error handling for the WebTorrent client
+        this.webTorrentClient.on('error', (err: string | Error) => {
+          console.error('❌ WebTorrent client error:', err);
+          // Don't throw here, just log the error
+        });
         
         // Wait for WebTorrent to be ready
         await this.waitForWebTorrentReady();
