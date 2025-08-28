@@ -7,7 +7,7 @@ import path from 'path';
 
 // Configuration
 const HOST_PORT = 3000;
-const RELAY_URL = 'http://YOUR_SERVER_IP:30876/gun'; // Replace with your server IP
+const RELAY_URL = 'http://nostalgiagame.go.ro:30876/gun'; // Replace with your server IP
 const HOST_ID = `host-${Date.now()}`;
 
 // Create Express server for file serving
@@ -33,6 +33,37 @@ const gun = Gun({
   radisk: false
 });
 
+// Connection validation
+console.log(`🔗 Attempting to connect to relay: ${RELAY_URL}`);
+
+// Listen for Gun.js connection events
+gun.on('hi', (peer) => {
+  console.log(`✅ Connected to peer: ${peer.url || peer.id || 'unknown'}`);
+  if (peer.url === RELAY_URL || peer.url?.includes('30876')) {
+    console.log('🎯 Successfully connected to relay server!');
+  }
+});
+
+gun.on('bye', (peer) => {
+  console.log(`❌ Disconnected from peer: ${peer.url || peer.id || 'unknown'}`);
+});
+
+// Test connection by writing a test value
+setTimeout(() => {
+  console.log('🧪 Testing relay connection...');
+  
+  gun.get('connection-test').get(HOST_ID).put({
+    test: 'connection-ok',
+    timestamp: Date.now()
+  }, (ack) => {
+    if (ack.err) {
+      console.log('❌ Failed to write to relay:', ack.err);
+    } else {
+      console.log('✅ Successfully wrote to relay - connection confirmed!');
+    }
+  });
+}, 2000);
+
 // Host data structure in Gun
 const hostNode = gun.get('hosts').get(HOST_ID);
 
@@ -40,7 +71,7 @@ const hostNode = gun.get('hosts').get(HOST_ID);
 const hostInfo = {
   id: HOST_ID,
   name: 'Example File Host',
-  fileServerUrl: `http://YOUR_SERVER_IP:${HOST_PORT}/files`, // Replace with your server IP
+  fileServerUrl: `http://nostalgiagame.go.ro:${HOST_PORT}/files`, // Replace with your server IP
   timestamp: Date.now(),
   status: 'online'
 };

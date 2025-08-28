@@ -18,20 +18,33 @@ const gun = Gun({
 
 // Log connections
 gun.on('hi', (peer) => {
-  console.log(`🟢 Peer connected: ${peer.id}`);
+  console.log(`🟢 Peer connected: ${peer.id || peer.url || 'unknown'}`);
+  if (peer.id?.includes('host-') || peer.url?.includes('localhost')) {
+    console.log('🏠 Host connected to relay!');
+  } else if (peer.id?.includes('client-')) {
+    console.log('👤 Client connected to relay!');
+  }
 });
 
 gun.on('bye', (peer) => {
-  console.log(`🔴 Peer disconnected: ${peer.id}`);
+  console.log(`🔴 Peer disconnected: ${peer.id || peer.url || 'unknown'}`);
+});
+
+// Monitor host registrations
+gun.get('hosts').on((data, key) => {
+  if (key !== '_' && data && data.name) {
+    console.log(`📝 Host registered: ${data.name} (ID: ${data.id})`);
+    console.log(`   📂 File server: ${data.fileServerUrl}`);
+    console.log(`   📊 Status: ${data.status}`);
+  }
 });
 
 // Start the server
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   console.log('🚀 Gun.js Relay Server Started');
-  console.log(`📡 Listening on port: ${PORT}`);
-  console.log(`🌐 Gun endpoint: http://localhost:${PORT}/gun`);
-  console.log(`🔗 Relay URL for peers: http://YOUR_SERVER_IP:${PORT}/gun`);
-  console.log('💡 Replace YOUR_SERVER_IP with your actual server IP address');
+  console.log(`📡 Listening on: 0.0.0.0:${PORT}`);
+  console.log(`🌐 Gun endpoint: http://0.0.0.0:${PORT}/gun`);
+  console.log(`🔗 Relay URL for peers: http://nostalgiagame.go.ro:${PORT}/gun`);
   console.log('⏳ Waiting for connections...\n');
 });
 

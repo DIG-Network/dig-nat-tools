@@ -6,7 +6,7 @@ import https from 'https';
 import http from 'http';
 
 // Configuration
-const RELAY_URL = 'http://YOUR_SERVER_IP:30876/gun'; // Replace with your server IP
+const RELAY_URL = 'http://nostalgiagame.go.ro:30876/gun'; // Replace with your server IP
 const CLIENT_ID = `client-${Date.now()}`;
 
 console.log('🔍 Starting Gun.js Client');
