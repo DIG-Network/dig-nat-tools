@@ -51,14 +51,14 @@ export class GunRegistry {
       namespace: options.namespace || "dig-nat-tools",
       forceOverride: options.forceOverride ?? true,
       overrideDelayMs: options.overrideDelayMs ?? 150,
-      webrtc: options.webrtc || {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' }
-        ]
-      },
-      localStorage: options.localStorage ?? true,
+      // webrtc: options.webrtc || {
+      //   iceServers: [
+      //     { urls: 'stun:stun.l.google.com:19302' },
+      //     { urls: 'stun:stun1.l.google.com:19302' },
+      //     { urls: 'stun:stun2.l.google.com:19302' }
+      //   ]
+      // },
+      // localStorage: options.localStorage ?? true,
     };
 
     this.initializeGun();
@@ -68,8 +68,10 @@ export class GunRegistry {
     try {
       this.gun = Gun({
         peers: this.options.peers,
-        rtc: this.options.webrtc, // Enable WebRTC with ICE servers
-        localStorage: this.options.localStorage // Enable local storage for offline capabilities
+        file: undefined, // Disable local file storage (must be string or undefined)
+        localStorage: false, // Use option or default to false
+        radisk: false, // Disable radisk storage
+        axe: false,
       });
       this.isGunAvailable = true;
       console.log("Gun.js registry initialized with WebRTC and mesh networking");

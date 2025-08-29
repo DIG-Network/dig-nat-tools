@@ -51,14 +51,7 @@ async function startRelay(): Promise<void> {
     radisk: true, // persistent storage
     file: 'gun-data', // storage folder
     peers: [], // no public relays - this relay serves as the discovery point
-    rtc: { // Enable WebRTC for direct peer connections (mesh is automatic)
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' }
-      ]
-    },
-    localStorage: false // Relay doesn't need local storage
+    axe: false
   });
 
   // Add custom routes by intercepting requests before Gun handles them
