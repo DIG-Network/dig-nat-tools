@@ -20,8 +20,10 @@ async function runExample() {
     port: 18080, // Try to use port 18080
     connectionMode: ConnectionMode.AUTO,
     ttl: 3600, // UPnP mapping TTL: 1 hour
+    storeId: 'test-host-2',
     gun: {
-      peers: ['http://nostalgiagame.go.ro:30876/gun'] // Gun.js peer for registry
+      peers: ['http://nostalgiagame.go.ro:30876/gun'],
+      namespace: 'dig-nat-tools-test'
     }
   });
 
