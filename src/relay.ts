@@ -12,7 +12,7 @@ import http from 'http';
  * Options:
  *   PORT: Set the port (default: 8765)
  */
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 30877;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 30878;
 
 // Graceful shutdown handler
 async function gracefulShutdown(signal: string): Promise<void> {
