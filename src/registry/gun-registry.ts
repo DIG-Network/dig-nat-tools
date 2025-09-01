@@ -58,7 +58,14 @@ export class GunRegistry {
       //     { urls: 'stun:stun2.l.google.com:19302' }
       //   ]
       // },
-      // localStorage: options.localStorage ?? true,
+      webrtc: options.webrtc || {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' }
+        ]
+      },
+      localStorage: options.localStorage ?? true,
     };
 
     this.initializeGun();
@@ -68,10 +75,14 @@ export class GunRegistry {
     try {
       this.gun = Gun({
         peers: this.options.peers,
-        file: undefined, // Disable local file storage (must be string or undefined)
-        localStorage: false, // Use option or default to false
-        radisk: false, // Disable radisk storage
-        axe: false,
+        rtc: this.options.webrtc || {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' }
+          ]
+        },
+        localStorage: this.options.localStorage ?? true
       });
       this.isGunAvailable = true;
       console.log("Gun.js registry initialized with WebRTC and mesh networking");
@@ -323,5 +334,105 @@ export class GunRegistry {
           }
         });
     });
+  }
+
+  /**
+   * Unregister a host from the Gun.js registry
+   */
+  public async unregister(storeId: string): Promise<void> {
+    if (!this.isGunAvailable || !this.gun) {
+      throw new Error("Gun.js registry not available");
+    }
+
+    if (!storeId) {
+      throw new Error("StoreId is required for unregistration");
+    }
+
+    try {
+      const hostRef = this.gun
+        .get(this.options.namespace!)
+        .get(storeId);
+
+      // Clear all host data by setting to null
+      hostRef.put(null);
+      
+      console.log(`✅ [GunRegistry] Successfully unregistered host: ${storeId}`);
+    } catch (error) {
+      console.error(`❌ [GunRegistry] Failed to unregister host ${storeId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Send a signaling message to a peer (for WebRTC negotiation)
+   */
+  public async sendSignalingMessage(targetPeer: string, message: Record<string, unknown>): Promise<void> {
+    if (!this.isGunAvailable || !this.gun) {
+      throw new Error("Gun.js registry not available");
+    }
+
+    if (!targetPeer) {
+      throw new Error("Target peer ID is required");
+    }
+
+    try {
+      const signalRef = this.gun
+        .get(this.options.namespace!)
+        .get('signaling')
+        .get(targetPeer);
+
+      const signalData = {
+        ...message,
+        timestamp: Date.now()
+      };
+
+      signalRef.put(signalData);
+      console.log(`📡 [GunRegistry] Sent signaling message to ${targetPeer}`);
+    } catch (error) {
+      console.error(`❌ [GunRegistry] Failed to send signaling message to ${targetPeer}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Listen for signaling messages for this peer
+   */
+  public onSignalingMessage(peerId: string, callback: (message: Record<string, unknown>) => void): void {
+    if (!this.isGunAvailable || !this.gun) {
+      console.warn('Gun.js not available, signaling will not work');
+      return;
+    }
+
+    if (!peerId) {
+      throw new Error("Peer ID is required");
+    }
+
+    try {
+      const signalRef = this.gun
+        .get(this.options.namespace!)
+        .get('signaling')
+        .get(peerId);
+
+      signalRef.on((data: Record<string, unknown>) => {
+        if (data && typeof data === 'object' && !Array.isArray(data)) {
+          // Filter out Gun.js metadata
+          const messageData = Object.keys(data)
+            .filter(key => key !== '_')
+            .reduce((obj, key) => {
+              obj[key] = data[key];
+              return obj;
+            }, {} as Record<string, unknown>);
+
+          if (Object.keys(messageData).length > 0) {
+            callback(messageData);
+          }
+        }
+      });
+
+      console.log(`🎧 [GunRegistry] Listening for signaling messages for peer: ${peerId}`);
+    } catch (error) {
+      console.error(`❌ [GunRegistry] Failed to set up signaling listener for ${peerId}:`, error);
+      throw error;
+    }
   }
 }

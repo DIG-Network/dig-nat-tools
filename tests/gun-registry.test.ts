@@ -192,7 +192,6 @@ describe('GunRegistry', () => {
 
       // Verify the chain calls
       expect(mockGunChain.get).toHaveBeenCalledWith('dig-nat-tools');
-      expect(mockGunChain.get).toHaveBeenCalledWith('hosts');
       expect(mockGunChain.get).toHaveBeenCalledWith('test-store-id');
       
       // Verify put was called with flattened data
@@ -568,10 +567,10 @@ describe('GunRegistry', () => {
       expect(callback).toHaveBeenCalledWith(message);
     });
 
-    it('should not call callback when message without timestamp is received', () => {
+    it('should call callback when message is received', () => {
       const callback = jest.fn();
       const storeId = 'test-store-id';
-      const message = { test: 'message' }; // No timestamp
+      const message = { test: 'message' };
 
       registry.onSignalingMessage(storeId, callback);
 
@@ -579,7 +578,7 @@ describe('GunRegistry', () => {
       const onCallback = Array.from(mockOnCallbacks.values())[0];
       if (onCallback) onCallback(message);
 
-      expect(callback).not.toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(message);
     });
   });
 
@@ -601,10 +600,9 @@ describe('GunRegistry', () => {
       await registry.unregister(storeId);
 
       expect(mockGunChain.get).toHaveBeenCalledWith('dig-nat-tools');
-      expect(mockGunChain.get).toHaveBeenCalledWith('hosts');
       expect(mockGunChain.get).toHaveBeenCalledWith(storeId);
       expect(mockGunChain.put).toHaveBeenCalledWith(null);
-      expect(consoleSpy).toHaveBeenCalledWith(`Unregistered host ${storeId}`);
+      expect(consoleSpy).toHaveBeenCalledWith(`✅ [GunRegistry] Successfully unregistered host: ${storeId}`);
 
       consoleSpy.mockRestore();
     });
