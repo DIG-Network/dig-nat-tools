@@ -324,6 +324,7 @@ export class FileHost implements IFileHost {
     if (this.gunRegistry) {
       try {
         console.log(`🔄 Registering with Gun.js registry...`);
+        this.capabilities = capabilities;
         await this.gunRegistry.register(capabilities);
         console.log(`✅ Registered capabilities in Gun.js registry with storeId: ${this.storeId}`);
         
