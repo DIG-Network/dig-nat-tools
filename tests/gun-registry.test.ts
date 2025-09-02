@@ -72,7 +72,10 @@ describe('GunRegistry', () => {
             { urls: 'stun:stun2.l.google.com:19302' }
           ]
         },
-        localStorage: true
+        file: undefined,
+        localStorage: false,
+        radisk: false,
+        axe: false
       });
       expect(registry.isAvailable()).toBe(true);
     });
@@ -80,9 +83,7 @@ describe('GunRegistry', () => {
     it('should initialize with custom options', () => {
       const options: GunRegistryOptions = {
         peers: ['http://test-peer.com:8080/gun'],
-        namespace: 'test-namespace',
-        forceOverride: false,
-        overrideDelayMs: 200
+        namespace: 'test-namespace'
       };
       
       registry = new GunRegistry(options);
@@ -95,7 +96,10 @@ describe('GunRegistry', () => {
             { urls: 'stun:stun2.l.google.com:19302' }
           ]
         },
-        localStorage: true
+        file: undefined,
+        localStorage: false,
+        radisk: false,
+        axe: false
       });
     });
 
@@ -106,8 +110,7 @@ describe('GunRegistry', () => {
           iceServers: [
             { urls: 'stun:custom.stun.server:3478' }
           ]
-        },
-        localStorage: false
+        }
       };
       
       registry = new GunRegistry(options);
@@ -118,7 +121,10 @@ describe('GunRegistry', () => {
             { urls: 'stun:custom.stun.server:3478' }
           ]
         },
-        localStorage: false
+        file: undefined,
+        localStorage: false,
+        radisk: false,
+        axe: false
       });
     });
 
@@ -206,57 +212,6 @@ describe('GunRegistry', () => {
       }));
 
       consoleSpy.mockRestore();
-    });
-
-    it('should clear fields before registration when forceOverride is true', async () => {
-      const capabilities: HostCapabilities = {
-        storeId: 'test-store-id',
-        directHttp: {
-          available: true,
-          ip: '192.168.1.100',
-          port: 8080
-        }
-      };
-
-      await registry.register(capabilities);
-
-      // Verify that put(null) was called for clearing fields
-      expect(mockGunChain.put).toHaveBeenCalledWith(null);
-    });
-
-    it('should handle clearing fields failure gracefully', async () => {
-      const capabilities: HostCapabilities = {
-        storeId: 'test-store-id',
-        directHttp: {
-          available: true,
-          ip: '192.168.1.100',
-          port: 8080
-        }
-      };
-
-      // Mock the hostRef.get to throw error during field clearing
-      const originalGet = mockGunChain.get;
-      let callCount = 0;
-      mockGunChain.get.mockImplementation((_key: string) => {
-        callCount++;
-        // Throw error on the field clearing calls (after the initial namespace/hosts/storeId calls)
-        if (callCount > 3) {
-          throw new Error('Clear failed');
-        }
-        return mockGunChain;
-      });
-
-      const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
-      
-      await registry.register(capabilities);
-      
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Failed clearing existing fields before override:'),
-        expect.any(Error)
-      );
-
-      consoleSpy.mockRestore();
-      mockGunChain.get.mockImplementation(originalGet);
     });
   });
 

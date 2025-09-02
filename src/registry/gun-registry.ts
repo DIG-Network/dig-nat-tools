@@ -6,27 +6,12 @@ export interface GunRegistryOptions {
   peers?: string[];
   namespace?: string;
   /**
-   * When true, registration will aggressively override any existing values
-   * for the same storeId by first clearing known fields before writing fresh ones.
-   * This helps when restarting a host with a fixed storeId and avoids stale data lingering.
-   */
-  forceOverride?: boolean;
-  /**
-   * Optional delay (ms) between clearing old fields and writing fresh values,
-   * giving the network a moment to propagate deletes. Defaults to 150ms.
-   */
-  overrideDelayMs?: number;
-  /**
    * WebRTC configuration for peer-to-peer connections
    * When enabled, mesh networking is automatic
    */
   webrtc?: {
     iceServers?: Array<{ urls: string | string[] }>;
   };
-  /**
-   * Enable local storage for offline capabilities
-   */
-  localStorage?: boolean;
 }
 
 interface GunInstance {
@@ -49,23 +34,13 @@ export class GunRegistry {
     this.options = {
       peers: options.peers || ["http://nostalgiagame.go.ro:30878/gun"],
       namespace: options.namespace || "dig-nat-tools",
-      forceOverride: options.forceOverride ?? true,
-      overrideDelayMs: options.overrideDelayMs ?? 150,
-      // webrtc: options.webrtc || {
-      //   iceServers: [
-      //     { urls: 'stun:stun.l.google.com:19302' },
-      //     { urls: 'stun:stun1.l.google.com:19302' },
-      //     { urls: 'stun:stun2.l.google.com:19302' }
-      //   ]
-      // },
       webrtc: options.webrtc || {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' },
           { urls: 'stun:stun2.l.google.com:19302' }
         ]
-      },
-      localStorage: options.localStorage ?? true,
+      }
     };
 
     this.initializeGun();
@@ -82,13 +57,15 @@ export class GunRegistry {
             { urls: 'stun:stun2.l.google.com:19302' }
           ]
         },
-        localStorage: this.options.localStorage ?? true
+        file: undefined,
+        localStorage: false,
+        radisk: false,
+        axe: false,
       });
       this.isGunAvailable = true;
       console.log("Gun.js registry initialized with WebRTC and mesh networking");
       console.log(`🔧 WebRTC enabled with ${this.options.webrtc?.iceServers?.length || 0} ICE servers`);
       console.log(`🔧 Mesh networking: enabled (automatic with WebRTC)`);
-      console.log(`🔧 Local storage: ${this.options.localStorage ? 'enabled' : 'disabled'}`);
     } catch {
       console.warn("Gun.js not available, peer discovery will not work");
       this.isGunAvailable = false;
@@ -129,30 +106,6 @@ export class GunRegistry {
       const hostRef = this.gun
         .get(this.options.namespace!)
         .get(capabilities.storeId);
-
-      // Optionally clear known fields to ensure our fresh values win on restart
-      if (this.options.forceOverride) {
-        try {
-          const fieldsToClear = [
-            "directHttp_available",
-            "directHttp_ip",
-            "directHttp_port",
-            "webTorrent_available",
-            "webTorrent_magnetUris",
-            "externalIp",
-            "port",
-            "lastSeen",
-            "storeId",
-          ];
-          fieldsToClear.forEach((k) => hostRef.get(k).put(null));
-          const delay = Math.max(0, this.options.overrideDelayMs || 0);
-          if (delay > 0) {
-            await new Promise((r) => setTimeout(r, delay));
-          }
-        } catch (e) {
-          console.warn("⚠️ [GunRegistry] Failed clearing existing fields before override:", e);
-        }
-      }
 
       // Store in Gun.js
       hostRef.put(flatEntry);
