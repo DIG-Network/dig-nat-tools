@@ -42,6 +42,7 @@ export class FileHost implements IFileHost {
   private upnpClient: ReturnType<typeof natUpnp.createClient> | null = null;
   private upnpMapping: { external: number; internal: number } | null = null;
   private publicIp: string | null = null;
+  private registrationInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: HostOptions = {}) {
     this.options = options;
@@ -325,6 +326,9 @@ export class FileHost implements IFileHost {
         console.log(`🔄 Registering with Gun.js registry...`);
         await this.gunRegistry.register(capabilities);
         console.log(`✅ Registered capabilities in Gun.js registry with storeId: ${this.storeId}`);
+        
+        // Start periodic registration to keep data fresh
+        this.startPeriodicRegistration();
       } catch (error) {
         console.warn(`⚠️ Failed to register in Gun.js registry:`, error);
       }
@@ -334,6 +338,45 @@ export class FileHost implements IFileHost {
     this.capabilities = capabilities;
 
     return capabilities;
+  }
+
+  /**
+   * Start periodic registration to keep data fresh in Gun.js registry
+   */
+  private startPeriodicRegistration(): void {
+    if (!this.gunRegistry || !this.capabilities) {
+      return;
+    }
+
+    console.log('🔄 Starting periodic registration (every 5 seconds)...');
+    
+    this.registrationInterval = setInterval(async () => {
+      try {
+        // Update the lastSeen timestamp
+        const updatedCapabilities = {
+          ...this.capabilities!,
+          lastSeen: Date.now()
+        };
+
+        await this.gunRegistry!.register(updatedCapabilities);
+        console.log(`🔄 Re-registered capabilities for ${this.storeId}`);
+      } catch (error) {
+        console.warn(`⚠️ Failed to re-register capabilities:`, error);
+      }
+    }, 5000); // Re-register every 5 seconds
+    
+    console.log('✅ Periodic registration started');
+  }
+
+  /**
+   * Stop periodic registration
+   */
+  private stopPeriodicRegistration(): void {
+    if (this.registrationInterval) {
+      clearInterval(this.registrationInterval);
+      this.registrationInterval = null;
+      console.log('✅ Periodic registration stopped');
+    }
   }
 
   /**
@@ -395,7 +438,10 @@ export class FileHost implements IFileHost {
   public async stop(): Promise<void> {
     console.log('🛑 Stopping FileHost...');
 
-    // Remove UPnP port mapping first
+    // Stop periodic registration first
+    this.stopPeriodicRegistration();
+
+    // Remove UPnP port mapping
     await this.removeUpnpPortMapping();
 
     // Stop WebTorrent client
