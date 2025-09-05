@@ -1,101 +1,22 @@
 import Gun from 'gun';
 import 'gun/sea.js';
 import 'gun/lib/webrtc.js';
-import express from 'express';
-import type { Client } from 'nat-upnp';
+import http from 'http';
 
 /**
- * Gun relay server with UPnP port forwarding
+ * Gun relay server
  *
  * Usage:
  *   ts-node relay.ts
  *
  * Options:
  *   PORT: Set the port (default: 8765)
- *   UPNP_ENABLED: Enable UPnP port forwarding (default: true)
- *   UPNP_TTL: UPnP mapping TTL in seconds (default: 7200 = 2 hours)
  */
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8765;
-const UPNP_ENABLED = process.env.UPNP_ENABLED !== 'false';
-const UPNP_TTL = process.env.UPNP_TTL ? parseInt(process.env.UPNP_TTL, 10) : 7200;
-
-let upnpClient: Client | null = null;
-let upnpMapped = false;
-
-// Initialize UPnP client
-async function initializeUpnp(): Promise<void> {
-  if (!UPNP_ENABLED) {
-    console.log('🔧 UPnP disabled via environment variable');
-    return;
-  }
-
-  try {
-    const { default: natUpnp } = await import('nat-upnp');
-    upnpClient = natUpnp.createClient();
-    console.log('🔧 UPnP client initialized');
-  } catch (error) {
-    console.warn('⚠️ Failed to initialize UPnP client:', error);
-    upnpClient = null;
-  }
-}
-
-// Map port using UPnP
-async function mapPort(port: number): Promise<void> {
-  if (!upnpClient) {
-    console.log('🔧 UPnP not available, skipping port mapping');
-    return;
-  }
-
-  return new Promise((resolve) => {
-    console.log(`🔄 Attempting UPnP port mapping for port ${port}...`);
-    
-    upnpClient!.portMapping({
-      public: port,
-      private: port,
-      ttl: UPNP_TTL,
-      description: `Gun.js relay server on port ${port}`
-    }, (err: Error | null) => {
-      if (err) {
-        console.warn(`⚠️ UPnP port mapping failed for port ${port}:`, err.message);
-      } else {
-        console.log(`✅ UPnP port mapping successful for port ${port}`);
-        upnpMapped = true;
-      }
-      resolve();
-    });
-  });
-}
-
-// Unmap port using UPnP
-async function unmapPort(port: number): Promise<void> {
-  if (!upnpClient || !upnpMapped) {
-    return;
-  }
-
-  return new Promise((resolve) => {
-    console.log(`🔄 Removing UPnP port mapping for port ${port}...`);
-    
-    upnpClient!.portUnmapping({
-      public: port
-    }, (err: Error | null) => {
-      if (err) {
-        console.warn(`⚠️ UPnP port unmapping failed for port ${port}:`, err.message);
-      } else {
-        console.log(`✅ UPnP port unmapping successful for port ${port}`);
-      }
-      upnpMapped = false;
-      resolve();
-    });
-  });
-}
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 30878;
 
 // Graceful shutdown handler
 async function gracefulShutdown(signal: string): Promise<void> {
-  console.log(`\n� Received ${signal}, shutting down gracefully...`);
-  
-  // Remove UPnP port mapping
-  await unmapPort(PORT);
-  
+  console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
   console.log('✅ Gun relay server shutdown complete');
   process.exit(0);
 }
@@ -108,49 +29,168 @@ process.on('SIGUSR2', () => gracefulShutdown('SIGUSR2')); // For nodemon
 async function startRelay(): Promise<void> {
   console.log('🚀 Starting Gun relay server...');
   console.log(`📡 Port: ${PORT}`);
-  console.log(`🔧 UPnP enabled: ${UPNP_ENABLED}`);
-  if (UPNP_ENABLED) {
-    console.log(`⏰ UPnP TTL: ${UPNP_TTL} seconds`);
-  }
+  console.log('🔗 WebRTC enabled with mesh networking for peer-to-peer connections');
+  console.log('📊 This relay serves as discovery point only - data flows peer-to-peer');
+  console.log('📝 Logging enabled for:');
+  console.log('   • TCP connections and disconnections');
+  console.log('   • Gun.js peer connections (hi/bye events)');
+  console.log('   • HTTP requests to /gun endpoints');
+  console.log('   • Data write/update operations');
+  console.log('   • Host registrations and unregistrations');
+  console.log('   • Data changes in dig-nat-tools and dig-nat-tools-test namespaces');
 
-  // Initialize UPnP
-  await initializeUpnp();
+  // Create a simple HTTP server for Gun.js
+  const server = http.createServer();
 
-  const app = express();
-  const server = app.listen(PORT, '0.0.0.0', async () => {
-    console.log(`🚀 Gun relay server running on http://0.0.0.0:${PORT}/gun`);
-    
-    // Map port via UPnP
-    await mapPort(PORT);
-    
-    console.log('✅ Gun relay server fully initialized and ready for connections');
-  });
-
-  // Gun relay setup
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // Gun relay setup with WebRTC and mesh networking support
+  console.log('🔧 Initializing Gun.js database with WebRTC support...');
+  
+  // Initialize Gun with the HTTP server
   const gun = Gun({
     web: server,
     radisk: true, // persistent storage
     file: 'gun-data', // storage folder
-    peers: [], // no public relays
+    peers: [], // no public relays - this relay serves as the discovery point
+    axe: false
   });
 
-  app.get('/', (req, res) => {
-    res.json({
-      status: 'online',
-      service: 'Gun.js relay server',
-      endpoint: '/gun',
-      port: PORT,
-      upnp: {
-        enabled: UPNP_ENABLED,
-        mapped: upnpMapped
-      }
+  // Add custom routes by intercepting requests before Gun handles them
+  const originalListeners = server.listeners('request');
+  server.removeAllListeners('request');
+  
+  server.on('request', (req: http.IncomingMessage, res: http.ServerResponse) => {
+    // Handle our custom routes
+    if (req.url === '/') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'online',
+        service: 'Gun.js relay server',
+        endpoint: '/gun',
+        port: PORT,
+        features: {
+          webrtc: true,
+          mesh: true, // Automatic with WebRTC
+          discoveryOnly: true
+        }
+      }));
+      return;
+    }
+    
+    if (req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'healthy', timestamp: new Date().toISOString() }));
+      return;
+    }
+
+    // Log all requests
+    const timestamp = new Date().toISOString();
+    const clientIp = req.socket.remoteAddress || 'unknown';
+    console.log(`📡 [${timestamp}] HTTP request: ${req.method} ${req.url} from ${clientIp}`);
+
+    // Let Gun.js handle all other requests (including /gun)
+    for (const listener of originalListeners) {
+      (listener as (req: http.IncomingMessage, res: http.ServerResponse) => void).call(server, req, res);
+    }
+  });
+
+  // Start the server
+  server.listen(PORT, '0.0.0.0', async () => {
+    console.log(`🚀 Gun relay server running on http://0.0.0.0:${PORT}`);
+    console.log(`🔗 Gun.js endpoint available at: http://0.0.0.0:${PORT}/gun`);
+    console.log('✅ Gun relay server fully initialized and ready for connections');
+  });
+
+  // Add connection logging
+  server.on('connection', (socket) => {
+    const clientAddress = socket.remoteAddress;
+    const clientPort = socket.remotePort;
+    console.log(`🔌 New TCP connection from ${clientAddress}:${clientPort}`);
+    
+    socket.on('close', () => {
+      console.log(`🔌 TCP connection closed from ${clientAddress}:${clientPort}`);
+    });
+    
+    socket.on('error', (error) => {
+      console.log(`❌ TCP connection error from ${clientAddress}:${clientPort}:`, error.message);
     });
   });
 
-  app.get('/health', (req, res) => {
-    res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+  // Monitor Gun.js events for data operations
+  gun.on('hi', (peer: { id?: string; url?: string }) => {
+    console.log(`🤝 New Gun.js peer connected:`, {
+      id: peer.id || 'unknown',
+      url: peer.url || 'unknown'
+    });
   });
+
+  gun.on('bye', (peer: { id?: string; url?: string }) => {
+    console.log(`👋 Gun.js peer disconnected:`, {
+      id: peer.id || 'unknown',
+      url: peer.url || 'unknown'
+    });
+  });
+
+  // Monitor data changes with Gun.js map/on
+  console.log('🔍 Setting up data monitoring...');
+  
+  // Monitor all data changes in the registry
+  gun.get('dig-nat-tools').map().on((data: Record<string, unknown> | null, key: string) => {
+    if (data && key) {
+      const timestamp = new Date().toISOString();
+      console.log(`📊 [${timestamp}] Data updated in 'dig-nat-tools':`, {
+        key: key,
+        hasData: !!data,
+        dataKeys: data ? Object.keys(data).filter(k => k !== '_') : []
+      });
+    }
+  });
+
+  // Monitor test namespace as well
+  gun.get('dig-nat-tools-test').map().on((data: Record<string, unknown> | null, key: string) => {
+    if (data && key) {
+      const timestamp = new Date().toISOString();
+      console.log(`📊 [${timestamp}] Data updated in 'dig-nat-tools-test':`, {
+        key: key,
+        hasData: !!data,
+        dataKeys: data ? Object.keys(data).filter(k => k !== '_') : []
+      });
+    }
+  });
+
+  // Monitor host registrations specifically
+  gun.get('dig-nat-tools').get('hosts').map().on((data: Record<string, unknown> | null, key: string) => {
+    if (data && key) {
+      const timestamp = new Date().toISOString();
+      if (data === null || data === undefined) {
+        console.log(`🗑️ [${timestamp}] Host unregistered: ${key}`);
+      } else {
+        console.log(`🏠 [${timestamp}] Host registered/updated: ${key}`, {
+          storeId: data.storeId || 'unknown',
+          lastSeen: data.lastSeen ? new Date(data.lastSeen as number).toLocaleString() : 'unknown',
+          directHttp: data.directHttp_available || false,
+          webTorrent: data.webTorrent_available || false
+        });
+      }
+    }
+  });
+
+  gun.get('dig-nat-tools-test').get('hosts').map().on((data: Record<string, unknown> | null, key: string) => {
+    if (data && key) {
+      const timestamp = new Date().toISOString();
+      if (data === null || data === undefined) {
+        console.log(`🗑️ [${timestamp}] Test host unregistered: ${key}`);
+      } else {
+        console.log(`🏠 [${timestamp}] Test host registered/updated: ${key}`, {
+          storeId: data.storeId || 'unknown',
+          lastSeen: data.lastSeen ? new Date(data.lastSeen as number).toLocaleString() : 'unknown',
+          directHttp: data.directHttp_available || false,
+          webTorrent: data.webTorrent_available || false
+        });
+      }
+    }
+  });
+
+  console.log('✅ Gun.js database initialized with comprehensive logging');
 
   // Handle server errors
   server.on('error', (error) => {

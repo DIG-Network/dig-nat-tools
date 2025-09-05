@@ -7,13 +7,13 @@ async function startClient() {
   
   // Initialize FileClient with Gun.js configuration
   const client = new FileClient({
-    peers: ['http://nostalgiagame.go.ro:30876/gun'], // Connect to deployed relay
+    peers: ['http://nostalgiagame.go.ro:30878/gun'], // Connect to deployed relay
     namespace: 'dig-nat-tools-test', // Use same namespace as host
     timeout: 30000 // 30 second timeout
   });
 
   try {
-    console.log('🔗 Connecting to Gun.js relay at http://nostalgiagame.go.ro:30876/gun...');
+    console.log('🔗 Connecting to Gun.js relay at http://nostalgiagame.go.ro:30878/gun...');
     console.log('📡 Using namespace: dig-nat-tools-test');
     console.log('🔄 Searching for available peers...');
     

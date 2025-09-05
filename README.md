@@ -77,7 +77,7 @@ const host = new FileHost({
   connectionMode: ConnectionMode.AUTO, // Try HTTP first, then WebTorrent
   storeId: 'my-unique-host-id',
   gun: {
-    peers: ['http://nostalgiagame.go.ro:30876/gun'], // Your Gun.js relay
+    peers: ['http://nostalgiagame.go.ro:30878/gun'], // Your Gun.js relay
     namespace: 'my-app-namespace'
   }
 });
@@ -111,7 +111,7 @@ import { FileClient } from 'dig-nat-tools';
 
 // Create a client that discovers hosts via Gun.js
 const client = new FileClient({
-  peers: ['http://nostalgiagame.go.ro:30876/gun'], // Same Gun.js relay
+  peers: ['http://nostalgiagame.go.ro:30878/gun'], // Same Gun.js relay
   namespace: 'my-app-namespace',
   timeout: 30000
 });
@@ -149,19 +149,19 @@ import { ConnectionMode } from 'dig-nat-tools';
 // AUTO: Try Direct HTTP first, then WebTorrent (recommended)
 const autoHost = new FileHost({ 
   connectionMode: ConnectionMode.AUTO,
-  gun: { peers: ['http://nostalgiagame.go.ro:30876/gun'] }
+  gun: { peers: ['http://nostalgiagame.go.ro:30878/gun'] }
 });
 
 // HTTP_ONLY: Direct HTTP connections only
 const httpHost = new FileHost({ 
   connectionMode: ConnectionMode.HTTP_ONLY,
-  gun: { peers: ['http://nostalgiagame.go.ro:30876/gun'] }
+  gun: { peers: ['http://nostalgiagame.go.ro:30878/gun'] }
 });
 
 // WEBTORRENT_ONLY: WebTorrent P2P only
 const p2pHost = new FileHost({ 
   connectionMode: ConnectionMode.WEBTORRENT_ONLY,
-  gun: { peers: ['http://nostalgiagame.go.ro:30876/gun'] }
+  gun: { peers: ['http://nostalgiagame.go.ro:30878/gun'] }
 });
 ```
 
@@ -297,7 +297,7 @@ npx ts-node src/relay.ts
 
 Your Gun.js clients can connect to `http://localhost:8765/gun` for local development.
 
-**Production Relay**: A public relay is available at `http://nostalgiagame.go.ro:30876/gun` for testing and development.
+**Production Relay**: A public relay is available at `http://nostalgiagame.go.ro:30878/gun` for testing and development.
 
 #### Docker Deployment
 
@@ -363,7 +363,7 @@ new FileHost(options?: {
   connectionMode?: ConnectionMode;  // Connection mode (default: ConnectionMode.AUTO)
   storeId?: string;                 // Unique identifier for Gun.js registry
   gun?: {
-    peers: string[];                // Gun.js peer URLs (e.g., ['http://nostalgiagame.go.ro:30876/gun'])
+    peers: string[];                // Gun.js peer URLs (e.g., ['http://nostalgiagame.go.ro:30878/gun'])
     namespace?: string;             // Registry namespace (default: 'dig-nat-tools')
   };
 })
@@ -393,7 +393,7 @@ enum ConnectionMode {
 import { FileClient } from 'dig-nat-tools';
 
 new FileClient(options?: {
-  peers?: string[];        // Gun.js peer URLs (default: ['http://nostalgiagame.go.ro:30876/gun'])
+  peers?: string[];        // Gun.js peer URLs (default: ['http://nostalgiagame.go.ro:30878/gun'])
   namespace?: string;      // Gun.js namespace (default: 'dig-nat-tools')
   timeout?: number;        // Download timeout (default: 30000)
 })
@@ -470,7 +470,7 @@ import { FileHost, ConnectionMode } from 'dig-nat-tools';
 // AUTO: Try HTTP first, then WebTorrent (recommended)
 const host = new FileHost({ 
   connectionMode: ConnectionMode.AUTO,
-  gun: { peers: ['http://nostalgiagame.go.ro:30876/gun'] }
+  gun: { peers: ['http://nostalgiagame.go.ro:30878/gun'] }
 });
 
 // HTTP only: Direct connections
@@ -532,7 +532,7 @@ node .\examples\test-client.js
 **Example Output:**
 ```
 🔍 Starting test client...
-🔗 Connecting to Gun.js relay at http://nostalgiagame.go.ro:30876/gun...
+🔗 Connecting to Gun.js relay at http://nostalgiagame.go.ro:30878/gun...
 📡 Using namespace: dig-nat-tools-test
 🔄 Searching for available peers...
 📊 Search completed. Found 2 peer(s)
@@ -554,7 +554,7 @@ You can modify the test client configuration:
 ```javascript
 // In examples/test-client.js
 const client = new FileClient({
-  peers: ['http://nostalgiagame.go.ro:30876/gun'], // Gun.js relay URL
+  peers: ['http://nostalgiagame.go.ro:30878/gun'], // Gun.js relay URL
   namespace: 'dig-nat-tools-test',                 // Registry namespace
   timeout: 30000                                   // 30 second timeout
 });
@@ -573,7 +573,7 @@ const { FileClient } = require('dig-nat-tools');
 
 async function discoverPeers() {
   const client = new FileClient({
-    peers: ['http://nostalgiagame.go.ro:30876/gun'],
+    peers: ['http://nostalgiagame.go.ro:30878/gun'],
     namespace: 'my-app',
     timeout: 30000
   });
@@ -610,7 +610,7 @@ const fs = require('fs');
 
 async function downloadFromPeer() {
   const client = new FileClient({
-    peers: ['http://nostalgiagame.go.ro:30876/gun'],
+    peers: ['http://nostalgiagame.go.ro:30878/gun'],
     namespace: 'my-app'
   });
 
@@ -657,7 +657,7 @@ const { FileClient } = require('dig-nat-tools');
 
 async function monitorPeers() {
   const client = new FileClient({
-    peers: ['http://nostalgiagame.go.ro:30876/gun'],
+    peers: ['http://nostalgiagame.go.ro:30878/gun'],
     namespace: 'my-app'
   });
 
@@ -778,7 +778,7 @@ class P2PFileManager {
 // Usage example
 async function main() {
   const manager = new P2PFileManager(
-    'http://nostalgiagame.go.ro:30876/gun',
+    'http://nostalgiagame.go.ro:30878/gun',
     'my-application'
   );
 

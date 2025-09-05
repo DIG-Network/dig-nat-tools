@@ -63,20 +63,69 @@ describe('GunRegistry', () => {
   describe('constructor', () => {
     it('should initialize with default options', () => {
       registry = new GunRegistry();
-      expect(mockGun).toHaveBeenCalledWith(["http://nostalgiagame.go.ro:30876/gun"]);
+      expect(mockGun).toHaveBeenCalledWith({
+        peers: ["http://nostalgiagame.go.ro:30878/gun"],
+        rtc: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' }
+          ]
+        },
+        file: undefined,
+        localStorage: false,
+        radisk: false,
+        axe: false
+      });
       expect(registry.isAvailable()).toBe(true);
     });
 
     it('should initialize with custom options', () => {
       const options: GunRegistryOptions = {
         peers: ['http://test-peer.com:8080/gun'],
-        namespace: 'test-namespace',
-        forceOverride: false,
-        overrideDelayMs: 200
+        namespace: 'test-namespace'
       };
       
       registry = new GunRegistry(options);
-      expect(mockGun).toHaveBeenCalledWith(['http://test-peer.com:8080/gun']);
+      expect(mockGun).toHaveBeenCalledWith({
+        peers: ['http://test-peer.com:8080/gun'],
+        rtc: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' }
+          ]
+        },
+        file: undefined,
+        localStorage: false,
+        radisk: false,
+        axe: false
+      });
+    });
+
+    it('should initialize with custom WebRTC configuration', () => {
+      const options: GunRegistryOptions = {
+        peers: ['http://test-peer.com:8080/gun'],
+        webrtc: {
+          iceServers: [
+            { urls: 'stun:custom.stun.server:3478' }
+          ]
+        }
+      };
+      
+      registry = new GunRegistry(options);
+      expect(mockGun).toHaveBeenCalledWith({
+        peers: ['http://test-peer.com:8080/gun'],
+        rtc: {
+          iceServers: [
+            { urls: 'stun:custom.stun.server:3478' }
+          ]
+        },
+        file: undefined,
+        localStorage: false,
+        radisk: false,
+        axe: false
+      });
     });
 
     it('should handle Gun.js initialization failure', () => {
@@ -149,7 +198,6 @@ describe('GunRegistry', () => {
 
       // Verify the chain calls
       expect(mockGunChain.get).toHaveBeenCalledWith('dig-nat-tools');
-      expect(mockGunChain.get).toHaveBeenCalledWith('hosts');
       expect(mockGunChain.get).toHaveBeenCalledWith('test-store-id');
       
       // Verify put was called with flattened data
@@ -164,57 +212,6 @@ describe('GunRegistry', () => {
       }));
 
       consoleSpy.mockRestore();
-    });
-
-    it('should clear fields before registration when forceOverride is true', async () => {
-      const capabilities: HostCapabilities = {
-        storeId: 'test-store-id',
-        directHttp: {
-          available: true,
-          ip: '192.168.1.100',
-          port: 8080
-        }
-      };
-
-      await registry.register(capabilities);
-
-      // Verify that put(null) was called for clearing fields
-      expect(mockGunChain.put).toHaveBeenCalledWith(null);
-    });
-
-    it('should handle clearing fields failure gracefully', async () => {
-      const capabilities: HostCapabilities = {
-        storeId: 'test-store-id',
-        directHttp: {
-          available: true,
-          ip: '192.168.1.100',
-          port: 8080
-        }
-      };
-
-      // Mock the hostRef.get to throw error during field clearing
-      const originalGet = mockGunChain.get;
-      let callCount = 0;
-      mockGunChain.get.mockImplementation((_key: string) => {
-        callCount++;
-        // Throw error on the field clearing calls (after the initial namespace/hosts/storeId calls)
-        if (callCount > 3) {
-          throw new Error('Clear failed');
-        }
-        return mockGunChain;
-      });
-
-      const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
-      
-      await registry.register(capabilities);
-      
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Failed clearing existing fields before override:'),
-        expect.any(Error)
-      );
-
-      consoleSpy.mockRestore();
-      mockGunChain.get.mockImplementation(originalGet);
     });
   });
 
@@ -453,93 +450,6 @@ describe('GunRegistry', () => {
     });
   });
 
-  describe('sendSignalingMessage', () => {
-    beforeEach(() => {
-      registry = new GunRegistry();
-    });
-
-    it('should throw error when Gun.js is not available', async () => {
-      (registry as any).isGunAvailable = false;
-      
-      await expect(registry.sendSignalingMessage('target-peer', { test: 'message' }))
-        .rejects.toThrow('Gun.js registry not available');
-    });
-
-    it('should send signaling message with timestamp', async () => {
-      const targetPeer = 'target-peer';
-      const message = { test: 'message', data: 'value' };
-
-      await registry.sendSignalingMessage(targetPeer, message);
-
-      expect(mockGunChain.get).toHaveBeenCalledWith('dig-nat-tools');
-      expect(mockGunChain.get).toHaveBeenCalledWith('signaling');
-      expect(mockGunChain.get).toHaveBeenCalledWith(targetPeer);
-      expect(mockGunChain.put).toHaveBeenCalledWith({
-        test: 'message',
-        data: 'value',
-        timestamp: expect.any(Number)
-      });
-    });
-  });
-
-  describe('onSignalingMessage', () => {
-    beforeEach(() => {
-      registry = new GunRegistry();
-    });
-
-    it('should warn when Gun.js is not available', () => {
-      (registry as any).isGunAvailable = false;
-      
-      const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
-      const callback = jest.fn();
-      
-      registry.onSignalingMessage('test-store-id', callback);
-      
-      expect(consoleSpy).toHaveBeenCalledWith('Gun.js not available, signaling will not work');
-      consoleSpy.mockRestore();
-    });
-
-    it('should set up signaling message listener', () => {
-      const callback = jest.fn();
-      const storeId = 'test-store-id';
-
-      registry.onSignalingMessage(storeId, callback);
-
-      expect(mockGunChain.get).toHaveBeenCalledWith('dig-nat-tools');
-      expect(mockGunChain.get).toHaveBeenCalledWith('signaling');
-      expect(mockGunChain.get).toHaveBeenCalledWith(storeId);
-      expect(mockGunChain.on).toHaveBeenCalled();
-    });
-
-    it('should call callback when message with timestamp is received', () => {
-      const callback = jest.fn();
-      const storeId = 'test-store-id';
-      const message = { test: 'message', timestamp: Date.now() };
-
-      registry.onSignalingMessage(storeId, callback);
-
-      // Simulate receiving a message
-      const onCallback = Array.from(mockOnCallbacks.values())[0];
-      if (onCallback) onCallback(message);
-
-      expect(callback).toHaveBeenCalledWith(message);
-    });
-
-    it('should not call callback when message without timestamp is received', () => {
-      const callback = jest.fn();
-      const storeId = 'test-store-id';
-      const message = { test: 'message' }; // No timestamp
-
-      registry.onSignalingMessage(storeId, callback);
-
-      // Simulate receiving a message
-      const onCallback = Array.from(mockOnCallbacks.values())[0];
-      if (onCallback) onCallback(message);
-
-      expect(callback).not.toHaveBeenCalled();
-    });
-  });
-
   describe('unregister', () => {
     beforeEach(() => {
       registry = new GunRegistry();
@@ -558,10 +468,9 @@ describe('GunRegistry', () => {
       await registry.unregister(storeId);
 
       expect(mockGunChain.get).toHaveBeenCalledWith('dig-nat-tools');
-      expect(mockGunChain.get).toHaveBeenCalledWith('hosts');
       expect(mockGunChain.get).toHaveBeenCalledWith(storeId);
       expect(mockGunChain.put).toHaveBeenCalledWith(null);
-      expect(consoleSpy).toHaveBeenCalledWith(`Unregistered host ${storeId}`);
+      expect(consoleSpy).toHaveBeenCalledWith(`✅ [GunRegistry] Successfully unregistered host: ${storeId}`);
 
       consoleSpy.mockRestore();
     });

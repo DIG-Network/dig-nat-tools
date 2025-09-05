@@ -24,7 +24,7 @@ export class FileClient implements IFileClient {
 
   constructor(options: FileClientOptions = {}) {
     this.options = {
-      peers: options.peers || ['http://nostalgiagame.go.ro:30876/gun'],
+      peers: options.peers || ['http://nostalgiagame.go.ro:30878/gun'],
       namespace: options.namespace || 'dig-nat-tools',
       timeout: options.timeout || 30000
     };
@@ -120,7 +120,18 @@ export class FileClient implements IFileClient {
     
     // Initialize WebTorrent client if not already done
     if (!this.webTorrentClient) {
-      this.webTorrentClient = new WebTorrent();
+      console.log(`✅ Initializing WebTorrent client with Windows-compatible settings...`);
+      this.webTorrentClient = new WebTorrent({
+        utp: false, // Disable UTP to avoid permission denied errors on Windows
+        dht: false  // Disable DHT which can also cause network issues
+      });
+      
+      // Add error handling
+      this.webTorrentClient.on('error', (err: string | Error) => {
+        console.error('❌ WebTorrent client error:', err);
+        // Don't throw here, just log the error
+      });
+      
       console.log(`✅ WebTorrent client initialized`);
     }
 
