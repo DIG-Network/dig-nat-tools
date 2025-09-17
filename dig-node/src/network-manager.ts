@@ -111,6 +111,9 @@ export class NetworkManager extends EventEmitter {
         
         // Set up peer discovery
         this.setupPeerDiscovery();
+        
+        // Actively discover existing peers
+        await this.discoverExistingPeers();
       } else {
         this.logger.warn('FileHost not available - file sharing will not work');
       }
@@ -153,13 +156,16 @@ export class NetworkManager extends EventEmitter {
     }
 
     // Listen for peer announcements
-    (this.gunRegistry as any).on('peerDiscovered', (capabilities: HostCapabilities) => {
+    (this.gunRegistry as any).on('peerDiscovered', async (capabilities: HostCapabilities) => {
       this.logger.debug(`Discovered peer: ${capabilities.storeId}`);
       this.emit('peerConnected', capabilities.storeId);
       
+      // Query for the peer's files
+      const files = await this.discoverPeerFiles(capabilities.storeId);
+      
       const announcement: PeerFileAnnouncement = {
         storeId: capabilities.storeId,
-        files: [],
+        files: files,
         capabilities: capabilities,
         timestamp: Date.now()
       };
@@ -175,6 +181,92 @@ export class NetworkManager extends EventEmitter {
     });
 
     this.logger.debug('Peer discovery set up');
+  }
+
+  private async discoverExistingPeers(): Promise<void> {
+    if (!this.fileClient || !this.digNatToolsLoaded) {
+      this.logger.debug('Cannot discover peers - FileClient not available');
+      return;
+    }
+
+    try {
+      this.logger.debug('🔍 Discovering existing peers...');
+      const availablePeers = await (this.fileClient as any).findAvailablePeers();
+      
+      this.logger.info(`🌐 Found ${availablePeers.length} existing peers`);
+      
+      for (const peerCapabilities of availablePeers) {
+        if (peerCapabilities.storeId && peerCapabilities.storeId !== this.storeId) {
+          this.logger.debug(`📡 Processing existing peer: ${peerCapabilities.storeId}`);
+          
+          // Create announcement for this peer
+          const announcement: PeerFileAnnouncement = {
+            storeId: peerCapabilities.storeId,
+            files: await this.discoverPeerFiles(peerCapabilities.storeId),
+            capabilities: peerCapabilities,
+            timestamp: Date.now()
+          };
+          
+          this.knownPeers.set(peerCapabilities.storeId, announcement);
+          this.emit('peerAnnouncement', announcement);
+        }
+      }
+    } catch (error) {
+      this.logger.error('Error discovering existing peers:', error);
+    }
+  }
+
+  private async discoverPeerFiles(storeId: string): Promise<DigFileInfo[]> {
+    if (!this.gunRegistry || !this.digNatToolsLoaded) {
+      return [];
+    }
+
+    try {
+      this.logger.debug(`🔍 Querying files from peer: ${storeId}`);
+      
+      return new Promise<DigFileInfo[]>((resolve) => {
+        const timeout = globalThis.setTimeout(() => {
+          this.logger.debug(`⏰ Timeout querying files from peer: ${storeId}`);
+          resolve([]);
+        }, 5000); // 5 second timeout
+
+        if ((this.gunRegistry as any).gun) {
+          (this.gunRegistry as any).gun
+            .get(this.config.gunOptions.namespace)
+            .get('files')
+            .get(storeId)
+            .once((data: string | null) => {
+              globalThis.clearTimeout(timeout);
+              
+              if (data) {
+                try {
+                  const fileList = JSON.parse(data);
+                  const digFiles: DigFileInfo[] = fileList.map((f: any) => ({
+                    path: f.path,
+                    hash: f.hash,
+                    size: f.size || 0
+                  }));
+                  
+                  this.logger.debug(`📋 Found ${digFiles.length} files from peer ${storeId}`);
+                  resolve(digFiles);
+                } catch (error) {
+                  this.logger.error(`Failed to parse file list from ${storeId}:`, error);
+                  resolve([]);
+                }
+              } else {
+                this.logger.debug(`📋 No file list found for peer ${storeId}`);
+                resolve([]);
+              }
+            });
+        } else {
+          globalThis.clearTimeout(timeout);
+          resolve([]);
+        }
+      });
+    } catch (error) {
+      this.logger.error(`Error querying files from peer ${storeId}:`, error);
+      return [];
+    }
   }
 
   public async announceFiles(files: DigFileInfo[]): Promise<void> {
@@ -209,9 +301,43 @@ export class NetworkManager extends EventEmitter {
         }
       }
 
+      // Also announce our file list to the Gun registry for peer discovery
+      await this.announceFileListToRegistry(files);
+
       this.logger.info(`Successfully announced ${sharedHashes.length} of ${files.length} files to network`);
     } catch (error) {
       this.logger.error('Failed to announce files:', error);
+    }
+  }
+
+  private async announceFileListToRegistry(files: DigFileInfo[]): Promise<void> {
+    if (!this.gunRegistry || !this.digNatToolsLoaded) {
+      return;
+    }
+
+    try {
+      this.logger.debug(`📢 Announcing ${files.length} files to Gun registry`);
+      
+      // Store our file list in the Gun registry under our storeId
+      const fileList = files.map(f => ({
+        hash: f.hash,
+        path: f.path,
+        size: f.size || 0
+      }));
+
+      // Use Gun to store our file list - this is a simple approach
+      // In a real implementation, this might be part of the GunRegistry class
+      if ((this.gunRegistry as any).gun) {
+        (this.gunRegistry as any).gun
+          .get(this.config.gunOptions.namespace)
+          .get('files')
+          .get(this.storeId)
+          .put(JSON.stringify(fileList));
+        
+        this.logger.debug(`📢 File list announced to registry for ${this.storeId}`);
+      }
+    } catch (error) {
+      this.logger.error('Failed to announce file list to registry:', error);
     }
   }
 
