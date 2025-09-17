@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+.env
+.env.local
+.env.production
+.env.development
+dig-node-config.json
+coverage/
+.nyc_output/
+.vscode/settings.json
+*.tsbuildinfo
