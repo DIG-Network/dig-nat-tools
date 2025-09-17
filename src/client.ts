@@ -1,10 +1,10 @@
-import http from 'node:http';
-import https from 'node:https';
-import WebTorrent from 'webtorrent';
-import { URL } from 'node:url';
-import { Readable } from 'node:stream';
-import { IFileClient, HostCapabilities } from './interfaces';
-import { GunRegistry } from './registry/gun-registry';
+import http from "node:http";
+import https from "node:https";
+import WebTorrent from "webtorrent";
+import { URL } from "node:url";
+import { Readable } from "node:stream";
+import { IFileClient, HostCapabilities } from "./interfaces";
+import { GunRegistry } from "./registry/gun-registry";
 
 export interface DownloadOptions {
   timeout?: number;
@@ -12,9 +12,9 @@ export interface DownloadOptions {
 }
 
 export interface FileClientOptions {
-  peers?: string[];       // Gun.js peer URLs
-  namespace?: string;     // Gun.js namespace
-  timeout?: number;       // Download timeout
+  peers?: string[]; // Gun.js peer URLs
+  namespace?: string; // Gun.js namespace
+  timeout?: number; // Download timeout
 }
 
 export class FileClient implements IFileClient {
@@ -24,17 +24,17 @@ export class FileClient implements IFileClient {
 
   constructor(options: FileClientOptions = {}) {
     this.options = {
-      peers: options.peers || ['http://nostalgiagame.go.ro:30878/gun'],
-      namespace: options.namespace || 'dig-nat-tools',
-      timeout: options.timeout || 30000
+      peers: options.peers || ["http://nostalgiagame.go.ro:30878/gun"],
+      namespace: options.namespace || "dig-nat-tools",
+      timeout: options.timeout || 30000,
     };
 
     this.gunRegistry = new GunRegistry({
       peers: this.options.peers,
-      namespace: this.options.namespace
+      namespace: this.options.namespace,
     });
   }
-  
+
   /**
    * Download a file from a peer and return it as a buffer
    * Supports both HTTP and WebTorrent magnet URIs
@@ -42,14 +42,17 @@ export class FileClient implements IFileClient {
    * @param options Download options
    * @returns A promise that resolves to the file content as a Buffer
    */
-  public async downloadAsBuffer(url: string, options: DownloadOptions = {}): Promise<Buffer> {
+  public async downloadAsBuffer(
+    url: string,
+    options: DownloadOptions = {}
+  ): Promise<Buffer> {
     console.log(`📥 Downloading file from: ${url}`);
-    
+
     // Check if this is a WebTorrent magnet URI
-    if (url.startsWith('magnet:')) {
+    if (url.startsWith("magnet:")) {
       return this.downloadViaWebTorrent(url);
     }
-    
+
     // For HTTP/HTTPS URLs, use direct download
     return FileClient.downloadAsBufferStatic(url, options);
   }
@@ -61,28 +64,39 @@ export class FileClient implements IFileClient {
    * @param options Download options
    * @returns A promise that resolves to the file content as a Buffer
    */
-  public async downloadFile(storeId: string, fileHash: string, options: DownloadOptions = {}): Promise<Buffer> {
+  public async downloadFile(
+    storeId: string,
+    fileHash: string,
+    options: DownloadOptions = {}
+  ): Promise<Buffer> {
     console.log(`🔍 Looking up peer ${storeId} in registry...`);
-    
+
     // 1. Look up peer in Gun.js registry
     const peer = await this.gunRegistry.findPeer(storeId);
-    
+
     if (!peer) {
       throw new Error(`Peer ${storeId} not found in registry`);
     }
 
     console.log(`🎯 Found peer with capabilities:`, {
       directHttp: peer.directHttp?.available || false,
-      webTorrent: peer.webTorrent?.available || false
+      webTorrent: peer.webTorrent?.available || false,
     });
 
     // 2. Try connection methods in order of preference: Direct HTTP > WebTorrent
-    
+
     // Method 1: Try direct HTTP connection (fastest, no P2P overhead)
     if (peer.directHttp?.available) {
       try {
-        console.log(`🌐 Attempting direct HTTP connection to ${peer.directHttp.ip}:${peer.directHttp.port}`);
-        return await this.downloadViaHttp(peer.directHttp.ip, peer.directHttp.port, fileHash, options);
+        console.log(
+          `🌐 Attempting direct HTTP connection to ${peer.directHttp.ip}:${peer.directHttp.port}`
+        );
+        return await this.downloadViaHttp(
+          peer.directHttp.ip,
+          peer.directHttp.port,
+          fileHash,
+          options
+        );
       } catch (error) {
         console.warn(`⚠️ Direct HTTP connection failed:`, error);
       }
@@ -92,7 +106,9 @@ export class FileClient implements IFileClient {
     if (peer.webTorrent?.available && peer.webTorrent.magnetUris) {
       try {
         // Find the magnet URI for this specific file
-        const magnetUri = peer.webTorrent.magnetUris.find(uri => uri.includes(fileHash));
+        const magnetUri = peer.webTorrent.magnetUris.find((uri) =>
+          uri.includes(fileHash)
+        );
         if (magnetUri) {
           console.log(`🧲 Attempting WebTorrent download via magnet URI`);
           return await this.downloadViaWebTorrent(magnetUri);
@@ -103,13 +119,17 @@ export class FileClient implements IFileClient {
         console.warn(`⚠️ WebTorrent connection failed:`, error);
       }
     }
-    
-    throw new Error(`No viable connection method available for peer ${storeId}. Tried: ${
-      [
-        peer.directHttp?.available ? 'Direct HTTP' : null,
-        peer.webTorrent?.available ? 'WebTorrent' : null
-      ].filter(Boolean).join(', ') || 'None'
-    }`);
+
+    throw new Error(
+      `No viable connection method available for peer ${storeId}. Tried: ${
+        [
+          peer.directHttp?.available ? "Direct HTTP" : null,
+          peer.webTorrent?.available ? "WebTorrent" : null,
+        ]
+          .filter(Boolean)
+          .join(", ") || "None"
+      }`
+    );
   }
 
   /**
@@ -117,27 +137,30 @@ export class FileClient implements IFileClient {
    */
   private async downloadViaWebTorrent(magnetUri: string): Promise<Buffer> {
     console.log(`🧲 Starting WebTorrent download...`);
-    
+
     // Initialize WebTorrent client if not already done
     if (!this.webTorrentClient) {
-      console.log(`✅ Initializing WebTorrent client with Windows-compatible settings...`);
+      console.log(
+        `✅ Initializing WebTorrent client with Windows-compatible settings...`
+      );
       this.webTorrentClient = new WebTorrent({
-        utp: false, // Disable UTP to avoid permission denied errors on Windows
-        dht: false  // Disable DHT which can also cause network issues
+        utp: true, // Enable UTP for NAT traversal
+        dht: true, // Enable DHT for peer discovery
+        lsd: false, // Disable local discovery, use STUN instead
       });
-      
+
       // Add error handling
-      this.webTorrentClient.on('error', (err: string | Error) => {
-        console.error('❌ WebTorrent client error:', err);
+      this.webTorrentClient.on("error", (err: string | Error) => {
+        console.error("❌ WebTorrent client error:", err);
         // Don't throw here, just log the error
       });
-      
+
       console.log(`✅ WebTorrent client initialized`);
     }
 
     return new Promise<Buffer>((resolve, reject) => {
       console.log(`🔄 Adding torrent from magnet URI...`);
-      
+
       const torrent = this.webTorrentClient!.add(magnetUri);
 
       // Timeout handler
@@ -145,15 +168,17 @@ export class FileClient implements IFileClient {
         if (torrent) {
           torrent.destroy();
         }
-        reject(new Error('WebTorrent download timeout'));
+        reject(new Error("WebTorrent download timeout"));
       }, this.options.timeout);
 
-      torrent.on('ready', () => {
-        console.log(`✅ Torrent ready! File: ${torrent.name}, Size: ${torrent.length} bytes`);
-        
+      torrent.on("ready", () => {
+        console.log(
+          `✅ Torrent ready! File: ${torrent.name}, Size: ${torrent.length} bytes`
+        );
+
         if (torrent.files.length === 0) {
           clearTimeout(timeout);
-          reject(new Error('No files in torrent'));
+          reject(new Error("No files in torrent"));
           return;
         }
 
@@ -165,28 +190,30 @@ export class FileClient implements IFileClient {
         // Create a stream to read the file
         const stream = file.createReadStream();
 
-        stream.on('data', (chunk: Buffer) => {
+        stream.on("data", (chunk: Buffer) => {
           chunks.push(chunk);
         });
 
-        stream.on('end', () => {
+        stream.on("end", () => {
           clearTimeout(timeout);
           const buffer = Buffer.concat(chunks);
-          console.log(`✅ WebTorrent download completed! ${buffer.length} bytes`);
-          
+          console.log(
+            `✅ WebTorrent download completed! ${buffer.length} bytes`
+          );
+
           // Destroy torrent to clean up
           torrent.destroy();
           resolve(buffer);
         });
 
-        stream.on('error', (error) => {
+        stream.on("error", (error) => {
           clearTimeout(timeout);
           torrent.destroy();
           reject(error);
         });
       });
 
-      torrent.on('error', (error) => {
+      torrent.on("error", (error) => {
         clearTimeout(timeout);
         console.error(`❌ WebTorrent error:`, error);
         reject(error);
@@ -197,7 +224,12 @@ export class FileClient implements IFileClient {
   /**
    * Download a file via HTTP
    */
-  private async downloadViaHttp(host: string, port: number, fileHash: string, options: DownloadOptions = {}): Promise<Buffer> {
+  private async downloadViaHttp(
+    host: string,
+    port: number,
+    fileHash: string,
+    options: DownloadOptions = {}
+  ): Promise<Buffer> {
     const url = `http://${host}:${port}/files/${fileHash}`;
     console.log(`🌐 HTTP download from: ${url}`);
     return FileClient.downloadAsBufferStatic(url, options);
@@ -209,7 +241,10 @@ export class FileClient implements IFileClient {
    * @param options Download options
    * @returns A promise that resolves to a readable stream
    */
-  public async downloadAsStream(url: string, options: DownloadOptions = {}): Promise<Readable> {
+  public async downloadAsStream(
+    url: string,
+    options: DownloadOptions = {}
+  ): Promise<Readable> {
     return FileClient.downloadAsStreamStatic(url, options);
   }
 
@@ -235,7 +270,9 @@ export class FileClient implements IFileClient {
    * @param storeId The store ID of the peer
    * @returns A promise that resolves to the peer's capabilities or null if not found
    */
-  public async checkPeerCapabilities(storeId: string): Promise<HostCapabilities | null> {
+  public async checkPeerCapabilities(
+    storeId: string
+  ): Promise<HostCapabilities | null> {
     return this.gunRegistry.findPeer(storeId);
   }
 
@@ -245,46 +282,60 @@ export class FileClient implements IFileClient {
    * @param options Download options
    * @returns A promise that resolves to the file buffer
    */
-  public static async downloadAsBufferStatic(url: string, options: DownloadOptions = {}): Promise<Buffer> {
+  public static async downloadAsBufferStatic(
+    url: string,
+    options: DownloadOptions = {}
+  ): Promise<Buffer> {
     const { timeout = 30000, onProgress } = options;
 
     return new Promise<Buffer>((resolve, reject) => {
       // Parse the URL
       const parsedUrl = new URL(url);
-      
+
       // Select the appropriate protocol
-      const protocol = parsedUrl.protocol === 'https:' ? https : http;
-      
-      const req = protocol.get(url, { timeout }, (res: http.IncomingMessage) => {
-        if (res.statusCode !== 200) {
-          return reject(new Error(`Failed to download file: ${res.statusCode} ${res.statusMessage}`));
-        }
+      const protocol = parsedUrl.protocol === "https:" ? https : http;
 
-        const contentLength = parseInt(res.headers['content-length'] || '0', 10);
-        const chunks: Buffer[] = [];
-        let downloadedBytes = 0;
-
-        res.on('data', (chunk: Buffer) => {
-          chunks.push(chunk);
-          downloadedBytes += chunk.length;
-
-          if (onProgress && contentLength > 0) {
-            onProgress(downloadedBytes, contentLength);
+      const req = protocol.get(
+        url,
+        { timeout },
+        (res: http.IncomingMessage) => {
+          if (res.statusCode !== 200) {
+            return reject(
+              new Error(
+                `Failed to download file: ${res.statusCode} ${res.statusMessage}`
+              )
+            );
           }
-        });
 
-        res.on('end', () => {
-          resolve(Buffer.concat(chunks));
-        });
-      });
+          const contentLength = parseInt(
+            res.headers["content-length"] || "0",
+            10
+          );
+          const chunks: Buffer[] = [];
+          let downloadedBytes = 0;
 
-      req.on('error', (err: Error) => {
+          res.on("data", (chunk: Buffer) => {
+            chunks.push(chunk);
+            downloadedBytes += chunk.length;
+
+            if (onProgress && contentLength > 0) {
+              onProgress(downloadedBytes, contentLength);
+            }
+          });
+
+          res.on("end", () => {
+            resolve(Buffer.concat(chunks));
+          });
+        }
+      );
+
+      req.on("error", (err: Error) => {
         reject(err);
       });
 
-      req.on('timeout', () => {
+      req.on("timeout", () => {
         req.destroy();
-        reject(new Error('Download timed out'));
+        reject(new Error("Download timed out"));
       });
     });
   }
@@ -295,31 +346,42 @@ export class FileClient implements IFileClient {
    * @param options Download options
    * @returns A promise that resolves to a readable stream
    */
-  public static async downloadAsStreamStatic(url: string, options: DownloadOptions = {}): Promise<Readable> {
+  public static async downloadAsStreamStatic(
+    url: string,
+    options: DownloadOptions = {}
+  ): Promise<Readable> {
     const { timeout = 30000 } = options;
 
     return new Promise<Readable>((resolve, reject) => {
       // Parse the URL
       const parsedUrl = new URL(url);
-      
+
       // Select the appropriate protocol
-      const protocol = parsedUrl.protocol === 'https:' ? https : http;
-      
-      const req = protocol.get(url, { timeout }, (res: http.IncomingMessage) => {
-        if (res.statusCode !== 200) {
-          return reject(new Error(`Failed to download file: ${res.statusCode} ${res.statusMessage}`));
+      const protocol = parsedUrl.protocol === "https:" ? https : http;
+
+      const req = protocol.get(
+        url,
+        { timeout },
+        (res: http.IncomingMessage) => {
+          if (res.statusCode !== 200) {
+            return reject(
+              new Error(
+                `Failed to download file: ${res.statusCode} ${res.statusMessage}`
+              )
+            );
+          }
+
+          resolve(res);
         }
+      );
 
-        resolve(res);
-      });
-
-      req.on('error', (err: Error) => {
+      req.on("error", (err: Error) => {
         reject(err);
       });
 
-      req.on('timeout', () => {
+      req.on("timeout", () => {
         req.destroy();
-        reject(new Error('Download timed out'));
+        reject(new Error("Download timed out"));
       });
     });
   }
@@ -333,39 +395,43 @@ export class FileClient implements IFileClient {
     return new Promise<boolean>((resolve) => {
       try {
         const url = `${baseUrl}/status`;
-        
+
         // Parse the URL
         const parsedUrl = new URL(url);
-        
+
         // Select the appropriate protocol
-        const protocol = parsedUrl.protocol === 'https:' ? https : http;
-        
-        const req = protocol.get(url, { timeout: 5000 }, (res: http.IncomingMessage) => {
-          if (res.statusCode !== 200) {
-            resolve(false);
-            return;
-          }
+        const protocol = parsedUrl.protocol === "https:" ? https : http;
 
-          let data = '';
-          res.on('data', (chunk) => {
-            data += chunk;
-          });
-
-          res.on('end', () => {
-            try {
-              const response = JSON.parse(data);
-              resolve(response.status === 'online');
-            } catch {
+        const req = protocol.get(
+          url,
+          { timeout: 5000 },
+          (res: http.IncomingMessage) => {
+            if (res.statusCode !== 200) {
               resolve(false);
+              return;
             }
-          });
-        });
 
-        req.on('error', () => {
+            let data = "";
+            res.on("data", (chunk) => {
+              data += chunk;
+            });
+
+            res.on("end", () => {
+              try {
+                const response = JSON.parse(data);
+                resolve(response.status === "online");
+              } catch {
+                resolve(false);
+              }
+            });
+          }
+        );
+
+        req.on("error", () => {
           resolve(false);
         });
 
-        req.on('timeout', () => {
+        req.on("timeout", () => {
           req.destroy();
           resolve(false);
         });
@@ -382,7 +448,7 @@ export class FileClient implements IFileClient {
     if (this.webTorrentClient) {
       this.webTorrentClient.destroy();
       this.webTorrentClient = null;
-      console.log('✅ WebTorrent client destroyed');
+      console.log("✅ WebTorrent client destroyed");
     }
   }
 }

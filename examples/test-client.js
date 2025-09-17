@@ -9,7 +9,7 @@ async function startClient() {
   const client = new FileClient({
     peers: ['http://nostalgiagame.go.ro:30878/gun'], // Connect to deployed relay
     namespace: 'dig-nat-tools-test', // Use same namespace as host
-    timeout: 30000 // 30 second timeout
+    timeout: 300000 // 5 minute timeout (300 seconds)
   });
 
   try {
