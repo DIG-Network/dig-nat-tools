@@ -9,7 +9,6 @@ export class NetworkManager extends EventEmitter {
   private logger: Logger;
   private fileHost: unknown = null;
   private fileClient: unknown = null;
-  private gunRegistry: unknown = null;
   private isStarted: boolean = false;
   private storeId: string;
   private knownPeers: Map<string, PeerFileAnnouncement> = new Map();
@@ -62,20 +61,7 @@ export class NetworkManager extends EventEmitter {
       this.logger.debug('dig-nat-tools exports:', Object.keys(this.digNatTools || {}));
       this.logger.debug('FileHost available:', !!(this.digNatTools as any)?.FileHost);
       this.logger.debug('ConnectionMode available:', !!(this.digNatTools as any)?.ConnectionMode);
-      this.logger.debug('GunRegistry available:', !!(this.digNatTools as any)?.GunRegistry);
-
-      // Initialize GunRegistry for peer discovery
-      if ((this.digNatTools as any)?.GunRegistry) {
-        this.gunRegistry = new (this.digNatTools as any).GunRegistry({
-          peers: this.config.gunOptions.peers,
-          namespace: this.config.gunOptions.namespace,
-          webrtc: this.config.gunOptions.webrtc
-        });
-
-        if (!(this.gunRegistry as any).isAvailable()) {
-          this.logger.warn('GunJS registry not available, peer discovery will be limited');
-        }
-      }
+      this.logger.debug('FileClient available:', !!(this.digNatTools as any)?.FileClient);
 
       // Initialize FileHost for sharing our files
       if ((this.digNatTools as any)?.FileHost && (this.digNatTools as any)?.ConnectionMode) {
@@ -109,8 +95,8 @@ export class NetworkManager extends EventEmitter {
         const capabilities = await (this.fileHost as any).start();
         this.logger.info('File host started with capabilities:', capabilities);
         
-        // Set up peer discovery
-        this.setupPeerDiscovery();
+        // Set up periodic peer discovery
+        this.setupPeriodicPeerDiscovery();
         
         // Actively discover existing peers
         await this.discoverExistingPeers();
@@ -150,37 +136,21 @@ export class NetworkManager extends EventEmitter {
     }
   }
 
-  private setupPeerDiscovery(): void {
-    if (!this.gunRegistry || !(this.gunRegistry as any).on) {
-      return;
-    }
+  private setupPeriodicPeerDiscovery(): void {
+    // Since FileHost and FileClient handle Gun.js internally, we'll use periodic polling 
+    // to discover peers instead of event-based discovery
+    this.logger.debug('Setting up periodic peer discovery...');
+    
+    // Start periodic peer discovery every 10 seconds
+    globalThis.setInterval(async () => {
+      try {
+        await this.discoverExistingPeers();
+      } catch (error) {
+        this.logger.debug('Error in periodic peer discovery:', error);
+      }
+    }, 10000);
 
-    // Listen for peer announcements
-    (this.gunRegistry as any).on('peerDiscovered', async (capabilities: HostCapabilities) => {
-      this.logger.debug(`Discovered peer: ${capabilities.storeId}`);
-      this.emit('peerConnected', capabilities.storeId);
-      
-      // Query for the peer's files
-      const files = await this.discoverPeerFiles(capabilities.storeId);
-      
-      const announcement: PeerFileAnnouncement = {
-        storeId: capabilities.storeId,
-        files: files,
-        capabilities: capabilities,
-        timestamp: Date.now()
-      };
-      
-      this.knownPeers.set(capabilities.storeId, announcement);
-      this.emit('peerAnnouncement', announcement);
-    });
-
-    (this.gunRegistry as any).on('peerLost', (storeId: string) => {
-      this.logger.debug(`Lost peer: ${storeId}`);
-      this.knownPeers.delete(storeId);
-      this.emit('peerDisconnected', storeId);
-    });
-
-    this.logger.debug('Peer discovery set up');
+    this.logger.debug('Periodic peer discovery set up');
   }
 
   private async discoverExistingPeers(): Promise<void> {
@@ -217,52 +187,20 @@ export class NetworkManager extends EventEmitter {
   }
 
   private async discoverPeerFiles(storeId: string): Promise<DigFileInfo[]> {
-    if (!this.gunRegistry || !this.digNatToolsLoaded) {
+    if (!this.fileClient || !this.digNatToolsLoaded) {
       return [];
     }
 
     try {
       this.logger.debug(`🔍 Querying files from peer: ${storeId}`);
       
-      return new Promise<DigFileInfo[]>((resolve) => {
-        const timeout = globalThis.setTimeout(() => {
-          this.logger.debug(`⏰ Timeout querying files from peer: ${storeId}`);
-          resolve([]);
-        }, 5000); // 5 second timeout
-
-        if ((this.gunRegistry as any).gun) {
-          (this.gunRegistry as any).gun
-            .get(this.config.gunOptions.namespace)
-            .get('files')
-            .get(storeId)
-            .once((data: string | null) => {
-              globalThis.clearTimeout(timeout);
-              
-              if (data) {
-                try {
-                  const fileList = JSON.parse(data);
-                  const digFiles: DigFileInfo[] = fileList.map((f: any) => ({
-                    path: f.path,
-                    hash: f.hash,
-                    size: f.size || 0
-                  }));
-                  
-                  this.logger.debug(`📋 Found ${digFiles.length} files from peer ${storeId}`);
-                  resolve(digFiles);
-                } catch (error) {
-                  this.logger.error(`Failed to parse file list from ${storeId}:`, error);
-                  resolve([]);
-                }
-              } else {
-                this.logger.debug(`📋 No file list found for peer ${storeId}`);
-                resolve([]);
-              }
-            });
-        } else {
-          globalThis.clearTimeout(timeout);
-          resolve([]);
-        }
-      });
+      // For now, we'll return empty files list since we don't have direct access
+      // to peer file announcements without the Gun registry events.
+      // The FileHost/FileClient handles the Gun.js registry internally,
+      // but doesn't expose file lists directly through the API.
+      // In a real implementation, this would require extending the API
+      // or using a different approach for file discovery.
+      return [];
     } catch (error) {
       this.logger.error(`Error querying files from peer ${storeId}:`, error);
       return [];
@@ -301,43 +239,9 @@ export class NetworkManager extends EventEmitter {
         }
       }
 
-      // Also announce our file list to the Gun registry for peer discovery
-      await this.announceFileListToRegistry(files);
-
       this.logger.info(`Successfully announced ${sharedHashes.length} of ${files.length} files to network`);
     } catch (error) {
       this.logger.error('Failed to announce files:', error);
-    }
-  }
-
-  private async announceFileListToRegistry(files: DigFileInfo[]): Promise<void> {
-    if (!this.gunRegistry || !this.digNatToolsLoaded) {
-      return;
-    }
-
-    try {
-      this.logger.debug(`📢 Announcing ${files.length} files to Gun registry`);
-      
-      // Store our file list in the Gun registry under our storeId
-      const fileList = files.map(f => ({
-        hash: f.hash,
-        path: f.path,
-        size: f.size || 0
-      }));
-
-      // Use Gun to store our file list - this is a simple approach
-      // In a real implementation, this might be part of the GunRegistry class
-      if ((this.gunRegistry as any).gun) {
-        (this.gunRegistry as any).gun
-          .get(this.config.gunOptions.namespace)
-          .get('files')
-          .get(this.storeId)
-          .put(JSON.stringify(fileList));
-        
-        this.logger.debug(`📢 File list announced to registry for ${this.storeId}`);
-      }
-    } catch (error) {
-      this.logger.error('Failed to announce file list to registry:', error);
     }
   }
 
