@@ -9,6 +9,14 @@ import { IFileHost, HostCapabilities } from "./interfaces";
 import { GunRegistry } from "./registry/gun-registry";
 import WebTorrent from "webtorrent";
 
+// Import Logger interface to match gun-registry pattern
+interface Logger {
+  debug(message: string, ...args: unknown[]): void;
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
+}
+
 // ✅ Replace enum with const object (better ES module support)
 export const ConnectionMode = {
   AUTO: "auto", // Try direct HTTP first, then WebTorrent
@@ -21,6 +29,7 @@ export interface HostOptions {
   ttl?: number; // Time to live for port mapping (seconds)
   connectionMode?: (typeof ConnectionMode)[keyof typeof ConnectionMode];
   storeId?: string; // Unique identifier for Gun.js registry
+  logger?: Logger; // Optional logger for debug output
   gun?: {
     peers: string[]; // Gun.js peer URLs
     namespace?: string; // Registry namespace
@@ -43,6 +52,7 @@ export class FileHost implements IFileHost {
   private upnpMapping: { external: number; internal: number } | null = null;
   private publicIp: string | null = null;
   private registrationInterval: ReturnType<typeof setInterval> | null = null;
+  private logger: Logger;
 
   constructor(options: HostOptions = {}) {
     this.options = options;
@@ -50,11 +60,20 @@ export class FileHost implements IFileHost {
     this.connectionMode = options.connectionMode || ConnectionMode.AUTO;
     this.storeId = options.storeId || this.generateUniqueId();
 
+    // Create a default logger that only shows warnings and errors if none provided
+    this.logger = options.logger || {
+      debug: (): void => {}, // Silent for debug when no logger provided
+      info: (): void => {}, // Silent for info when no logger provided  
+      warn: (message: string, ...args: unknown[]): void => console.warn(message, ...args),
+      error: (message: string, ...args: unknown[]): void => console.error(message, ...args)
+    };
+
     // Initialize Gun.js registry for peer discovery
     if (options.gun) {
       this.gunRegistry = new GunRegistry({
         peers: options.gun.peers,
         namespace: options.gun.namespace,
+        logger: this.logger, // Pass logger to gun registry
       });
     }
 
@@ -112,10 +131,10 @@ export class FileHost implements IFileHost {
   private async getPublicIp(): Promise<string | null> {
     try {
       const ip = await publicIpv4();
-      console.log(`🌐 Detected public IP: ${ip}`);
+      this.logger.debug(`🌐 Detected public IP: ${ip}`);
       return ip;
     } catch (error) {
-      console.warn(`⚠️ Failed to detect public IP:`, error);
+      this.logger.warn(`⚠️ Failed to detect public IP:`, error);
       return null;
     }
   }
@@ -125,7 +144,7 @@ export class FileHost implements IFileHost {
    */
   private async tryUpnpPortMapping(port: number): Promise<boolean> {
     try {
-      console.log(`🔧 Attempting UPnP port mapping for port ${port}...`);
+      this.logger.debug(`🔧 Attempting UPnP port mapping for port ${port}...`);
 
       this.upnpClient = natUpnp.createClient();
 
@@ -163,15 +182,15 @@ export class FileHost implements IFileHost {
       });
 
       this.upnpMapping = { external: port, internal: port };
-      console.log(`✅ UPnP port mapping successful for port ${port}`);
-      console.log(`🌐 External IP from UPnP: ${externalIp}`);
-      console.log(
+      this.logger.debug(`✅ UPnP port mapping successful for port ${port}`);
+      this.logger.debug(`🌐 External IP from UPnP: ${externalIp}`);
+      this.logger.debug(
         `🔗 File should be accessible at: http://${externalIp}:${port}/files/{hash}`
       );
 
       // Update our public IP if we got it from UPnP
       if (externalIp && (!this.publicIp || this.publicIp !== externalIp)) {
-        console.log(
+        this.logger.debug(
           `📡 Updating public IP from UPnP: ${this.publicIp} -> ${externalIp}`
         );
         this.publicIp = externalIp;
@@ -179,7 +198,7 @@ export class FileHost implements IFileHost {
 
       return true;
     } catch (error) {
-      console.warn(`⚠️ UPnP port mapping failed:`, error);
+      this.logger.warn(`⚠️ UPnP port mapping failed:`, error);
       this.upnpClient = null;
       return false;
     }
@@ -191,7 +210,7 @@ export class FileHost implements IFileHost {
   private async removeUpnpPortMapping(): Promise<void> {
     if (this.upnpClient && this.upnpMapping) {
       try {
-        console.log(
+        this.logger.debug(
           `🔧 Removing UPnP port mapping for port ${this.upnpMapping.external}...`
         );
 
@@ -210,9 +229,9 @@ export class FileHost implements IFileHost {
           );
         });
 
-        console.log(`✅ UPnP port mapping removed`);
+        this.logger.debug(`✅ UPnP port mapping removed`);
       } catch (error) {
-        console.warn(`⚠️ Failed to remove UPnP port mapping:`, error);
+        this.logger.warn(`⚠️ Failed to remove UPnP port mapping:`, error);
       } finally {
         this.upnpClient = null;
         this.upnpMapping = null;
@@ -224,7 +243,7 @@ export class FileHost implements IFileHost {
    * Start the file hosting server with connection strategy
    */
   public async start(): Promise<HostCapabilities> {
-    console.log(
+    this.logger.debug(
       `🚀 Starting FileHost with connection mode: ${this.connectionMode}`
     );
 
@@ -239,7 +258,7 @@ export class FileHost implements IFileHost {
     ) {
       try {
         await this.startHttpServer();
-        console.log(`✅ HTTP server started locally on port ${this.port}`);
+        this.logger.debug(`✅ HTTP server started locally on port ${this.port}`);
 
         // Get public IP
         this.publicIp = await this.getPublicIp();
@@ -250,31 +269,31 @@ export class FileHost implements IFileHost {
           // Different logic based on connection mode
           if (this.connectionMode === ConnectionMode.HTTP_ONLY) {
             // User explicitly requested HTTP-only mode, assume port is manually forwarded
-            console.log(
+            this.logger.debug(
               `🔧 HTTP-only mode: assuming port ${this.port} is manually forwarded`
             );
             isPortAccessible = true;
           } else {
             // AUTO mode: try UPnP first, assume it worked if no errors
-            console.log(
+            this.logger.debug(
               `🔧 AUTO mode: attempting UPnP port mapping for port ${this.port}...`
             );
             const upnpSuccess = await this.tryUpnpPortMapping(this.port);
 
             if (upnpSuccess) {
-              console.log(
+              this.logger.debug(
                 `✅ UPnP port mapping successful, assuming port is accessible`
               );
               isPortAccessible = true;
             } else {
-              console.warn(`⚠️ UPnP failed, HTTP will not be available`);
+              this.logger.warn(`⚠️ UPnP failed, HTTP will not be available`);
               isPortAccessible = false;
             }
           }
 
           // Set directHttp based on our determination
           if (isPortAccessible) {
-            console.log(
+            this.logger.info(
               `✅ HTTP server will be registered as publicly accessible at ${this.publicIp}:${this.port}`
             );
             capabilities.directHttp = {
@@ -283,7 +302,7 @@ export class FileHost implements IFileHost {
               port: this.port,
             };
           } else {
-            console.warn(
+            this.logger.warn(
               `⚠️ HTTP server is running locally but will not be registered as publicly accessible`
             );
             if (this.connectionMode === ConnectionMode.HTTP_ONLY) {
@@ -293,7 +312,7 @@ export class FileHost implements IFileHost {
             }
           }
         } else {
-          console.warn(`⚠️ Could not determine public IP address`);
+          this.logger.warn(`⚠️ Could not determine public IP address`);
           if (this.connectionMode === ConnectionMode.HTTP_ONLY) {
             throw new Error(
               "HTTP-only mode requested but could not determine public IP"
@@ -301,7 +320,7 @@ export class FileHost implements IFileHost {
           }
         }
       } catch (error) {
-        console.warn(`⚠️ HTTP server failed to start:`, error);
+        this.logger.warn(`⚠️ HTTP server failed to start:`, error);
         if (this.connectionMode === ConnectionMode.HTTP_ONLY) {
           throw new Error(
             `HTTP-only mode requested but HTTP server failed: ${error}`
@@ -316,7 +335,7 @@ export class FileHost implements IFileHost {
       this.connectionMode === ConnectionMode.WEBTORRENT_ONLY
     ) {
       try {
-        console.log(`🔄 Initializing WebTorrent client...`);
+        this.logger.debug(`🔄 Initializing WebTorrent client...`);
         this.webTorrentClient = new WebTorrent({
           utp: true, // Enable UTP for NAT traversal
           dht: true, // Enable DHT for peer discovery
@@ -325,21 +344,21 @@ export class FileHost implements IFileHost {
 
         // Add error handling for the WebTorrent client
         this.webTorrentClient.on("error", (err: string | Error) => {
-          console.error("❌ WebTorrent client error:", err);
+          this.logger.error("❌ WebTorrent client error:", err);
           // Don't throw here, just log the error
         });
 
         // Wait for WebTorrent to be ready
         await this.waitForWebTorrentReady();
 
-        console.log(`✅ WebTorrent client initialized and ready`);
+        this.logger.debug(`✅ WebTorrent client initialized and ready`);
 
         capabilities.webTorrent = {
           available: true,
           magnetUris: [],
         };
       } catch (error) {
-        console.warn(`⚠️ WebTorrent initialization failed:`, error);
+        this.logger.warn(`⚠️ WebTorrent initialization failed:`, error);
         if (this.connectionMode === ConnectionMode.WEBTORRENT_ONLY) {
           throw new Error(
             `WebTorrent-only mode requested but WebTorrent failed: ${error}`
@@ -358,7 +377,7 @@ export class FileHost implements IFileHost {
       );
     }
 
-    console.log(`🎉 FileHost initialized successfully with methods:`, {
+    this.logger.info(`🎉 FileHost initialized successfully with methods:`, {
       directHttp: capabilities.directHttp?.available || false,
       webTorrent: capabilities.webTorrent?.available || false,
     });
@@ -366,17 +385,17 @@ export class FileHost implements IFileHost {
     // Step 3: Register capabilities in Gun.js registry (AFTER WebTorrent is ready)
     if (this.gunRegistry) {
       try {
-        console.log(`🔄 Registering with Gun.js registry...`);
+        this.logger.debug(`🔄 Registering with Gun.js registry...`);
         this.capabilities = capabilities;
         await this.gunRegistry.register(capabilities);
-        console.log(
+        this.logger.debug(
           `✅ Registered capabilities in Gun.js registry with storeId: ${this.storeId}`
         );
 
         // Start periodic registration to keep data fresh
         this.startPeriodicRegistration();
       } catch (error) {
-        console.warn(`⚠️ Failed to register in Gun.js registry:`, error);
+        this.logger.warn(`⚠️ Failed to register in Gun.js registry:`, error);
       }
     }
 
@@ -394,7 +413,7 @@ export class FileHost implements IFileHost {
       return;
     }
 
-    console.log("🔄 Starting periodic registration (every 5 seconds)...");
+    this.logger.debug("🔄 Starting periodic registration (every 5 seconds)...");
 
     this.registrationInterval = setInterval(async () => {
       try {
@@ -405,13 +424,13 @@ export class FileHost implements IFileHost {
         };
 
         await this.gunRegistry!.register(updatedCapabilities);
-        console.log(`🔄 Re-registered capabilities for ${this.storeId}`);
+        this.logger.debug(`🔄 Re-registered capabilities for ${this.storeId}`);
       } catch (error) {
-        console.warn(`⚠️ Failed to re-register capabilities:`, error);
+        this.logger.warn(`⚠️ Failed to re-register capabilities:`, error);
       }
     }, 5000); // Re-register every 5 seconds
 
-    console.log("✅ Periodic registration started");
+    this.logger.debug("✅ Periodic registration started");
   }
 
   /**
@@ -421,7 +440,7 @@ export class FileHost implements IFileHost {
     if (this.registrationInterval) {
       clearInterval(this.registrationInterval);
       this.registrationInterval = null;
-      console.log("✅ Periodic registration stopped");
+      this.logger.debug("✅ Periodic registration stopped");
     }
   }
 
@@ -440,11 +459,11 @@ export class FileHost implements IFileHost {
 
       // WebTorrent is ready when it's initialized and can accept operations
       // We'll give it a small delay to ensure it's fully initialized
-      console.log(`⏳ Waiting for WebTorrent client to be ready...`);
+      this.logger.debug(`⏳ Waiting for WebTorrent client to be ready...`);
 
       setTimeout(() => {
         clearTimeout(timeout);
-        console.log(`🎯 WebTorrent client is ready`);
+        this.logger.debug(`🎯 WebTorrent client is ready`);
         resolve();
       }, 1000); // Give WebTorrent 1 second to initialize properly
     });
@@ -455,7 +474,7 @@ export class FileHost implements IFileHost {
    */
   private async startHttpServer(): Promise<void> {
     return new Promise((resolve, reject) => {
-      console.log(`Starting HTTP server on port ${this.port || "random"}...`);
+      this.logger.debug(`Starting HTTP server on port ${this.port || "random"}...`);
 
       this.server = this.app.listen(this.port, "0.0.0.0", () => {
         if (!this.server) {
@@ -468,7 +487,7 @@ export class FileHost implements IFileHost {
         }
 
         this.port = address.port;
-        console.log(`HTTP server listening on port ${this.port}`);
+        this.logger.debug(`HTTP server listening on port ${this.port}`);
         resolve();
       });
 
@@ -482,7 +501,7 @@ export class FileHost implements IFileHost {
    * Stop the file hosting server
    */
   public async stop(): Promise<void> {
-    console.log("🛑 Stopping FileHost...");
+    this.logger.debug("🛑 Stopping FileHost...");
 
     // Stop periodic registration first
     this.stopPeriodicRegistration();
@@ -495,9 +514,9 @@ export class FileHost implements IFileHost {
       try {
         this.webTorrentClient.destroy();
         this.webTorrentClient = null;
-        console.log("✅ WebTorrent client stopped");
+        this.logger.debug("✅ WebTorrent client stopped");
       } catch (error) {
-        console.warn("⚠️ Error stopping WebTorrent client:", error);
+        this.logger.warn("⚠️ Error stopping WebTorrent client:", error);
       }
     }
 
@@ -505,9 +524,9 @@ export class FileHost implements IFileHost {
     if (this.gunRegistry) {
       try {
         await this.gunRegistry.unregister(this.storeId);
-        console.log("✅ Unregistered from Gun.js registry");
+        this.logger.debug("✅ Unregistered from Gun.js registry");
       } catch (error) {
-        console.warn("⚠️ Failed to unregister from Gun.js registry:", error);
+        this.logger.warn("⚠️ Failed to unregister from Gun.js registry:", error);
       }
     }
 
@@ -516,10 +535,10 @@ export class FileHost implements IFileHost {
       return new Promise((resolve, reject) => {
         this.server?.close((err) => {
           if (err) {
-            console.error("❌ Error stopping HTTP server:", err);
+            this.logger.error("❌ Error stopping HTTP server:", err);
             reject(err);
           } else {
-            console.log("✅ HTTP server stopped");
+            this.logger.debug("✅ HTTP server stopped");
             this.server = null; // Clear the server reference
             resolve();
           }
@@ -527,7 +546,7 @@ export class FileHost implements IFileHost {
       });
     }
 
-    console.log("✅ FileHost stopped successfully");
+    this.logger.debug("✅ FileHost stopped successfully");
     return Promise.resolve();
   }
 
@@ -543,16 +562,16 @@ export class FileHost implements IFileHost {
       throw new Error(`File not found: ${filePath}`);
     }
 
-    console.log(`📤 Sharing file: ${filePath}`);
+    this.logger.debug(`📤 Sharing file: ${filePath}`);
 
     // Calculate SHA256 hash of the file content
     const hash = await this.calculateFileHash(filePath);
-    console.log(`🔑 File hash: ${hash}`);
+    this.logger.debug(`🔑 File hash: ${hash}`);
 
     // Copy the file to a location named by its hash (if not already there)
     if (!fs.existsSync(hash)) {
       fs.copyFileSync(filePath, hash);
-      console.log(`📋 File copied to hash-named location`);
+      this.logger.debug(`📋 File copied to hash-named location`);
     }
 
     // Track this hash as a shared file
@@ -561,7 +580,7 @@ export class FileHost implements IFileHost {
     // If WebTorrent is available, seed the file
     if (this.webTorrentClient) {
       try {
-        console.log(`🔄 Starting WebTorrent seeding for ${hash}...`);
+        this.logger.debug(`🔄 Starting WebTorrent seeding for ${hash}...`);
 
         // Seed the file and wait for the torrent to be ready
         await new Promise<void>((resolve, reject) => {
@@ -573,15 +592,15 @@ export class FileHost implements IFileHost {
             clearTimeout(seedTimeout);
             const magnetURI = torrent.magnetURI;
             this.magnetUris.set(hash, magnetURI);
-            console.log(`🧲 WebTorrent seeding started for ${hash}`);
-            console.log(`   Magnet URI: ${magnetURI}`);
+            this.logger.debug(`🧲 WebTorrent seeding started for ${hash}`);
+            this.logger.debug(`   Magnet URI: ${magnetURI}`);
             resolve();
           });
         });
 
         // Update capabilities in Gun.js registry with new magnet URI
         if (this.gunRegistry && this.capabilities) {
-          console.log(`🔄 Updating Gun.js registry with new magnet URI...`);
+          this.logger.debug(`🔄 Updating Gun.js registry with new magnet URI...`);
 
           // Update the current capabilities with the new magnet URI
           if (this.capabilities.webTorrent) {
@@ -591,10 +610,10 @@ export class FileHost implements IFileHost {
           }
 
           await this.gunRegistry.register(this.capabilities);
-          console.log(`✅ Updated Gun.js registry with magnet URI for ${hash}`);
+          this.logger.debug(`✅ Updated Gun.js registry with magnet URI for ${hash}`);
         }
       } catch (error) {
-        console.warn(`⚠️ Failed to seed file via WebTorrent:`, error);
+        this.logger.warn(`⚠️ Failed to seed file via WebTorrent:`, error);
       }
     }
 
@@ -606,7 +625,7 @@ export class FileHost implements IFileHost {
    * This removes the file from both HTTP and WebTorrent sharing
    */
   public unshareFile(hash: string, deleteFile: boolean = false): boolean {
-    console.log(`📤 Unsharing file: ${hash}`);
+    this.logger.debug(`📤 Unsharing file: ${hash}`);
 
     const wasShared = this.sharedFiles.delete(hash);
 
@@ -617,11 +636,11 @@ export class FileHost implements IFileHost {
         const torrent = this.webTorrentClient.get(magnetURI!);
         if (torrent && typeof torrent === "object" && "destroy" in torrent) {
           (torrent as { destroy(): void }).destroy();
-          console.log(`🧲 Stopped WebTorrent seeding for ${hash}`);
+          this.logger.debug(`🧲 Stopped WebTorrent seeding for ${hash}`);
         }
         this.magnetUris.delete(hash);
       } catch (error) {
-        console.warn(`⚠️ Error stopping WebTorrent seeding:`, error);
+        this.logger.warn(`⚠️ Error stopping WebTorrent seeding:`, error);
       }
     }
 
@@ -629,9 +648,9 @@ export class FileHost implements IFileHost {
     if (deleteFile && fs.existsSync(hash)) {
       try {
         fs.unlinkSync(hash);
-        console.log(`🗑️ Deleted file ${hash}`);
+        this.logger.debug(`🗑️ Deleted file ${hash}`);
       } catch (error) {
-        console.warn(`⚠️ Failed to delete file ${hash}:`, error);
+        this.logger.warn(`⚠️ Failed to delete file ${hash}:`, error);
       }
     }
 
