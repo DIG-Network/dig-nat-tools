@@ -84,7 +84,7 @@ export class NetworkManager extends EventEmitter {
         this.fileClient = new (this.digNatTools as any).FileClient({
           peers: this.config.gunOptions.peers,
           namespace: this.config.gunOptions.namespace,
-          timeout: 30000
+          timeout: 300000
         });
         this.logger.debug('FileClient instance created successfully');
       }
