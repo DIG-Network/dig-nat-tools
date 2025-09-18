@@ -405,7 +405,7 @@ export class NetworkManager extends EventEmitter {
         // Find magnet URI that contains the file hash
         const magnetUri = capabilities.webTorrent.magnetUris.find(uri => uri.includes(fileHash));
         if (magnetUri) {
-          this.logger.debug(`🧲 Found magnet URI: ${magnetUri}`);
+          this.logger.info(`🧲 Found magnet URI: ${magnetUri}`);
           
           // Use FileClient's downloadFile method with the magnet URI
           const fileData = await (this.fileClient as any).downloadFile(capabilities.storeId, fileHash);
