@@ -159,22 +159,37 @@ export class DigNode extends EventEmitter {
           const fileHash = decodeURIComponent(dnMatch[1]);
           this.logger.debug(`📄 Available file: ${fileHash}`);
           
-          // Check if we already have this file
+          // Check if we already have this file or are currently downloading it
           const hasFile = this.localFiles.some(f => f.hash === fileHash);
-          if (!hasFile) {
+          const isDownloading = this.activeDownloads.has(fileHash);
+          
+          if (!hasFile && !isDownloading) {
             this.logger.info(`🔍 Found new file available: ${fileHash}`);
             
-            // Example: Auto-download the file (you could make this optional)
-            const success = await this.downloadFileFromPeer(
-              announcement.capabilities, 
-              fileHash, 
-              `${fileHash}.dig`
-            );
+            // Mark as downloading to prevent duplicate attempts
+            this.activeDownloads.add(fileHash);
+            this.logger.debug(`📥 Marked file ${fileHash} as downloading`);
             
-            if (success) {
-              // Rescan files to include the newly downloaded file
-              await this.scanDigFiles();
+            try {
+              const success = await this.downloadFileFromPeer(
+                announcement.capabilities, 
+                fileHash, 
+                `${fileHash}.dig`
+              );
+              
+              if (success) {
+                // Rescan files to include the newly downloaded file
+                await this.scanDigFiles();
+              }
+            } finally {
+              // Always remove from active downloads when done
+              this.activeDownloads.delete(fileHash);
+              this.logger.debug(`🔄 Removed file ${fileHash} from active downloads`);
             }
+          } else if (isDownloading) {
+            this.logger.debug(`⏳ File ${fileHash} is already being downloaded, skipping`);
+          } else {
+            this.logger.debug(`✅ File ${fileHash} already exists locally, skipping`);
           }
         }
       }
