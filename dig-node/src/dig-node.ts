@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { NodeConfig, DigFileInfo, PeerFileAnnouncement, DownloadJob } from './types.js';
+import { NodeConfig, DigFileInfo, PeerFileAnnouncement, DownloadJob, HostCapabilities } from './types.js';
 import { NetworkManager } from './network-manager.js';
 import { Logger } from './logger.js';
 import fs from 'fs';
@@ -139,87 +139,64 @@ export class DigNode extends EventEmitter {
   }
 
   private async handlePeerAnnouncement(announcement: PeerFileAnnouncement): Promise<void> {
-    const localHashes = new Set(this.localFiles.map((f: DigFileInfo) => f.hash));
+    this.logger.debug(`📡 Received peer announcement from ${announcement.storeId}`);
+    this.logger.debug(`📊 Peer capabilities:`, {
+      storeId: announcement.capabilities.storeId,
+      directHttp: announcement.capabilities.directHttp?.available || false,
+      webTorrent: announcement.capabilities.webTorrent?.available || false
+    });
     
-    // Find files we don't have
-    const missingFiles = announcement.files.filter(file => !localHashes.has(file.hash));
+    if (announcement.capabilities.webTorrent?.magnetUris && 
+        announcement.capabilities.webTorrent.magnetUris.length > 0) {
+      
+      this.logger.info(`🧲 Peer ${announcement.storeId} has ${announcement.capabilities.webTorrent.magnetUris.length} files available`);
     
-    if (missingFiles.length > 0) {
-      this.logger.info(`🔍 Found ${missingFiles.length} new files from peer ${announcement.storeId}`);
       
-      // Queue downloads
-      for (const file of missingFiles) {
-        await this.queueDownload(file, announcement);
-      }
-    }
-  }
-
-  private async queueDownload(file: DigFileInfo, announcement: PeerFileAnnouncement): Promise<void> {
-    try {
-      // Use the NetworkManager's downloadFileByHash method for automatic peer lookup
-      const success = await this.networkManager.downloadFileByHash(
-        announcement.storeId, 
-        file.hash, 
-        file.path
-      );
-      
-      if (success) {
-        this.logger.info(`✅ Downloaded: ${file.path}`);
-      } else {
-        this.logger.warn(`❌ Failed to download: ${file.path}`);
-        
-        // Fallback: try to get URL and use regular download
-        const downloadUrl = await this.networkManager.getFileUrl(file.hash, announcement.storeId);
-        if (downloadUrl) {
-          const job: DownloadJob = {
-            hash: file.hash,
-            sourceUrl: downloadUrl,
-            targetPath: file.path,
-            priority: 1
-          };
-
-          this.downloadQueue.push(job);
-          this.logger.debug(`📥 Queued download as fallback: ${file.path}`);
-          this.processDownloadQueue();
+      for (const magnetUri of announcement.capabilities.webTorrent.magnetUris) {
+        // Extract file hash from magnet URI (dn parameter contains the hash)
+        const dnMatch = magnetUri.match(/dn=([^&]+)/);
+        if (dnMatch) {
+          const fileHash = decodeURIComponent(dnMatch[1]);
+          this.logger.debug(`📄 Available file: ${fileHash}`);
+          
+          // Check if we already have this file
+          const hasFile = this.localFiles.some(f => f.hash === fileHash);
+          if (!hasFile) {
+            this.logger.info(`🔍 Found new file available: ${fileHash}`);
+            
+            // Example: Auto-download the file (you could make this optional)
+            const success = await this.downloadFileFromPeer(
+              announcement.capabilities, 
+              fileHash, 
+              `${fileHash}.dig`
+            );
+            
+            if (success) {
+              // Rescan files to include the newly downloaded file
+              await this.scanDigFiles();
+            }
+          }
         }
       }
-    } catch (error) {
-      this.logger.error(`Failed to queue download for ${file.hash}:`, error);
     }
   }
 
-  private async processDownloadQueue(): Promise<void> {
-    const maxConcurrent = this.config.maxConcurrentDownloads || 5;
-    
-    while (this.downloadQueue.length > 0 && this.activeDownloads.size < maxConcurrent) {
-      const job = this.downloadQueue.shift();
-      if (!job) break;
-
-      if (this.activeDownloads.has(job.hash)) {
-        continue; // Already downloading
-      }
-
-      this.activeDownloads.add(job.hash);
-      this.downloadFile(job).finally(() => {
-        this.activeDownloads.delete(job.hash);
-      });
-    }
-  }
-
-  private async downloadFile(job: DownloadJob): Promise<void> {
+  private async downloadFileFromPeer(capabilities: HostCapabilities, fileHash: string, fileName: string): Promise<boolean> {
     try {
-      this.logger.info(`📥 Downloading: ${job.targetPath}`);
+      this.logger.info(`📥 Downloading file ${fileHash} from peer ${capabilities.storeId}`);
       
-      const success = await this.networkManager.downloadFile(job.sourceUrl, job.targetPath);
+      const success = await this.networkManager.downloadFileFromPeer(capabilities, fileHash, fileName);
       
       if (success) {
-        this.logger.info(`✅ Downloaded: ${job.targetPath}`);
-        // File manager will detect the new file and add it to our collection
+        this.logger.info(`✅ Successfully downloaded: ${fileName}`);
       } else {
-        this.logger.warn(`❌ Failed to download: ${job.targetPath}`);
+        this.logger.warn(`❌ Failed to download: ${fileName}`);
       }
+      
+      return success;
     } catch (error) {
-      this.logger.error(`Error downloading ${job.targetPath}:`, error);
+      this.logger.error(`Error downloading file ${fileHash}:`, error);
+      return false;
     }
   }
 
@@ -229,7 +206,6 @@ export class DigNode extends EventEmitter {
     this.syncTimer = globalThis.setInterval(async () => {
       try {
         await this.announceFiles();
-        this.processDownloadQueue();
       } catch (error) {
         this.logger.error('Error during periodic sync:', error);
       }

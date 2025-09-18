@@ -169,10 +169,9 @@ export class NetworkManager extends EventEmitter {
         if (peerCapabilities.storeId && peerCapabilities.storeId !== this.storeId) {
           this.logger.debug(`📡 Processing existing peer: ${peerCapabilities.storeId}`);
           
-          // Create announcement for this peer
+          // Create announcement for this peer with just capabilities
           const announcement: PeerFileAnnouncement = {
             storeId: peerCapabilities.storeId,
-            files: await this.discoverPeerFiles(peerCapabilities.storeId),
             capabilities: peerCapabilities,
             timestamp: Date.now()
           };
@@ -183,27 +182,6 @@ export class NetworkManager extends EventEmitter {
       }
     } catch (error) {
       this.logger.error('Error discovering existing peers:', error);
-    }
-  }
-
-  private async discoverPeerFiles(storeId: string): Promise<DigFileInfo[]> {
-    if (!this.fileClient || !this.digNatToolsLoaded) {
-      return [];
-    }
-
-    try {
-      this.logger.debug(`🔍 Querying files from peer: ${storeId}`);
-      
-      // For now, we'll return empty files list since we don't have direct access
-      // to peer file announcements without the Gun registry events.
-      // The FileHost/FileClient handles the Gun.js registry internally,
-      // but doesn't expose file lists directly through the API.
-      // In a real implementation, this would require extending the API
-      // or using a different approach for file discovery.
-      return [];
-    } catch (error) {
-      this.logger.error(`Error querying files from peer ${storeId}:`, error);
-      return [];
     }
   }
 
@@ -390,6 +368,71 @@ export class NetworkManager extends EventEmitter {
     } catch (error) {
       this.logger.error(`Failed to share file ${filePath}:`, error);
       return null;
+    }
+  }
+
+  public async downloadFileFromPeer(capabilities: HostCapabilities, fileHash: string, targetFileName: string): Promise<boolean> {
+    if (!this.fileClient || !this.digNatToolsLoaded) {
+      this.logger.debug('Cannot download file - FileClient not available');
+      return false;
+    }
+
+    try {
+      this.logger.debug(`📥 Attempting to download file with hash: ${fileHash} from peer: ${capabilities.storeId}`);
+      
+      // Follow the same logic as test-client.js
+      if (capabilities.directHttp?.available) {
+        this.logger.debug(`🌐 Direct HTTP available at ${capabilities.directHttp.ip}:${capabilities.directHttp.port}`);
+        
+        // Try direct download using FileClient's downloadFile method
+        const fileData = await (this.fileClient as any).downloadFile(capabilities.storeId, fileHash);
+        
+        // Save the file to the dig directory
+        const targetPath = path.join(this.config.digDirectory, targetFileName);
+        const targetDir = path.dirname(targetPath);
+        
+        if (!fs.existsSync(targetDir)) {
+          fs.mkdirSync(targetDir, { recursive: true });
+        }
+        
+        fs.writeFileSync(targetPath, fileData);
+        this.logger.info(`✅ Successfully downloaded file: ${targetFileName} (${fileData.length} bytes)`);
+        return true;
+        
+      } else if (capabilities.webTorrent?.available && capabilities.webTorrent.magnetUris) {
+        this.logger.debug(`🧲 Using WebTorrent for file download`);
+        
+        // Find magnet URI that contains the file hash
+        const magnetUri = capabilities.webTorrent.magnetUris.find(uri => uri.includes(fileHash));
+        if (magnetUri) {
+          this.logger.debug(`🧲 Found magnet URI: ${magnetUri}`);
+          
+          // Use FileClient's downloadFile method with the magnet URI
+          const fileData = await (this.fileClient as any).downloadFile(capabilities.storeId, fileHash);
+          
+          // Save the file to the dig directory
+          const targetPath = path.join(this.config.digDirectory, targetFileName);
+          const targetDir = path.dirname(targetPath);
+          
+          if (!fs.existsSync(targetDir)) {
+            fs.mkdirSync(targetDir, { recursive: true });
+          }
+          
+          fs.writeFileSync(targetPath, fileData);
+          this.logger.info(`✅ Successfully downloaded file via WebTorrent: ${targetFileName} (${fileData.length} bytes)`);
+          return true;
+        } else {
+          this.logger.warn(`⚠️ Could not find magnet URI for file hash: ${fileHash}`);
+          return false;
+        }
+      } else {
+        this.logger.warn(`❌ No viable download method available for peer ${capabilities.storeId}`);
+        return false;
+      }
+      
+    } catch (error) {
+      this.logger.error(`❌ Failed to download file ${fileHash} from peer ${capabilities.storeId}:`, error);
+      return false;
     }
   }
 }

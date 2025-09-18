@@ -13,12 +13,6 @@ export interface NodeConfig {
   maxConcurrentDownloads?: number;
 }
 
-export interface DigFileInfo {
-  hash: string;
-  path: string;
-  size: number;
-  lastModified: number;
-}
 
 export interface HostCapabilities {
   storeId: string;
@@ -47,7 +41,6 @@ export interface HostCapabilities {
 
 export interface PeerFileAnnouncement {
   storeId: string;
-  files: DigFileInfo[];
   capabilities: HostCapabilities;
   timestamp: number;
 }
@@ -57,6 +50,13 @@ export interface DownloadJob {
   sourceUrl: string;
   targetPath: string;
   priority: number;
+}
+
+export interface DigFileInfo {
+  path: string;
+  hash?: string;
+  size?: number;
+  lastModified?: number;
 }
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
