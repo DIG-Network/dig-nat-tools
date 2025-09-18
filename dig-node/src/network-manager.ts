@@ -376,4 +376,20 @@ export class NetworkManager extends EventEmitter {
   public isDigNatToolsAvailable(): boolean {
     return this.digNatToolsLoaded;
   }
+
+  public async shareFile(filePath: string): Promise<string | null> {
+    if (!this.fileHost || !this.digNatToolsLoaded) {
+      this.logger.debug(`Cannot share file ${filePath} - FileHost not available`);
+      return null;
+    }
+
+    try {
+      const hash = await (this.fileHost as any).shareFile(filePath);
+      this.logger.debug(`📤 File shared: ${filePath} -> ${hash}`);
+      return hash;
+    } catch (error) {
+      this.logger.error(`Failed to share file ${filePath}:`, error);
+      return null;
+    }
+  }
 }
