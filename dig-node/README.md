@@ -1,83 +1,99 @@
-# DIG Node
+# DIG Node - Windows CLI & Service
 
-A CLI application for participating in the DIG network file sharing system.
+A Windows CLI application for running DIG network file sharing nodes with service capabilities.
 
 ## Features
 
-- 🔄 Automatically scans and shares .dig files from ~/.dig directory
-- 🌐 Peer discovery and communication via GunJS
-- 📥 Automatic download of missing .dig files from other nodes
-- 🚀 Built on dig-nat-tools for NAT traversal and P2P connectivity
-- 📝 Comprehensive logging and configuration options
+- **CLI Interface**: Easy-to-use command-line interface
+- **Windows Service**: Install and run as a background Windows service
+- **Auto-discovery**: Automatically connects to the DIG network
+- **File Sharing**: Share and download files through the DIG network
+- **Service Management**: Full lifecycle management of the Windows service
+
+## Requirements
+
+- Windows 10/11 or Windows Server 2016+
+- Node.js 18+ (https://nodejs.org/)
+- Administrator privileges (for service installation)
 
 ## Installation
 
-1. Navigate to the dig-node directory:
-   ```bash
-   cd dig-node
-   ```
+### Quick Install
 
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
+1. **Download** or clone this repository
+2. **Run as Administrator**: Right-click `install.bat` and select "Run as administrator"
+3. Follow the installation prompts
 
-3. Build the project:
-   ```bash
-   npm run build
-   ```
+### Manual Install
 
-4. (Optional) Link globally for system-wide access:
-   ```bash
-   npm link
-   ```
+```powershell
+# 1. Install dependencies
+npm install
+
+# 2. Build the project
+npm run build
+
+# 3. Install CLI globally
+npm link
+
+# 4. Create sample config
+dig-node config
+```
 
 ## Usage
 
-### Start a node
+### Basic Commands
+
 ```bash
+# Show help
+dig-node --help
+
+# Generate configuration file
+dig-node config
+
+# Start node in foreground (for testing)
 dig-node start
+
+# Start with custom config
+dig-node start -c ./my-config.json
 ```
 
-### Start with custom options
-```bash
-dig-node start --port 9090 --dig-dir ./my-dig-files --log-level debug
-```
+### Windows Service Commands
 
-### Generate a configuration file
 ```bash
-dig-node config --output my-config.json
-```
+# Install as Windows service
+dig-node install-service
 
-### Start with configuration file
-```bash
-dig-node start --config my-config.json
+# Install with custom config
+dig-node install-service -c ./my-config.json
+
+# Start the service
+dig-node start-service
+
+# Stop the service
+dig-node stop-service
+
+# Check service status
+dig-node status
+
+# Uninstall the service
+dig-node uninstall-service
 ```
 
 ## Configuration
 
-### Command Line Options
-
-- `--port <port>`: Port to listen on (default: 8080)
-- `--dig-dir <path>`: Directory containing .dig files (default: ~/.dig)
-- `--peers <peers>`: Comma-separated list of GunJS peers
-- `--namespace <namespace>`: GunJS namespace (default: dig-network)
-- `--log-level <level>`: Log level (debug, info, warn, error, default: info)
-- `--config <path>`: Path to configuration file
-
-### Configuration File Format
+The configuration file (`dig-node-config.json`) contains:
 
 ```json
 {
   "port": 8080,
-  "digDirectory": "/home/user/.dig",
+  "digDirectory": "C:\\Users\\YourUser\\.dig",
   "gunOptions": {
     "peers": ["http://nostalgiagame.go.ro:30878/gun"],
     "namespace": "dig-network",
     "webrtc": {
       "iceServers": [
-        { "urls": "stun:stun.l.google.com:19302" },
-        { "urls": "stun:stun1.l.google.com:19302" }
+        { "urls": "stun:stun.l.google.com:19302" }
       ]
     }
   },
@@ -87,73 +103,109 @@ dig-node start --config my-config.json
 }
 ```
 
-## Architecture
+### Configuration Options
 
-The DIG Node consists of several key components:
+- **port**: Port for the local file server
+- **digDirectory**: Directory where files are stored and shared from
+- **gunOptions**: GunDB configuration for peer-to-peer networking
+- **logLevel**: Logging level (debug, info, warn, error)
+- **syncInterval**: How often to sync with peers (milliseconds)
+- **maxConcurrentDownloads**: Maximum concurrent file downloads
 
-### DigNode (Main Controller)
-- Coordinates all components
-- Handles graceful startup and shutdown
-- Manages periodic sync operations
+## Quick Start
 
-### FileManager
-- Monitors the .dig directory for changes
-- Calculates SHA256 hashes for files
-- Emits events when files are added/removed
+1. **Install the CLI** using `install.bat` (as Administrator)
 
-### NetworkManager
-- Integrates with dig-nat-tools for P2P connectivity
-- Handles peer discovery via GunJS
-- Manages file announcements and downloads
+2. **Create configuration**:
+   ```bash
+   dig-node config -o "%USERPROFILE%\.dig\dig-node-config.json"
+   ```
 
-### Logger
-- Provides structured logging with multiple levels
-- Color-coded output for better readability
+3. **Install as Windows service**:
+   ```bash
+   dig-node install-service -c "%USERPROFILE%\.dig\dig-node-config.json"
+   ```
+
+4. **Start the service**:
+   ```bash
+   dig-node start-service
+   ```
+
+5. **Check status**:
+   ```bash
+   dig-node status
+   ```
+
+## File Sharing
+
+Once running, the node will:
+
+- **Download files** from the DIG network to your `digDirectory`
+- **Share files** from your `digDirectory` with other nodes
+- **Auto-sync** with other peers on the network
+
+Files in your `digDirectory` (default: `C:\Users\YourUser\.dig`) will be automatically shared with the network.
+
+## Service Management
+
+The Windows service provides:
+
+- **Automatic startup** on system boot
+- **Background operation** without user login
+- **Crash recovery** with automatic restart
+- **Service logs** for troubleshooting
+
+### Service Locations
+
+- **Service Name**: `DigNodeService`
+- **Service Display Name**: `DIG Network File Sharing Node`
+- **Service Logs**: Windows Event Viewer → Windows Logs → Application
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Permission Denied**: Run installer as Administrator
+2. **Service Won't Start**: Check config file path and permissions
+3. **Port Already in Use**: Change port in config file
+4. **Node.js Not Found**: Install Node.js and restart terminal
+
+### Logs
+
+Check logs in:
+- **CLI mode**: Console output
+- **Service mode**: Windows Event Viewer
+- **Service wrapper**: `C:\Users\[User]\AppData\Roaming\npm\node_modules\node-windows\daemon\`
+
+### Uninstall
+
+```bash
+# Stop and uninstall service
+dig-node stop-service
+dig-node uninstall-service
+
+# Remove CLI globally
+npm unlink -g dig-node
+```
 
 ## Development
 
-### Watch mode for development
+### Building
+
 ```bash
-npm run dev
+npm run build
 ```
 
-### Lint code
+### Testing
+
 ```bash
-npm run lint
+# Test CLI directly
+node dist/cli.js --help
+
+# Test service installation
+node dist/cli.js install-service
 ```
 
-### Fix linting issues
-```bash
-npm run lint:fix
-```
+## License
 
-## Integration with dig-nat-tools
-
-This project uses the compiled version of dig-nat-tools from the parent directory's `dist` folder. The integration includes:
-
-- **FileHost**: For serving .dig files to other peers
-- **FileClient**: For downloading files from remote peers  
-- **GunRegistry**: For peer discovery and network coordination
-- **Connection modes**: Support for direct HTTP and WebTorrent transfers
-
-## File Discovery Process
-
-1. **Local Scanning**: On startup, scan ~/.dig for all .dig files
-2. **Hash Calculation**: Calculate SHA256 hash for each file
-3. **Announcement**: Announce available files to the GunJS network
-4. **Peer Discovery**: Listen for other nodes announcing their files
-5. **Download**: Automatically download missing .dig files
-6. **Monitoring**: Watch for new files and announce them
-
-## TODO
-
-- [ ] Complete integration with dig-nat-tools components
-- [ ] Implement file announcement protocol
-- [ ] Add WebTorrent support for large file transfers
-- [ ] Implement proper peer file listing
-- [ ] Add configuration validation
-- [ ] Add status monitoring dashboard
-- [ ] Implement daemon mode
-- [ ] Add automatic restart on crashes
-- [ ] Add bandwidth limiting options
-- [ ] Implement file prioritization system
+MIT License - see LICENSE file for details.
