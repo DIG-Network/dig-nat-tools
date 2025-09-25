@@ -26,7 +26,7 @@ export class DigNodeServiceManager {
   constructor(options: ServiceOptions = {}) {
     this.serviceName = options.name || 'DigNodeService';
     this.serviceDescription = options.description || 'DIG Network File Sharing Node';
-    this.scriptPath = path.resolve(__dirname, 'service-wrapper.js');
+    this.scriptPath = path.resolve(__dirname, 'service-wrapper.cjs');
     this.configPath = options.configPath || path.resolve('dig-node-service-config.json');
 
     // Create service config if provided
@@ -48,9 +48,6 @@ export class DigNodeServiceManager {
         name: this.serviceName,
         description: this.serviceDescription,
         script: this.scriptPath,
-        nodeOptions: [
-          '--loader', './loader.mjs'
-        ],
         env: {
           name: 'DIG_NODE_CONFIG_PATH',
           value: this.configPath
@@ -197,24 +194,39 @@ export class DigNodeServiceManager {
   }
 
   private createServiceWrapper(): void {
+    // Create a CommonJS wrapper that dynamically imports ES modules
     const wrapperContent = `
-// Service wrapper for DIG Node
-import { DigNode } from './dig-node.js';
-import { NodeConfig } from './types.js';
-import fs from 'fs';
-import path from 'path';
+// CommonJS Service wrapper for DIG Node
+const fs = require('fs');
+const path = require('path');
 
 async function startService() {
   try {
-    const configPath = process.env.DIG_NODE_CONFIG_PATH || './dig-node-service-config.json';
+    // Get the absolute path to the config file
+    const configPath = process.env.DIG_NODE_CONFIG_PATH || path.resolve('./dig-node-service-config.json');
     
     if (!fs.existsSync(configPath)) {
       throw new Error(\`Config file not found: \${configPath}\`);
     }
 
-    const config: NodeConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
     
     console.log('Starting DIG Node service...');
+    console.log('Config path:', configPath);
+    console.log('Working directory:', process.cwd());
+    
+    // Resolve the absolute path to the ES module
+    const digNodePath = path.resolve(__dirname, './dig-node.js');
+    console.log('Loading DIG Node from:', digNodePath);
+    
+    // Convert Windows path to file:// URL for dynamic import
+    const { pathToFileURL } = require('url');
+    const digNodeUrl = pathToFileURL(digNodePath).href;
+    console.log('Import URL:', digNodeUrl);
+    
+    // Dynamically import ES modules
+    const { DigNode } = await import(digNodeUrl);
+    
     const node = new DigNode(config);
     await node.start();
     
@@ -223,25 +235,52 @@ async function startService() {
     // Handle graceful shutdown
     process.on('SIGINT', async () => {
       console.log('Shutting down DIG Node service...');
-      await node.stop();
+      try {
+        await node.stop();
+      } catch (error) {
+        console.error('Error during shutdown:', error);
+      }
       process.exit(0);
     });
 
     process.on('SIGTERM', async () => {
       console.log('Shutting down DIG Node service...');
-      await node.stop();
+      try {
+        await node.stop();
+      } catch (error) {
+        console.error('Error during shutdown:', error);
+      }
       process.exit(0);
+    });
+
+    // Handle uncaught exceptions
+    process.on('uncaughtException', (error) => {
+      console.error('Uncaught exception in service:', error);
+      process.exit(1);
+    });
+
+    process.on('unhandledRejection', (reason, promise) => {
+      console.error('Unhandled rejection in service:', reason);
+      process.exit(1);
     });
 
   } catch (error) {
     console.error('Failed to start DIG Node service:', error);
+    console.error('Error stack:', error.stack);
     process.exit(1);
   }
 }
 
-startService();
+// Start the service
+startService().catch((error) => {
+  console.error('Service startup failed:', error);
+  process.exit(1);
+});
 `;
 
-    fs.writeFileSync(this.scriptPath, wrapperContent);
+    // Write as .cjs file to ensure CommonJS context
+    const cjsPath = this.scriptPath.replace('.js', '.cjs');
+    fs.writeFileSync(cjsPath, wrapperContent);
+    this.scriptPath = cjsPath; // Update path to use .cjs file
   }
 }
