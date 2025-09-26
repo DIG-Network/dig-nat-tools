@@ -152,6 +152,10 @@ The configuration file (`dig-node-config.json`) contains:
   - **namespace**: GunJS namespace for isolating different DIG networks (default: "dig-network")
   - **webrtc**: WebRTC configuration including STUN servers for NAT traversal
 - **logLevel**: Logging verbosity - debug, info, warn, error (default: info)
+- **logToFile**: Whether to write logs to a file instead of/in addition to console (default: false)
+- **logFilePath**: Path to the log file (default: "dig-node.log")
+- **maxLogSize**: Maximum log file size in bytes before rotation (default: 10MB)
+- **keepOldLogs**: Number of old log files to keep after rotation (default: 5)
 - **syncInterval**: How often to announce files to the network in milliseconds (default: 30000)
 - **maxConcurrentDownloads**: Maximum number of simultaneous file downloads (default: 5)
 
@@ -314,9 +318,27 @@ dig-node start --log-level debug
 
 Check logs in:
 - **CLI mode**: Real-time console output with configurable log levels
-- **Service mode**: Windows Event Viewer → Windows Logs → Application
-- **Service wrapper**: `C:\Users\[User]\AppData\Roaming\npm\node_modules\node-windows\daemon\`
+- **Service mode**: 
+  - **File logs**: `dig-node.log` in the installation directory (if `logToFile: true`)
+  - **Windows Event Viewer**: Windows Logs → Application for service status
+  - **Service wrapper logs**: node-windows daemon logs for service issues
+- **File logging**: Set `logToFile: true` in config to write logs to a file
+  - **Log rotation**: Automatically rotates when file exceeds `maxLogSize`
+  - **Log retention**: Keeps `keepOldLogs` number of old log files
+  - **Clean format**: File logs have ANSI color codes removed for readability
 - **Debug logs**: Set `logLevel: "debug"` in config for detailed networking information
+
+**View current logs:**
+```bash
+# View log file (if file logging enabled)
+Get-Content dig-node.log -Tail 20
+
+# Follow log file in real-time
+Get-Content dig-node.log -Wait
+
+# Check Windows Event Viewer
+eventvwr.msc
+```
 
 ### Uninstall
 

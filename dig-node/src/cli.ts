@@ -54,6 +54,12 @@ program
       const node = new DigNode(config);
       await node.start();
 
+      // Show log file location if file logging is enabled
+      if (config.logToFile) {
+        const logPath = config.logFilePath || path.join(process.cwd(), 'dig-node.log');
+        console.log(chalk.cyan(`📄 Logs are being written to: ${logPath}`));
+      }
+
       // Handle graceful shutdown
       process.on('SIGINT', async () => {
         console.log(chalk.yellow('\n🛑 Shutting down DIG Node...'));

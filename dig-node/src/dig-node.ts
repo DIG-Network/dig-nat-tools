@@ -22,7 +22,17 @@ export class DigNode extends EventEmitter {
   constructor(config: NodeConfig) {
     super();
     this.config = config;
-    this.logger = new Logger(config.logLevel);
+    
+    // Set up logger with file logging if configured
+    const loggerConfig = {
+      level: config.logLevel,
+      logToFile: config.logToFile || false,
+      logFilePath: config.logFilePath || path.join(process.cwd(), 'dig-node.log'),
+      maxLogSize: config.maxLogSize,
+      keepOldLogs: config.keepOldLogs
+    };
+    
+    this.logger = new Logger(loggerConfig);
     this.networkManager = new NetworkManager(config, this.logger);
 
     // Set up event handlers

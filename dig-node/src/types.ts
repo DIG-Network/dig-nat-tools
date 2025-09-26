@@ -9,6 +9,10 @@ export interface NodeConfig {
     };
   };
   logLevel: 'debug' | 'info' | 'warn' | 'error';
+  logToFile?: boolean; // Whether to log to file instead of/in addition to console
+  logFilePath?: string; // Path to log file (default: ./dig-node.log)
+  maxLogSize?: number; // Maximum log file size in bytes before rotation
+  keepOldLogs?: number; // Number of old log files to keep
   syncInterval?: number; // milliseconds between sync checks
   maxConcurrentDownloads?: number;
 }
