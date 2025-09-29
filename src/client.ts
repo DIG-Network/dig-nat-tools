@@ -6,6 +6,14 @@ import { Readable } from "node:stream";
 import { IFileClient, HostCapabilities } from "./interfaces";
 import { GunRegistry } from "./registry/gun-registry";
 
+// Import Logger interface to match gun-registry pattern
+interface Logger {
+  debug(message: string, ...args: unknown[]): void;
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
+}
+
 export interface DownloadOptions {
   timeout?: number;
   onProgress?: (downloaded: number, total: number) => void;
@@ -15,12 +23,14 @@ export interface FileClientOptions {
   peers?: string[]; // Gun.js peer URLs
   namespace?: string; // Gun.js namespace
   timeout?: number; // Download timeout
+  logger?: Logger; // Optional logger for debug output
 }
 
 export class FileClient implements IFileClient {
   private gunRegistry: GunRegistry;
   private webTorrentClient: WebTorrent.Instance | null = null;
   private options: FileClientOptions;
+  private logger: Logger;
 
   constructor(options: FileClientOptions = {}) {
     this.options = {
@@ -29,9 +39,18 @@ export class FileClient implements IFileClient {
       timeout: options.timeout || 30000,
     };
 
+    // Create a default logger that only shows warnings and errors if none provided
+    this.logger = options.logger || {
+      debug: (): void => {}, // Silent for debug when no logger provided
+      info: (): void => {}, // Silent for info when no logger provided  
+      warn: (message: string, ...args: unknown[]): void => console.warn(message, ...args),
+      error: (message: string, ...args: unknown[]): void => console.error(message, ...args)
+    };
+
     this.gunRegistry = new GunRegistry({
       peers: this.options.peers,
       namespace: this.options.namespace,
+      logger: this.logger, // Pass logger to gun registry
     });
   }
 
@@ -46,7 +65,7 @@ export class FileClient implements IFileClient {
     url: string,
     options: DownloadOptions = {}
   ): Promise<Buffer> {
-    console.log(`📥 Downloading file from: ${url}`);
+    this.logger.debug(`📥 Downloading file from: ${url}`);
 
     // Check if this is a WebTorrent magnet URI
     if (url.startsWith("magnet:")) {
@@ -69,7 +88,7 @@ export class FileClient implements IFileClient {
     fileHash: string,
     options: DownloadOptions = {}
   ): Promise<Buffer> {
-    console.log(`🔍 Looking up peer ${storeId} in registry...`);
+    this.logger.debug(`🔍 Looking up peer ${storeId} in registry...`);
 
     // 1. Look up peer in Gun.js registry
     const peer = await this.gunRegistry.findPeer(storeId);
@@ -78,7 +97,7 @@ export class FileClient implements IFileClient {
       throw new Error(`Peer ${storeId} not found in registry`);
     }
 
-    console.log(`🎯 Found peer with capabilities:`, {
+    this.logger.debug(`🎯 Found peer with capabilities:`, {
       directHttp: peer.directHttp?.available || false,
       webTorrent: peer.webTorrent?.available || false,
     });
@@ -88,7 +107,7 @@ export class FileClient implements IFileClient {
     // Method 1: Try direct HTTP connection (fastest, no P2P overhead)
     if (peer.directHttp?.available) {
       try {
-        console.log(
+        this.logger.debug(
           `🌐 Attempting direct HTTP connection to ${peer.directHttp.ip}:${peer.directHttp.port}`
         );
         return await this.downloadViaHttp(
@@ -98,7 +117,7 @@ export class FileClient implements IFileClient {
           options
         );
       } catch (error) {
-        console.warn(`⚠️ Direct HTTP connection failed:`, error);
+        this.logger.warn(`⚠️ Direct HTTP connection failed:`, error);
       }
     }
 
@@ -110,13 +129,13 @@ export class FileClient implements IFileClient {
           uri.includes(fileHash)
         );
         if (magnetUri) {
-          console.log(`🧲 Attempting WebTorrent download via magnet URI`);
+          this.logger.debug(`🧲 Attempting WebTorrent download via magnet URI`);
           return await this.downloadViaWebTorrent(magnetUri);
         } else {
-          console.warn(`⚠️ No magnet URI found for file ${fileHash}`);
+          this.logger.warn(`⚠️ No magnet URI found for file ${fileHash}`);
         }
       } catch (error) {
-        console.warn(`⚠️ WebTorrent connection failed:`, error);
+        this.logger.warn(`⚠️ WebTorrent connection failed:`, error);
       }
     }
 
@@ -136,11 +155,11 @@ export class FileClient implements IFileClient {
    * Download a file via WebTorrent
    */
   private async downloadViaWebTorrent(magnetUri: string): Promise<Buffer> {
-    console.log(`🧲 Starting WebTorrent download...`);
+    this.logger.debug(`🧲 Starting WebTorrent download...`);
 
     // Initialize WebTorrent client if not already done
     if (!this.webTorrentClient) {
-      console.log(
+      this.logger.debug(
         `✅ Initializing WebTorrent client with Windows-compatible settings...`
       );
       this.webTorrentClient = new WebTorrent({
@@ -151,15 +170,15 @@ export class FileClient implements IFileClient {
 
       // Add error handling
       this.webTorrentClient.on("error", (err: string | Error) => {
-        console.error("❌ WebTorrent client error:", err);
+        this.logger.error("❌ WebTorrent client error:", err);
         // Don't throw here, just log the error
       });
 
-      console.log(`✅ WebTorrent client initialized`);
+      this.logger.debug(`✅ WebTorrent client initialized`);
     }
 
     return new Promise<Buffer>((resolve, reject) => {
-      console.log(`🔄 Adding torrent from magnet URI...`);
+      this.logger.debug(`🔄 Adding torrent from magnet URI...`);
 
       const torrent = this.webTorrentClient!.add(magnetUri);
 
@@ -172,7 +191,7 @@ export class FileClient implements IFileClient {
       }, this.options.timeout);
 
       torrent.on("ready", () => {
-        console.log(
+        this.logger.debug(
           `✅ Torrent ready! File: ${torrent.name}, Size: ${torrent.length} bytes`
         );
 
@@ -185,7 +204,7 @@ export class FileClient implements IFileClient {
         const file = torrent.files[0]; // Get the first file
         const chunks: Buffer[] = [];
 
-        console.log(`📥 Starting download of ${file.name}...`);
+        this.logger.debug(`📥 Starting download of ${file.name}...`);
 
         // Create a stream to read the file
         const stream = file.createReadStream();
@@ -197,7 +216,7 @@ export class FileClient implements IFileClient {
         stream.on("end", () => {
           clearTimeout(timeout);
           const buffer = Buffer.concat(chunks);
-          console.log(
+          this.logger.debug(
             `✅ WebTorrent download completed! ${buffer.length} bytes`
           );
 
@@ -215,7 +234,7 @@ export class FileClient implements IFileClient {
 
       torrent.on("error", (error) => {
         clearTimeout(timeout);
-        console.error(`❌ WebTorrent error:`, error);
+        this.logger.error(`❌ WebTorrent error:`, error);
         reject(error);
       });
     });
@@ -231,7 +250,7 @@ export class FileClient implements IFileClient {
     options: DownloadOptions = {}
   ): Promise<Buffer> {
     const url = `http://${host}:${port}/files/${fileHash}`;
-    console.log(`🌐 HTTP download from: ${url}`);
+    this.logger.debug(`🌐 HTTP download from: ${url}`);
     return FileClient.downloadAsBufferStatic(url, options);
   }
 
@@ -448,7 +467,7 @@ export class FileClient implements IFileClient {
     if (this.webTorrentClient) {
       this.webTorrentClient.destroy();
       this.webTorrentClient = null;
-      console.log("✅ WebTorrent client destroyed");
+      this.logger.debug("✅ WebTorrent client destroyed");
     }
   }
 }

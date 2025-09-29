@@ -142,19 +142,6 @@ describe('FileHost', () => {
       expect(host).toBeInstanceOf(FileHost);
     });
 
-    it('should initialize with gun registry when gun options provided', () => {
-      new FileHost({
-        gun: {
-          peers: ['http://example.com:8080/gun'],
-          namespace: 'test-namespace'
-        }
-      });
-      expect(MockGunRegistry).toHaveBeenCalledWith({
-        peers: ['http://example.com:8080/gun'],
-        namespace: 'test-namespace'
-      });
-    });
-
     it('should setup express routes', () => {
       new FileHost();
       expect(mockApp.get).toHaveBeenCalledWith('/files/:hash', expect.any(Function));

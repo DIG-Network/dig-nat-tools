@@ -2,9 +2,18 @@ import Gun from "gun";
 import "gun/lib/webrtc.js";
 import { HostCapabilities } from "../interfaces";
 
+// Import Logger from dig-node if available, otherwise define a minimal interface
+interface Logger {
+  debug(message: string, ...args: unknown[]): void;
+  info(message: string, ...args: unknown[]): void;
+  warn(message: string, ...args: unknown[]): void;
+  error(message: string, ...args: unknown[]): void;
+}
+
 export interface GunRegistryOptions {
   peers?: string[];
   namespace?: string;
+  logger?: Logger;
   /**
    * WebRTC configuration for peer-to-peer connections
    * When enabled, mesh networking is automatic
@@ -29,6 +38,7 @@ export class GunRegistry {
   private gun: GunInstance | null = null;
   private options: GunRegistryOptions;
   private isGunAvailable: boolean = false;
+  private logger: Logger;
 
   constructor(options: GunRegistryOptions = {}) {
     this.options = {
@@ -41,6 +51,14 @@ export class GunRegistry {
           { urls: 'stun:stun2.l.google.com:19302' }
         ]
       }
+    };
+
+    // Create a default logger that only shows warnings and errors if none provided
+    this.logger = options.logger || {
+      debug: (): void => {}, // Silent for debug when no logger provided
+      info: (): void => {}, // Silent for info when no logger provided  
+      warn: (message: string, ...args: unknown[]): void => console.warn(message, ...args),
+      error: (message: string, ...args: unknown[]): void => console.error(message, ...args)
     };
 
     this.initializeGun();
@@ -63,11 +81,11 @@ export class GunRegistry {
         axe: false,
       });
       this.isGunAvailable = true;
-      console.log("Gun.js registry initialized with WebRTC and mesh networking");
-      console.log(`🔧 WebRTC enabled with ${this.options.webrtc?.iceServers?.length || 0} ICE servers`);
-      console.log(`🔧 Mesh networking: enabled (automatic with WebRTC)`);
+      this.logger.debug("Gun.js registry initialized with WebRTC and mesh networking");
+      this.logger.debug(`🔧 WebRTC enabled with ${this.options.webrtc?.iceServers?.length || 0} ICE servers`);
+      this.logger.debug(`🔧 Mesh networking: enabled (automatic with WebRTC)`);
     } catch {
-      console.warn("Gun.js not available, peer discovery will not work");
+      this.logger.warn("Gun.js not available, peer discovery will not work");
       this.isGunAvailable = false;
     }
   }
@@ -85,9 +103,9 @@ export class GunRegistry {
       throw new Error("StoreId is required for registration");
     }
 
-    console.log(`🔧 [GunRegistry] Starting registration for host: ${capabilities.storeId}`);
-    console.log(`🔧 [GunRegistry] Using namespace: ${this.options.namespace}`);
-    console.log(`🔧 [GunRegistry] Peers configured: ${JSON.stringify(this.options.peers)}`);
+    this.logger.debug(`🔧 [GunRegistry] Starting registration for host: ${capabilities.storeId}`);
+    this.logger.debug(`🔧 [GunRegistry] Using namespace: ${this.options.namespace}`);
+    this.logger.debug(`🔧 [GunRegistry] Peers configured: ${JSON.stringify(this.options.peers)}`);
 
     // Create a flattened structure that Gun.js can handle
     const flatEntry = {
@@ -100,7 +118,7 @@ export class GunRegistry {
       webTorrent_magnetUris: capabilities.webTorrent?.magnetUris ? JSON.stringify(capabilities.webTorrent.magnetUris) : "[]",
     };
 
-    console.log(`🔧 [GunRegistry] Registration data:`, JSON.stringify(flatEntry, null, 2));
+    this.logger.debug(`🔧 [GunRegistry] Registration data:`, JSON.stringify(flatEntry, null, 2));
 
     try {
       const hostRef = this.gun
@@ -110,10 +128,10 @@ export class GunRegistry {
       // Store in Gun.js
       hostRef.put(flatEntry);
 
-      console.log(`✅ [GunRegistry] Successfully registered host ${capabilities.storeId} in Gun.js registry`);
+      this.logger.debug(`✅ [GunRegistry] Successfully registered host ${capabilities.storeId} in Gun.js registry`);
       
     } catch (error) {
-      console.error(`❌ [GunRegistry] Registration failed for ${capabilities.storeId}:`, error);
+      this.logger.error(`❌ [GunRegistry] Registration failed for ${capabilities.storeId}:`, error);
       throw error;
     }
   }
@@ -123,11 +141,11 @@ export class GunRegistry {
       throw new Error("Gun.js registry not available");
     }
 
-    console.log(`🔍 [GunRegistry] Looking for specific peer: ${storeId}`);
+    this.logger.debug(`🔍 [GunRegistry] Looking for specific peer: ${storeId}`);
 
     return new Promise((resolve) => {
       const timeout = setTimeout(() => {
-        console.log(`⏰ [GunRegistry] Timeout searching for peer ${storeId}`);
+        this.logger.debug(`⏰ [GunRegistry] Timeout searching for peer ${storeId}`);
         resolve(null);
       }, 10000); // 10 second timeout
 
@@ -135,17 +153,17 @@ export class GunRegistry {
         .get(storeId)
         .once((data: Record<string, unknown>) => {
           clearTimeout(timeout);
-          console.log(`📊 [GunRegistry] Peer ${storeId} data:`, data);
+          this.logger.debug(`📊 [GunRegistry] Peer ${storeId} data:`, data);
           
           if (data && data.storeId === storeId) {
             // Filter out stale entries (older than 5 minutes)
             const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
             const lastSeen = data.lastSeen as number;
             
-            console.log(`🕒 [GunRegistry] Peer ${storeId} last seen: ${lastSeen ? new Date(lastSeen).toLocaleString() : 'never'}`);
+            this.logger.debug(`🕒 [GunRegistry] Peer ${storeId} last seen: ${lastSeen ? new Date(lastSeen).toLocaleString() : 'never'}`);
             
             if (lastSeen && lastSeen > fiveMinutesAgo) {
-              console.log(`✅ [GunRegistry] Peer ${storeId} is fresh`);
+              this.logger.debug(`✅ [GunRegistry] Peer ${storeId} is fresh`);
               
               // Reconstruct the capabilities object
               const capabilities: HostCapabilities = {
@@ -168,11 +186,11 @@ export class GunRegistry {
               
               resolve(capabilities);
             } else {
-              console.log(`⏰ [GunRegistry] Peer ${storeId} is stale`);
+              this.logger.debug(`⏰ [GunRegistry] Peer ${storeId} is stale`);
               resolve(null);
             }
           } else {
-            console.log(`❌ [GunRegistry] Peer ${storeId} not found or invalid data`);
+            this.logger.debug(`❌ [GunRegistry] Peer ${storeId} not found or invalid data`);
             resolve(null);
           }
         });
@@ -184,58 +202,58 @@ export class GunRegistry {
       throw new Error("Gun.js registry not available");
     }
 
-    console.log(`🔍 [GunRegistry] Searching for peers in namespace: ${this.options.namespace}`);
-    console.log(`🔍 [GunRegistry] Connected to peers: ${JSON.stringify(this.options.peers)}`);
+    this.logger.debug(`🔍 [GunRegistry] Searching for peers in namespace: ${this.options.namespace}`);
+    this.logger.debug(`🔍 [GunRegistry] Connected to peers: ${JSON.stringify(this.options.peers)}`);
 
     return new Promise((resolve) => {
       const peers: HostCapabilities[] = [];
       const timeout = setTimeout(() => {
-        console.log(`⏰ [GunRegistry] Search timeout reached, found ${peers.length} peers`);
+        this.logger.debug(`⏰ [GunRegistry] Search timeout reached, found ${peers.length} peers`);
         resolve(peers);
       }, 30000); // Increase timeout to 10 seconds
 
       this.gun!.get(this.options.namespace!)
         .once(async (data: Record<string, unknown>) => {
-          console.log(`📊 [GunRegistry] Raw hosts data received:`, data);
+          this.logger.debug(`📊 [GunRegistry] Raw hosts data received:`, data);
 
           if (data) {
             const allKeys = Object.keys(data);
-            console.log(`🔑 [GunRegistry] All keys in hosts data:`, allKeys);
+            this.logger.debug(`🔑 [GunRegistry] All keys in hosts data:`, allKeys);
             
             const hostKeys = allKeys.filter(key => key !== "_");
-            console.log(`🏠 [GunRegistry] Host keys (excluding Gun.js metadata):`, hostKeys);
+            this.logger.debug(`🏠 [GunRegistry] Host keys (excluding Gun.js metadata):`, hostKeys);
 
             // Process each host key by fetching the actual data
             let processedHosts = 0;
             const totalHosts = hostKeys.length;
 
             if (totalHosts === 0) {
-              console.log(`❌ [GunRegistry] No hosts found in namespace ${this.options.namespace}`);
+              this.logger.debug(`❌ [GunRegistry] No hosts found in namespace ${this.options.namespace}`);
               clearTimeout(timeout);
               resolve(peers);
               return;
             }
 
             for (const hostKey of hostKeys) {
-              console.log(`🔍 [GunRegistry] Fetching detailed data for host: ${hostKey}`);
+              this.logger.debug(`🔍 [GunRegistry] Fetching detailed data for host: ${hostKey}`);
               
               // Fetch the actual host data by following the reference
               this.gun!.get(this.options.namespace!)
                 .get(hostKey)
                 .once((hostData: Record<string, unknown>) => {
                   processedHosts++;
-                  console.log(`� [GunRegistry] Host ${hostKey} detailed data:`, hostData);
+                  this.logger.debug(`📊 [GunRegistry] Host ${hostKey} detailed data:`, hostData);
                   
                   if (hostData && hostData.storeId && typeof hostData.storeId === 'string') {
                     // Filter out stale entries (older than 5 minutes)
                     const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
                     const lastSeen = hostData.lastSeen as number;
                     
-                    console.log(`🕒 [GunRegistry] Host ${hostKey} last seen: ${lastSeen ? new Date(lastSeen).toLocaleString() : 'never'}`);
-                    console.log(`🕒 [GunRegistry] Five minutes ago: ${new Date(fiveMinutesAgo).toLocaleString()}`);
+                    this.logger.debug(`🕒 [GunRegistry] Host ${hostKey} last seen: ${lastSeen ? new Date(lastSeen).toLocaleString() : 'never'}`);
+                    this.logger.debug(`🕒 [GunRegistry] Five minutes ago: ${new Date(fiveMinutesAgo).toLocaleString()}`);
                     
                     if (lastSeen && lastSeen > fiveMinutesAgo) {
-                      console.log(`✅ [GunRegistry] Host ${hostKey} is fresh, adding to results`);
+                      this.logger.debug(`✅ [GunRegistry] Host ${hostKey} is fresh, adding to results`);
                       
                       // Reconstruct the capabilities object
                       const capabilities: HostCapabilities = {
@@ -257,12 +275,12 @@ export class GunRegistry {
                       };
                       
                       peers.push(capabilities);
-                      console.log(`✅ [GunRegistry] Added peer: ${capabilities.storeId}`);
+                      this.logger.debug(`✅ [GunRegistry] Added peer: ${capabilities.storeId}`);
                     } else {
-                      console.log(`⏰ [GunRegistry] Host ${hostKey} is stale, skipping`);
+                      this.logger.debug(`⏰ [GunRegistry] Host ${hostKey} is stale, skipping`);
                     }
                   } else {
-                    console.log(`❌ [GunRegistry] Host ${hostKey} has invalid data structure:`, {
+                    this.logger.debug(`❌ [GunRegistry] Host ${hostKey} has invalid data structure:`, {
                       hasData: !!hostData,
                       hasStoreId: !!(hostData && hostData.storeId),
                       storeIdType: hostData && hostData.storeId ? typeof hostData.storeId : 'undefined'
@@ -272,16 +290,16 @@ export class GunRegistry {
                   // Check if we've processed all hosts
                   if (processedHosts >= totalHosts) {
                     clearTimeout(timeout);
-                    console.log(`📋 [GunRegistry] Final peer list: ${peers.length} peers found`);
+                    this.logger.debug(`📋 [GunRegistry] Final peer list: ${peers.length} peers found`);
                     peers.forEach((peer, index) => {
-                      console.log(`   ${index + 1}. ${peer.storeId} - HTTP: ${peer.directHttp?.available || false}, WebTorrent: ${peer.webTorrent?.available || false}`);
+                      this.logger.debug(`   ${index + 1}. ${peer.storeId} - HTTP: ${peer.directHttp?.available || false}, WebTorrent: ${peer.webTorrent?.available || false}`);
                     });
                     resolve(peers);
                   }
                 });
             }
           } else {
-            console.log(`❌ [GunRegistry] No hosts data found in namespace ${this.options.namespace}`);
+            this.logger.debug(`❌ [GunRegistry] No hosts data found in namespace ${this.options.namespace}`);
             clearTimeout(timeout);
             resolve(peers);
           }
@@ -309,9 +327,9 @@ export class GunRegistry {
       // Clear all host data by setting to null
       hostRef.put(null);
       
-      console.log(`✅ [GunRegistry] Successfully unregistered host: ${storeId}`);
+      this.logger.debug(`✅ [GunRegistry] Successfully unregistered host: ${storeId}`);
     } catch (error) {
-      console.error(`❌ [GunRegistry] Failed to unregister host ${storeId}:`, error);
+      this.logger.error(`❌ [GunRegistry] Failed to unregister host ${storeId}:`, error);
       throw error;
     }
   }
