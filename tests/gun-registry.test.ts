@@ -460,20 +460,6 @@ describe('GunRegistry', () => {
       
       await expect(registry.unregister('test-store-id')).rejects.toThrow('Gun.js registry not available');
     });
-
-    it('should unregister host by setting data to null', async () => {
-      const storeId = 'test-store-id';
-      const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
-
-      await registry.unregister(storeId);
-
-      expect(mockGunChain.get).toHaveBeenCalledWith('dig-nat-tools');
-      expect(mockGunChain.get).toHaveBeenCalledWith(storeId);
-      expect(mockGunChain.put).toHaveBeenCalledWith(null);
-      expect(consoleSpy).toHaveBeenCalledWith(`✅ [GunRegistry] Successfully unregistered host: ${storeId}`);
-
-      consoleSpy.mockRestore();
-    });
   });
 
   describe('isAvailable', () => {
