@@ -68,8 +68,39 @@ async function runExample() {
     // If directHttp is available, the URL will use the public IP
     // If not, it will be a magnet URI for WebTorrent
 
-    console.log('\n⏳ Host running for 30 seconds...');
-    await new Promise(resolve => setTimeout(resolve, 30000));
+    console.log('\n⏳ Host running indefinitely... Re-announcing file every 5 seconds');
+    console.log('Press Ctrl+C to stop\n');
+
+    // Re-announce the file share every 5 seconds
+    let announceCount = 0;
+    const announceInterval = setInterval(async () => {
+      try {
+        announceCount++;
+        console.log(`📢 Re-announcing file share #${announceCount} at ${new Date().toLocaleTimeString()}`);
+        
+        // Re-share the file to trigger re-announcement
+        await host.shareFile(testFilePath);
+        console.log(`✅ File re-announced (hash: ${fileHash})`);
+      } catch (error) {
+        console.error('❌ Error re-announcing file:', error.message);
+      }
+    }, 5000); // Every 5 seconds
+
+    // Handle graceful shutdown
+    process.on('SIGINT', async () => {
+      console.log('\n🛑 Received interrupt signal, shutting down...');
+      clearInterval(announceInterval);
+      await host.stop();
+      try {
+        fs.unlinkSync('test-file.txt');
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+      process.exit(0);
+    });
+
+    // Keep running until interrupted
+    await new Promise(() => {}); // Run forever
 
   } catch (error) {
     console.error('❌ Error:', error.message);
