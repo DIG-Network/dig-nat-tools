@@ -336,11 +336,7 @@ export class FileHost implements IFileHost {
     ) {
       try {
         this.logger.debug(`🔄 Initializing WebTorrent client...`);
-        this.webTorrentClient = new WebTorrent({
-          utp: true, // Enable UTP for NAT traversal
-          dht: true, // Enable DHT for peer discovery
-          lsd: false, // Disable local discovery, use STUN instead
-        });
+        this.webTorrentClient = new WebTorrent();
 
         // Add error handling for the WebTorrent client
         this.webTorrentClient.on("error", (err: string | Error) => {
