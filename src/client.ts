@@ -162,11 +162,7 @@ export class FileClient implements IFileClient {
       this.logger.debug(
         `✅ Initializing WebTorrent client with Windows-compatible settings...`
       );
-      this.webTorrentClient = new WebTorrent({
-        utp: true, // Enable UTP for NAT traversal
-        dht: true, // Enable DHT for peer discovery
-        lsd: false, // Disable local discovery, use STUN instead
-      });
+      this.webTorrentClient = new WebTorrent();
 
       // Add error handling
       this.webTorrentClient.on("error", (err: string | Error) => {
