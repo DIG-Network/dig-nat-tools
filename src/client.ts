@@ -118,7 +118,13 @@ export class FileClient implements IFileClient {
           options
         );
       } catch (error) {
-        this.logger.warn(`⚠️ Direct HTTP connection failed:`, error);
+        this.logger.warn(`⚠️ Direct HTTP connection failed:`, {
+          ...this.serializeError(error),
+          host: peer.directHttp.ip,
+          port: peer.directHttp.port,
+          filename: filename,
+          storeId: storeId
+        });
       }
     }
 
@@ -130,26 +136,111 @@ export class FileClient implements IFileClient {
           uri.includes(filename)
         );
         if (magnetUri) {
-          this.logger.debug(`🧲 Attempting WebTorrent download via magnet URI`);
+          this.logger.debug(`🧲 Attempting WebTorrent download via magnet URI: ${magnetUri.substring(0, 100)}...`);
           return await this.downloadViaWebTorrent(magnetUri, options);
         } else {
-          this.logger.warn(`⚠️ No magnet URI found for file ${filename}`);
+          this.logger.warn(`⚠️ No magnet URI found for file ${filename}`, {
+            filename: filename,
+            availableMagnetUris: peer.webTorrent.magnetUris,
+            storeId: storeId
+          });
         }
       } catch (error) {
-        this.logger.warn(`⚠️ WebTorrent connection failed:`, error);
+        this.logger.warn(`⚠️ WebTorrent connection failed:`, {
+          ...this.serializeError(error),
+          filename: filename,
+          storeId: storeId
+        });
       }
     }
 
-    throw new Error(
-      `No viable connection method available for peer ${storeId}. Tried: ${
-        [
-          peer.directHttp?.available ? "Direct HTTP" : null,
-          peer.webTorrent?.available ? "WebTorrent" : null,
-        ]
-          .filter(Boolean)
-          .join(", ") || "None"
-      }`
-    );
+    const errorMessage = `No viable connection method available for peer ${storeId}. Tried: ${
+      [
+        peer.directHttp?.available ? "Direct HTTP" : null,
+        peer.webTorrent?.available ? "WebTorrent" : null,
+      ]
+        .filter(Boolean)
+        .join(", ") || "None"
+    }`;
+    
+    this.logger.error(`❌ Failed to download file ${filename} from peer ${storeId}:`, {
+      storeId: storeId,
+      filename: filename,
+      peerCapabilities: {
+        directHttp: peer.directHttp?.available || false,
+        webTorrent: peer.webTorrent?.available || false,
+        magnetUrisCount: peer.webTorrent?.magnetUris?.length || 0
+      },
+      error: errorMessage
+    });
+    
+    throw new Error(errorMessage);
+  }
+
+  /**
+   * Serialize error for logging purposes
+   */
+  private serializeError(error: unknown): Record<string, unknown> {
+    if (!error) return {};
+    
+    if (error instanceof Error) {
+      return {
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+        code: (error as unknown as Record<string, unknown>)?.code,
+        errno: (error as unknown as Record<string, unknown>)?.errno,
+        syscall: (error as unknown as Record<string, unknown>)?.syscall,
+        type: typeof error,
+        toString: String(error)
+      };
+    }
+    
+    if (typeof error === 'object' && error !== null) {
+      try {
+        return {
+          ...(error as Record<string, unknown>),
+          toString: String(error),
+          type: typeof error,
+          constructor: (error as Record<string, unknown>).constructor?.constructor?.name || 'Unknown'
+        };
+      } catch (e) {
+        return {
+          toString: String(error),
+          type: typeof error,
+          serialization_error: String(e)
+        };
+      }
+    }
+    
+    return {
+      value: error,
+      type: typeof error,
+      toString: String(error)
+    };
+  }
+
+  /**
+   * Parse magnet URI for debugging purposes
+   */
+  private parseMagnetUri(magnetUri: string): Record<string, unknown> {
+    try {
+      const url = new URL(magnetUri);
+      
+      return {
+        infoHash: url.searchParams.get('xt')?.replace('urn:btih:', ''),
+        displayName: url.searchParams.get('dn'),
+        trackers: url.searchParams.getAll('tr'),
+        webSeeds: url.searchParams.getAll('ws'),
+        paramCount: Array.from(url.searchParams.keys()).length,
+        fullUri: magnetUri.substring(0, 100) + (magnetUri.length > 100 ? '...' : '')
+      };
+    } catch (error) {
+      return {
+        error: this.serializeError(error),
+        uri: magnetUri.substring(0, 100) + (magnetUri.length > 100 ? '...' : '')
+      };
+    }
   }
 
   /**
@@ -158,63 +249,124 @@ export class FileClient implements IFileClient {
   private async downloadViaWebTorrent(magnetUri: string, options: DownloadOptions = {}): Promise<Buffer> {
     this.logger.debug(`🧲 Starting WebTorrent download...`);
 
+    // Validate magnet URI
+    if (!magnetUri || !magnetUri.startsWith('magnet:')) {
+      const error = new Error(`Invalid magnet URI: ${magnetUri}`);
+      this.logger.error("❌ Invalid magnet URI:", {
+        magnetUri: magnetUri,
+        type: typeof magnetUri,
+        length: magnetUri?.length || 0
+      });
+      throw error;
+    }
+
+    // Parse magnet URI for debugging
+    const magnetInfo = this.parseMagnetUri(magnetUri);
+    this.logger.debug("🔍 Magnet URI info:", magnetInfo);
+
     // Initialize WebTorrent client if not already done
     if (!this.webTorrentClient) {
       this.logger.debug(
         `✅ Initializing WebTorrent client with Windows-compatible settings...`
       );
-      this.webTorrentClient = new WebTorrent();
+      
+      try {
+        this.webTorrentClient = new WebTorrent();
+        
+        // Log client status (using safe property access)
+        this.logger.debug(`🔧 WebTorrent client created:`, {
+          activeTorrents: this.webTorrentClient.torrents.length,
+          clientType: 'WebTorrent',
+          initialized: !!this.webTorrentClient
+        });
 
-      // Add error handling
+      } catch (error) {
+        this.logger.error("❌ Failed to create WebTorrent client:", this.serializeError(error));
+        throw error;
+      }
+
+      // Enhanced error handling with better logging
       this.webTorrentClient.on("error", (err: string | Error) => {
-        this.logger.error("❌ WebTorrent client error:", err);
-        // Don't throw here, just log the error
+        this.logger.error("❌ WebTorrent client error:", {
+          ...this.serializeError(err),
+          activeTorrents: this.webTorrentClient?.torrents?.length || 0
+        });
       });
 
       this.logger.debug(`✅ WebTorrent client initialized`);
     }
 
     return new Promise<Buffer>((resolve, reject) => {
-      this.logger.debug(`🔄 Adding torrent from magnet URI...`);
+      this.logger.debug(`🔄 Adding torrent from magnet URI: ${magnetUri.substring(0, 100)}...`);
 
-      const torrent = this.webTorrentClient!.add(magnetUri);
+      let torrent: WebTorrent.Torrent | null = null;
+      try {
+        torrent = this.webTorrentClient!.add(magnetUri);
+      } catch (error) {
+        this.logger.error("❌ Failed to add torrent:", {
+          ...this.serializeError(error),
+          magnetUri: magnetUri.substring(0, 100) + '...'
+        });
+        reject(error);
+        return;
+      }
 
-      // Timeout handler
+      // Timeout handler with more details
+      const timeoutMs = options.timeout || this.options.timeout;
       const timeout = setTimeout(() => {
+        this.logger.error("⏰ WebTorrent download timeout:", {
+          timeoutMs: timeoutMs,
+          torrentName: torrent?.name,
+          torrentLength: torrent?.length,
+          filesCount: torrent?.files?.length,
+          peersCount: torrent?.numPeers,
+          downloaded: torrent?.downloaded,
+          uploaded: torrent?.uploaded,
+          downloadSpeed: torrent?.downloadSpeed,
+          progress: torrent?.progress,
+          magnetUri: magnetUri.substring(0, 100) + '...'
+        });
+        
         if (torrent) {
           torrent.destroy();
         }
-        reject(new Error("WebTorrent download timeout"));
-      }, options.timeout || this.options.timeout);
+        reject(new Error(`WebTorrent download timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
 
       torrent.on("ready", () => {
         this.logger.debug(
-          `✅ Torrent ready! File: ${torrent.name}, Size: ${torrent.length} bytes`
+          `✅ Torrent ready! File: ${torrent!.name}, Size: ${torrent!.length} bytes, Files: ${torrent!.files.length}`
         );
 
-        if (torrent.files.length === 0) {
+        if (torrent!.files.length === 0) {
           clearTimeout(timeout);
-          torrent.destroy();
+          torrent!.destroy();
+          this.logger.error("❌ No files in torrent", {
+            name: torrent!.name,
+            infoHash: torrent!.infoHash,
+            magnetUri: magnetUri.substring(0, 100) + '...'
+          });
           reject(new Error("No files in torrent"));
           return;
         }
 
         // Check file size against maximum allowed size
-        if (options.maxFileSizeBytes && torrent.length > options.maxFileSizeBytes) {
+        if (options.maxFileSizeBytes && torrent!.length > options.maxFileSizeBytes) {
           clearTimeout(timeout);
-          torrent.destroy();
-          const fileSizeMB = (torrent.length / (1024 * 1024)).toFixed(2);
+          torrent!.destroy();
+          const fileSizeMB = (torrent!.length / (1024 * 1024)).toFixed(2);
           const maxSizeMB = (options.maxFileSizeBytes / (1024 * 1024)).toFixed(2);
+          this.logger.warn(`⚠️ File too large: ${fileSizeMB}MB > ${maxSizeMB}MB`);
           reject(new Error(
             `File size (${fileSizeMB} MB) exceeds maximum allowed size (${maxSizeMB} MB). Download cancelled.`
           ));
           return;
         }
 
-        const file = torrent.files[0]; // Get the first file
+        const file = torrent!.files[0]; // Get the first file
         const chunks: Buffer[] = [];
 
-        this.logger.debug(`📥 Starting download of ${file.name}...`);
+        this.logger.debug(`📥 Starting download of ${file.name} (${file.length} bytes)...`);
 
         // Create a stream to read the file
         const stream = file.createReadStream();
@@ -231,21 +383,46 @@ export class FileClient implements IFileClient {
           );
 
           // Destroy torrent to clean up
-          torrent.destroy();
+          torrent!.destroy();
           resolve(buffer);
         });
 
-        stream.on("error", (error) => {
+        stream.on("error", (error: unknown) => {
           clearTimeout(timeout);
-          torrent.destroy();
+          torrent!.destroy();
+          this.logger.error("❌ Stream error during download:", {
+            ...this.serializeError(error),
+            fileName: file.name,
+            fileLength: file.length
+          });
           reject(error);
         });
       });
 
-      torrent.on("error", (error) => {
+      // Enhanced torrent error handling
+      torrent.on("error", (error: unknown) => {
         clearTimeout(timeout);
-        this.logger.error(`❌ WebTorrent error:`, error);
+        this.logger.error(`❌ WebTorrent torrent error:`, {
+          ...this.serializeError(error),
+          magnetUri: magnetUri.substring(0, 100) + '...',
+          infoHash: torrent?.infoHash,
+          torrentName: torrent?.name
+        });
         reject(error);
+      });
+
+      // Add additional torrent event listeners for debugging
+      torrent.on("warning", (warning: unknown) => {
+        this.logger.warn("⚠️ WebTorrent warning:", {
+          ...this.serializeError(warning)
+        });
+      });
+
+      torrent.on("noPeers", () => {
+        this.logger.warn("⚠️ No peers found for torrent", {
+          magnetUri: magnetUri.substring(0, 100) + '...',
+          infoHash: torrent?.infoHash
+        });
       });
     });
   }
