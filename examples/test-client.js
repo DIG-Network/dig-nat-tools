@@ -70,45 +70,45 @@ async function startClient() {
           console.log(`❌ Direct HTTP not available for peer: ${peer.storeId}`);
         }
 
-        // Check if there are any magnet URIs to extract file hashes from
+        // Check if there are any magnet URIs to extract filenames from
         if (capabilities.webTorrent?.magnetUris && capabilities.webTorrent.magnetUris.length > 0) {
           for (const magnetUri of capabilities.webTorrent.magnetUris) {
             console.log('🧲 Found magnet URI:', magnetUri);
             
-            // Extract file hash from the magnet URI filename (dn parameter)
+            // Extract filename from the magnet URI filename (dn parameter)
             const dnMatch = magnetUri.match(/dn=([^&]+)/);
             if (dnMatch) {
-              const fileHash = decodeURIComponent(dnMatch[1]);
+              const filename = decodeURIComponent(dnMatch[1]);
               
               // Check if we've already downloaded or are currently downloading this file
-              if (downloadedFiles.has(fileHash)) {
-                console.log(`⏭️ Skipping file ${fileHash.substring(0, 8)}... (already downloaded)`);
+              if (downloadedFiles.has(filename)) {
+                console.log(`⏭️ Skipping file ${filename}... (already downloaded)`);
                 continue;
               }
               
-              if (downloadingFiles.has(fileHash)) {
-                console.log(`⏭️ Skipping file ${fileHash.substring(0, 8)}... (currently downloading)`);
+              if (downloadingFiles.has(filename)) {
+                console.log(`⏭️ Skipping file ${filename}... (currently downloading)`);
                 continue;
               }
               
-              console.log(`📥 Attempting to download file with hash: ${fileHash.substring(0, 8)}...`);
+              console.log(`📥 Attempting to download file: ${filename}...`);
               
               // Mark as downloading to prevent concurrent downloads
-              downloadingFiles.add(fileHash);
+              downloadingFiles.add(filename);
               
               try {
                 // Use the client's downloadFile method
-                const fileData = await client.downloadFile(capabilities.storeId, fileHash);
+                const fileData = await client.downloadFile(capabilities.storeId, filename);
                 console.log(`✅ Successfully downloaded file! Size: ${fileData.length} bytes`);
                 
                 // Save the file locally
-                const outputPath = `downloaded-${fileHash.substring(0, 8)}.bin`;
+                const outputPath = `downloaded-${filename}`;
                 fs.writeFileSync(outputPath, fileData);
                 console.log(`💾 File saved as: ${outputPath}`);
                 
                 // Mark as completed
-                downloadedFiles.add(fileHash);
-                downloadingFiles.delete(fileHash);
+                downloadedFiles.add(filename);
+                downloadingFiles.delete(filename);
                 
                 // If it appears to be text, show a preview
                 const fileContent = fileData.toString('utf8');
@@ -124,10 +124,10 @@ async function startClient() {
               } catch (error) {
                 console.error(`❌ Failed to download file: ${error.message}`);
                 // Remove from downloading set on failure
-                downloadingFiles.delete(fileHash);
+                downloadingFiles.delete(filename);
               }
             } else {
-              console.log('⚠️ Could not extract file hash from magnet URI');
+              console.log('⚠️ Could not extract filename from magnet URI');
             }
           }
         } else {

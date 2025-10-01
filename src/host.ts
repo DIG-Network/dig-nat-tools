@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as http from "node:http";
-import * as crypto from "node:crypto";
 import express from "express";
 import os from "node:os";
 import { publicIpv4 } from "public-ip";
@@ -42,8 +41,8 @@ export class FileHost implements IFileHost {
   private connectionMode: (typeof ConnectionMode)[keyof typeof ConnectionMode];
   private port: number;
   private webTorrentClient: WebTorrent.Instance | null = null;
-  private magnetUris: Map<string, string> = new Map(); // fileHash -> magnetURI
-  private sharedFiles: Set<string> = new Set(); // Tracks shared file hashes
+  private magnetUris: Map<string, string> = new Map(); // filename -> magnetURI
+  private sharedFiles: Map<string, string> = new Map(); // filename -> filePath
   private options: HostOptions;
   private gunRegistry: GunRegistry | null = null;
   private storeId: string;
@@ -83,23 +82,23 @@ export class FileHost implements IFileHost {
   }
 
   private setupRoutes(): void {
-    // Route to serve files by SHA256 hash
-    // URL format: /files/{64-character-hexadecimal-sha256-hash}
-    // Files are expected to be stored with their hash as the filename
-    this.app.get("/files/:hash", (req, res) => {
-      const hash = req.params.hash; // SHA256 hash (64-character hex string)
+    // Route to serve files by filename
+    // URL format: /files/{filename}
+    // Files are served from their original locations
+    this.app.get("/files/:filename", (req, res) => {
+      const filename = decodeURIComponent(req.params.filename);
 
-      // Check if this hash is tracked as a shared file
-      if (!this.sharedFiles.has(hash)) {
+      // Check if this filename is tracked as a shared file
+      if (!this.sharedFiles.has(filename)) {
         return res.status(404).json({ error: "File not found" });
       }
 
-      // File path is the hash itself (files stored with hash names)
-      const filePath = hash;
+      // Get the original file path
+      const filePath = this.sharedFiles.get(filename)!;
 
       // Check if file exists
       if (!fs.existsSync(filePath)) {
-        this.sharedFiles.delete(hash);
+        this.sharedFiles.delete(filename);
         return res.status(404).json({ error: "File no longer exists" });
       }
 
@@ -109,7 +108,7 @@ export class FileHost implements IFileHost {
       // Set response headers
       res.setHeader("Content-Length", stats.size);
       res.setHeader("Content-Type", "application/octet-stream");
-      res.setHeader("Content-Disposition", `attachment; filename=${hash}`);
+      res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
 
       // Stream file to response
       const fileStream = fs.createReadStream(filePath);
@@ -547,10 +546,10 @@ export class FileHost implements IFileHost {
   }
 
   /**
-   * Share a file and get the SHA256 hash for it
+   * Share a file and get the filename for it
    * This will make the file available via both HTTP (if enabled) and WebTorrent (if enabled)
    * @param filePath Path to the file to share
-   * @returns SHA256 hash of the file (64-character hexadecimal string)
+   * @returns filename of the file (extracted from filePath)
    */
   public async shareFile(filePath: string): Promise<string> {
     // Check if file exists
@@ -560,35 +559,29 @@ export class FileHost implements IFileHost {
 
     this.logger.debug(`📤 Sharing file: ${filePath}`);
 
-    // Calculate SHA256 hash of the file content
-    const hash = await this.calculateFileHash(filePath);
-    this.logger.debug(`🔑 File hash: ${hash}`);
+    // Extract filename from the path
+    const filename = filePath.split(/[/\\]/).pop()!;
+    this.logger.debug(`� File name: ${filename}`);
 
-    // Copy the file to a location named by its hash (if not already there)
-    if (!fs.existsSync(hash)) {
-      fs.copyFileSync(filePath, hash);
-      this.logger.debug(`📋 File copied to hash-named location`);
-    }
-
-    // Track this hash as a shared file
-    this.sharedFiles.add(hash);
+    // Track this filename as a shared file with its full path
+    this.sharedFiles.set(filename, filePath);
 
     // If WebTorrent is available, seed the file
     if (this.webTorrentClient) {
       try {
-        this.logger.debug(`🔄 Starting WebTorrent seeding for ${hash}...`);
+        this.logger.debug(`🔄 Starting WebTorrent seeding for ${filename}...`);
 
-        // Seed the file and wait for the torrent to be ready
+        // Seed the file from its original location and wait for the torrent to be ready
         await new Promise<void>((resolve, reject) => {
           const seedTimeout = setTimeout(() => {
             reject(new Error("WebTorrent seeding timeout"));
           }, 30000); // 30 second timeout for seeding
 
-          this.webTorrentClient!.seed(hash, (torrent) => {
+          this.webTorrentClient!.seed(filePath, (torrent) => {
             clearTimeout(seedTimeout);
             const magnetURI = torrent.magnetURI;
-            this.magnetUris.set(hash, magnetURI);
-            this.logger.debug(`🧲 WebTorrent seeding started for ${hash}`);
+            this.magnetUris.set(filename, magnetURI);
+            this.logger.debug(`🧲 WebTorrent seeding started for ${filename}`);
             this.logger.debug(`   Magnet URI: ${magnetURI}`);
             resolve();
           });
@@ -606,47 +599,49 @@ export class FileHost implements IFileHost {
           }
 
           await this.gunRegistry.register(this.capabilities);
-          this.logger.debug(`✅ Updated Gun.js registry with magnet URI for ${hash}`);
+          this.logger.debug(`✅ Updated Gun.js registry with magnet URI for ${filename}`);
         }
       } catch (error) {
         this.logger.warn(`⚠️ Failed to seed file via WebTorrent:`, error);
       }
     }
 
-    return hash;
+    return filename;
   }
 
   /**
    * Remove a shared file
    * This removes the file from both HTTP and WebTorrent sharing
    */
-  public unshareFile(hash: string, deleteFile: boolean = false): boolean {
-    this.logger.debug(`📤 Unsharing file: ${hash}`);
+  public unshareFile(filename: string, deleteFile: boolean = false): boolean {
+    this.logger.debug(`📤 Unsharing file: ${filename}`);
 
-    const wasShared = this.sharedFiles.delete(hash);
+    const wasShared = this.sharedFiles.has(filename);
+    const filePath = this.sharedFiles.get(filename);
+    this.sharedFiles.delete(filename);
 
     // Remove from WebTorrent seeding
-    if (this.webTorrentClient && this.magnetUris.has(hash)) {
+    if (this.webTorrentClient && this.magnetUris.has(filename)) {
       try {
-        const magnetURI = this.magnetUris.get(hash);
+        const magnetURI = this.magnetUris.get(filename);
         const torrent = this.webTorrentClient.get(magnetURI!);
         if (torrent && typeof torrent === "object" && "destroy" in torrent) {
           (torrent as { destroy(): void }).destroy();
-          this.logger.debug(`🧲 Stopped WebTorrent seeding for ${hash}`);
+          this.logger.debug(`🧲 Stopped WebTorrent seeding for ${filename}`);
         }
-        this.magnetUris.delete(hash);
+        this.magnetUris.delete(filename);
       } catch (error) {
         this.logger.warn(`⚠️ Error stopping WebTorrent seeding:`, error);
       }
     }
 
-    // Optionally delete the hash-named file
-    if (deleteFile && fs.existsSync(hash)) {
+    // Optionally delete the original file
+    if (deleteFile && filePath && fs.existsSync(filePath)) {
       try {
-        fs.unlinkSync(hash);
-        this.logger.debug(`🗑️ Deleted file ${hash}`);
+        fs.unlinkSync(filePath);
+        this.logger.debug(`🗑️ Deleted file ${filePath}`);
       } catch (error) {
-        this.logger.warn(`⚠️ Failed to delete file ${hash}:`, error);
+        this.logger.warn(`⚠️ Failed to delete file ${filePath}:`, error);
       }
     }
 
@@ -655,10 +650,10 @@ export class FileHost implements IFileHost {
 
   /**
    * Get a list of currently shared files
-   * Returns only the hashes since files are stored by hash names
+   * Returns the filenames of shared files
    */
   public getSharedFiles(): string[] {
-    return Array.from(this.sharedFiles);
+    return Array.from(this.sharedFiles.keys());
   }
 
   /**
@@ -669,30 +664,30 @@ export class FileHost implements IFileHost {
   }
 
   /**
-   * Get the URL for a shared file by its SHA256 hash
+   * Get the URL for a shared file by its filename
    * Returns appropriate URL based on available connection methods
-   * @param hash SHA256 hash of the file (64-character hexadecimal string)
+   * @param filename filename of the file
    * @returns URL or magnet URI to download the file
    */
-  public async getFileUrl(hash: string): Promise<string> {
-    if (!this.sharedFiles.has(hash)) {
-      throw new Error(`No file with hash: ${hash}`);
+  public async getFileUrl(filename: string): Promise<string> {
+    if (!this.sharedFiles.has(filename)) {
+      throw new Error(`No file with filename: ${filename}`);
     }
 
     // Prefer direct HTTP if available (use public IP if we have it)
     if (this.server && this.capabilities?.directHttp?.available) {
       const ip = this.publicIp || this.detectLocalIp();
       if (ip) {
-        return `http://${ip}:${this.port}/files/${hash}`;
+        return `http://${ip}:${this.port}/files/${encodeURIComponent(filename)}`;
       }
     }
 
     // Fall back to WebTorrent magnet URI
-    if (this.magnetUris.has(hash)) {
-      return this.magnetUris.get(hash)!;
+    if (this.magnetUris.has(filename)) {
+      return this.magnetUris.get(filename)!;
     }
 
-    throw new Error(`File ${hash} is not available via any connection method`);
+    throw new Error(`File ${filename} is not available via any connection method`);
   }
 
   private detectLocalIp(): string | null {
@@ -731,25 +726,5 @@ export class FileHost implements IFileHost {
     );
   }
 
-  /**
-   * Calculate SHA256 hash of a file
-   */
-  private async calculateFileHash(filePath: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const hash = crypto.createHash("sha256");
-      const stream = fs.createReadStream(filePath);
 
-      stream.on("data", (data) => {
-        hash.update(data);
-      });
-
-      stream.on("end", () => {
-        resolve(hash.digest("hex"));
-      });
-
-      stream.on("error", (error) => {
-        reject(error);
-      });
-    });
-  }
 }

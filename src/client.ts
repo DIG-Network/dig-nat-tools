@@ -79,13 +79,13 @@ export class FileClient implements IFileClient {
   /**
    * Download a file by automatically finding the best connection method
    * @param storeId The store ID of the host
-   * @param fileHash The SHA256 hash of the file
+   * @param filename The filename of the file
    * @param options Download options
    * @returns A promise that resolves to the file content as a Buffer
    */
   public async downloadFile(
     storeId: string,
-    fileHash: string,
+    filename: string,
     options: DownloadOptions = {}
   ): Promise<Buffer> {
     this.logger.debug(`🔍 Looking up peer ${storeId} in registry...`);
@@ -113,7 +113,7 @@ export class FileClient implements IFileClient {
         return await this.downloadViaHttp(
           peer.directHttp.ip,
           peer.directHttp.port,
-          fileHash,
+          filename,
           options
         );
       } catch (error) {
@@ -126,13 +126,13 @@ export class FileClient implements IFileClient {
       try {
         // Find the magnet URI for this specific file
         const magnetUri = peer.webTorrent.magnetUris.find((uri) =>
-          uri.includes(fileHash)
+          uri.includes(filename)
         );
         if (magnetUri) {
           this.logger.debug(`🧲 Attempting WebTorrent download via magnet URI`);
           return await this.downloadViaWebTorrent(magnetUri);
         } else {
-          this.logger.warn(`⚠️ No magnet URI found for file ${fileHash}`);
+          this.logger.warn(`⚠️ No magnet URI found for file ${filename}`);
         }
       } catch (error) {
         this.logger.warn(`⚠️ WebTorrent connection failed:`, error);
@@ -242,10 +242,10 @@ export class FileClient implements IFileClient {
   private async downloadViaHttp(
     host: string,
     port: number,
-    fileHash: string,
+    filename: string,
     options: DownloadOptions = {}
   ): Promise<Buffer> {
-    const url = `http://${host}:${port}/files/${fileHash}`;
+    const url = `http://${host}:${port}/files/${encodeURIComponent(filename)}`;
     this.logger.debug(`🌐 HTTP download from: ${url}`);
     return FileClient.downloadAsBufferStatic(url, options);
   }

@@ -58,11 +58,11 @@ async function runExample() {
     fs.writeFileSync(testFilePath, testContent);
 
     console.log('\n📤 Sharing test file...');
-    const fileHash = await host.shareFile(testFilePath);
-    console.log('File hash:', fileHash);
+    const filename = await host.shareFile(testFilePath);
+    console.log('File name:', filename);
 
     // Get the file URL
-    const fileUrl = await host.getFileUrl(fileHash);
+    const fileUrl = await host.getFileUrl(filename);
     console.log('File URL:', fileUrl);
 
     // If directHttp is available, the URL will use the public IP
@@ -80,7 +80,7 @@ async function runExample() {
         
         // Re-share the file to trigger re-announcement
         await host.shareFile(testFilePath);
-        console.log(`✅ File re-announced (hash: ${fileHash})`);
+        console.log(`✅ File re-announced (filename: ${filename})`);
       } catch (error) {
         console.error('❌ Error re-announcing file:', error.message);
       }

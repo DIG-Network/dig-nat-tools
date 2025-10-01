@@ -144,7 +144,7 @@ describe('FileHost', () => {
 
     it('should setup express routes', () => {
       new FileHost();
-      expect(mockApp.get).toHaveBeenCalledWith('/files/:hash', expect.any(Function));
+      expect(mockApp.get).toHaveBeenCalledWith('/files/:filename', expect.any(Function));
       expect(mockApp.get).toHaveBeenCalledWith('/status', expect.any(Function));
     });
   });
@@ -155,13 +155,13 @@ describe('FileHost', () => {
 
     beforeEach(() => {
       const getCalls = mockApp.get.mock.calls;
-      fileRouteHandler = getCalls.find(call => call[0] === '/files/:hash')?.[1];
+      fileRouteHandler = getCalls.find(call => call[0] === '/files/:filename')?.[1];
       statusRouteHandler = getCalls.find(call => call[0] === '/status')?.[1];
     });
 
-    describe('/files/:hash route', () => {
+    describe('/files/:filename route', () => {
       it('should return 404 when file not found', () => {
-        const mockReq = { params: { hash: 'non-existent-hash' } };
+        const mockReq = { params: { filename: 'non-existent-file.txt' } };
         const mockRes = {
           status: jest.fn().mockReturnThis(),
           json: jest.fn()
@@ -175,12 +175,12 @@ describe('FileHost', () => {
 
       it('should return 404 when file no longer exists on disk', async () => {
         // Share a file first
-        const hash = await fileHost.shareFile('/test/file.txt');
+        const filename = await fileHost.shareFile('/test/file.txt');
         
         // Mock file no longer existing
         mockFs.existsSync.mockReturnValueOnce(false);
         
-        const mockReq = { params: { hash } };
+        const mockReq = { params: { filename } };
         const mockRes = {
           status: jest.fn().mockReturnThis(),
           json: jest.fn()
@@ -194,9 +194,9 @@ describe('FileHost', () => {
 
       it('should serve file successfully', async () => {
         // Share a file first
-        const hash = await fileHost.shareFile('/test/file.txt');
+        const filename = await fileHost.shareFile('/test/file.txt');
         
-        const mockReq = { params: { hash } };
+        const mockReq = { params: { filename } };
         const mockRes = {
           setHeader: jest.fn(),
           status: jest.fn().mockReturnThis(),
@@ -210,7 +210,7 @@ describe('FileHost', () => {
 
         expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Length', 1024);
         expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Type', 'application/octet-stream');
-        expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Disposition', `attachment; filename=${hash}`);
+        expect(mockRes.setHeader).toHaveBeenCalledWith('Content-Disposition', `attachment; filename=${filename}`);
         expect(mockStream.pipe).toHaveBeenCalledWith(mockRes);
       });
     });
@@ -350,15 +350,14 @@ describe('FileHost', () => {
   describe('File Management', () => {
     describe('shareFile()', () => {
       it('should share a file successfully', async () => {
-        // Mock file exists but hash file doesn't exist initially
+        // Mock file exists
         mockFs.existsSync.mockReturnValueOnce(true);  // Original file exists
-        mockFs.existsSync.mockReturnValueOnce(false); // Hash file doesn't exist
         
-        const hash = await fileHost.shareFile('/test/file.txt');
+        const filename = await fileHost.shareFile('/test/file.txt');
 
-        expect(hash).toBe('test-file-hash-123456789abcdef');
-        expect(mockFs.copyFileSync).toHaveBeenCalledWith('/test/file.txt', hash);
-        expect(fileHost.getSharedFiles()).toContain(hash);
+        expect(filename).toBe('file.txt');
+        expect(mockFs.copyFileSync).not.toHaveBeenCalled(); // No more copying
+        expect(fileHost.getSharedFiles()).toContain(filename);
       });
 
       it('should throw error when file does not exist', async () => {
@@ -368,13 +367,12 @@ describe('FileHost', () => {
           .rejects.toThrow('File not found: /non-existent.txt');
       });
 
-      it('should not copy file if hash file already exists', async () => {
+      it('should not copy file anymore', async () => {
         mockFs.existsSync.mockReturnValueOnce(true); // Original file exists
-        mockFs.existsSync.mockReturnValueOnce(true); // Hash file already exists
 
         await fileHost.shareFile('/test/file.txt');
 
-        expect(mockFs.copyFileSync).not.toHaveBeenCalled();
+        expect(mockFs.copyFileSync).not.toHaveBeenCalled(); // We don't copy files anymore
       });
 
       it('should seed file with WebTorrent when available', async () => {
@@ -410,28 +408,28 @@ describe('FileHost', () => {
       });
 
       it('should return false for non-existent file', () => {
-        const result = fileHost.unshareFile('non-existent-hash');
+        const result = fileHost.unshareFile('non-existent-file.txt');
         expect(result).toBe(false);
       });
 
       it('should delete file when deleteFile is true', async () => {
-        const hash = await fileHost.shareFile('/test/file.txt');
+        const filename = await fileHost.shareFile('/test/file.txt');
         
-        fileHost.unshareFile(hash, true);
+        fileHost.unshareFile(filename, true);
 
-        expect(mockFs.unlinkSync).toHaveBeenCalledWith(hash);
+        expect(mockFs.unlinkSync).toHaveBeenCalledWith('/test/file.txt');
       });
 
       it('should stop WebTorrent seeding', async () => {
         const host = new FileHost({ connectionMode: ConnectionMode.AUTO });
         await host.start();
         
-        const hash = await host.shareFile('/test/file.txt');
+        const filename = await host.shareFile('/test/file.txt');
         
         const mockTorrentInstance = { destroy: jest.fn() };
         mockWebTorrentInstance.get.mockReturnValue(mockTorrentInstance as any);
         
-        host.unshareFile(hash);
+        host.unshareFile(filename);
 
         expect(mockWebTorrentInstance.get).toHaveBeenCalledWith(mockTorrent.magnetURI);
         expect(mockTorrentInstance.destroy).toHaveBeenCalled();
@@ -520,14 +518,14 @@ describe('FileHost', () => {
       }, 10000);
 
       it('should throw error when file not shared', async () => {
-        await expect(fileHost.getFileUrl('non-existent-hash'))
-          .rejects.toThrow('No file with hash: non-existent-hash');
+        await expect(fileHost.getFileUrl('non-existent-file.txt'))
+          .rejects.toThrow('No file with filename: non-existent-file.txt');
       });
 
       it('should throw error when no connection methods available', async () => {
-        const hash = await fileHost.shareFile('/test/file.txt');
+        const filename = await fileHost.shareFile('/test/file.txt');
 
-        await expect(fileHost.getFileUrl(hash))
+        await expect(fileHost.getFileUrl(filename))
           .rejects.toThrow('is not available via any connection method');
       });
     });
@@ -598,16 +596,6 @@ describe('FileHost', () => {
       expect(typeof id1).toBe('string');
     });
 
-    it('should calculate file hash correctly', async () => {
-      // Reset the hash counter for this specific test
-      let currentHashCounter = 1;
-      mockHash.digest.mockReturnValue(`test-file-hash-${currentHashCounter}23456789abcdef`);
-      
-      const result = await (fileHost as any).calculateFileHash('/test/file.txt');
 
-      expect(result).toBe('test-file-hash-123456789abcdef');
-      expect(mockCrypto.createHash).toHaveBeenCalledWith('sha256');
-      expect(mockHash.digest).toHaveBeenCalledWith('hex');
-    });
   });
 });

@@ -42,35 +42,34 @@ export interface IFileHost {
   stop(): Promise<void>;
 
   /**
-   * Share a file and get the SHA256 hash for it
-   * The returned hash is used as the file identifier in URLs (e.g., /files/{hash})
+   * Share a file and get the filename for it
+   * The returned filename is used as the file identifier in URLs (e.g., /files/{filename})
    * @param filePath Path to the file to share
-   * @returns SHA256 hash of the file (64-character hexadecimal string)
+   * @returns filename of the file (extracted from filePath)
    */
   shareFile(filePath: string): Promise<string>;
 
   /**
-   * Remove a shared file by its SHA256 hash
-   * @param hash SHA256 hash of the file to unshare (64-character hexadecimal string)
-   * @param deleteFile Whether to delete the hash-named file from disk (default: false)
+   * Remove a shared file by its filename
+   * @param filename filename of the file to unshare
+   * @param deleteFile Whether to delete the original file from disk (default: false)
    * @returns True if file was found and removed from tracking, false otherwise
    */
-  unshareFile(hash: string, deleteFile?: boolean): boolean;
+  unshareFile(filename: string, deleteFile?: boolean): boolean;
 
   /**
-   * Get a list of currently shared file hashes
-   * Since files are stored with their hash names, only the hashes are returned
-   * @returns Array of SHA256 hashes (64-character hexadecimal strings)
+   * Get a list of currently shared filenames
+   * @returns Array of filenames
    */
   getSharedFiles(): string[];
 
   /**
-   * Get the URL for a shared file by its SHA256 hash
-   * The URL will be in the format: http://{host}:{port}/files/{hash}
-   * @param hash SHA256 hash of the file (64-character hexadecimal string)
-   * @returns URL to download the file (path component contains the SHA256 hash)
+   * Get the URL for a shared file by its filename
+   * The URL will be in the format: http://{host}:{port}/files/{filename}
+   * @param filename filename of the file
+   * @returns URL to download the file (path component contains the filename)
    */
-  getFileUrl(hash: string): Promise<string>;
+  getFileUrl(filename: string): Promise<string>;
 }
 
 export interface IFileClient {

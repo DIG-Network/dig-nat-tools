@@ -89,12 +89,12 @@ async function startServer() {
     const capabilities = await host.start();
     console.log('Host capabilities:', capabilities);
     
-    // Share a file and get its SHA256 hash
-    const fileHash = await host.shareFile('/path/to/your/file.pdf');
-    console.log(`File hash: ${fileHash}`);
+    // Share a file and get its filename
+    const filename = await host.shareFile('/path/to/your/file.pdf');
+    console.log(`File name: ${filename}`);
     
     // Get URLs (HTTP and/or WebTorrent magnet URI)
-    const fileUrl = await host.getFileUrl(fileHash);
+    const fileUrl = await host.getFileUrl(filename);
     console.log(`File available at: ${fileUrl}`);
     
     return fileUrl;
@@ -122,11 +122,11 @@ async function discoverAndDownload() {
     const peers = await client.findAvailablePeers();
     console.log(`Found ${peers.length} peers`);
     
-    // Download from a specific peer by store ID and file hash
+    // Download from a specific peer by store ID and filename
     const storeId = 'my-unique-host-id';
-    const fileHash = 'sha256-hash-of-file';
+    const filename = 'file.pdf';
     
-    const fileBuffer = await client.downloadFile(storeId, fileHash);
+    const fileBuffer = await client.downloadFile(storeId, filename);
     console.log(`Downloaded ${fileBuffer.length} bytes`);
     
     // Client automatically chooses best connection method:
@@ -379,10 +379,10 @@ enum ConnectionMode {
 
 - `start(): Promise<HostCapabilities>` - Starts the file hosting server and registers with Gun.js
 - `stop(): Promise<void>` - Stops the file hosting server and unregisters from Gun.js
-- `shareFile(filePath: string): Promise<string>` - Shares a file and returns its SHA256 hash (64-character hex string)
-- `unshareFile(hash: string, deleteFile?: boolean): boolean` - Removes a shared file from tracking, optionally deletes the hash-named file
-- `getSharedFiles(): string[]` - Gets a list of shared file hashes
-- `getFileUrl(hash: string): Promise<string>` - Gets the public URL for a shared file using its SHA256 hash
+- `shareFile(filePath: string): Promise<string>` - Shares a file and returns its filename (extracted from filePath)
+- `unshareFile(filename: string, deleteFile?: boolean): boolean` - Removes a shared file from tracking, optionally deletes the original file
+- `getSharedFiles(): string[]` - Gets a list of shared filenames
+- `getFileUrl(filename: string): Promise<string>` - Gets the public URL for a shared file using its filename
 - `getMagnetUris(): string[]` - Gets WebTorrent magnet URIs for shared files
 
 ### FileClient
@@ -401,7 +401,7 @@ new FileClient(options?: {
 
 #### Methods
 
-- `downloadFile(storeId: string, fileHash: string, options?: DownloadOptions): Promise<Buffer>` - Download from a specific peer
+- `downloadFile(storeId: string, filename: string, options?: DownloadOptions): Promise<Buffer>` - Download from a specific peer
 - `downloadAsBuffer(url: string, options?: DownloadOptions): Promise<Buffer>` - Downloads a file as a buffer
 - `downloadAsStream(url: string, options?: DownloadOptions): Promise<Readable>` - Downloads a file as a readable stream
 - `isServerOnline(baseUrl: string): Promise<boolean>` - Checks if a server is online
