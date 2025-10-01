@@ -562,4 +562,128 @@ describe('FileClient', () => {
       expect(result).toBe(true);
     });
   });
+
+  describe('File Size Limit', () => {
+    it('should reject WebTorrent downloads exceeding maxFileSizeBytes', async () => {
+      const client = new FileClient();
+      
+      // Mock WebTorrent client and torrent
+      const mockTorrent = {
+        name: 'large-file.txt',
+        length: 2048, // 2KB file
+        files: [{ 
+          name: 'large-file.txt',
+          createReadStream: jest.fn().mockReturnValue({
+            on: jest.fn()
+          })
+        }],
+        on: jest.fn(),
+        destroy: jest.fn()
+      };
+
+      const mockWebTorrentClient = {
+        add: jest.fn().mockReturnValue(mockTorrent),
+        destroy: jest.fn(),
+        on: jest.fn()
+      };
+
+      // Set up torrent 'ready' event to trigger immediately with file size check
+      mockTorrent.on.mockImplementation((event, handler) => {
+        if (event === 'ready') {
+          setTimeout(() => handler(), 10);
+        }
+        return mockTorrent;
+      });
+
+      // Inject mocked WebTorrent client
+      (client as any).webTorrentClient = mockWebTorrentClient;
+
+      // Test: File size (2048 bytes) exceeds limit (1024 bytes)
+      await expect(
+        client.downloadAsBuffer('magnet:?xt=urn:btih:test&dn=large-file.txt', {
+          maxFileSizeBytes: 1024 // 1KB limit
+        })
+      ).rejects.toThrow('File size (0.00 MB) exceeds maximum allowed size (0.00 MB)');
+
+      expect(mockTorrent.destroy).toHaveBeenCalled();
+    });
+
+    it('should allow WebTorrent downloads within maxFileSizeBytes', async () => {
+      const client = new FileClient();
+      
+      // Mock WebTorrent client and torrent
+      const mockStream = {
+        on: jest.fn()
+      };
+
+      const mockTorrent = {
+        name: 'small-file.txt',
+        length: 512, // 512 bytes file
+        files: [{ 
+          name: 'small-file.txt',
+          createReadStream: jest.fn().mockReturnValue(mockStream)
+        }],
+        on: jest.fn(),
+        destroy: jest.fn()
+      };
+
+      const mockWebTorrentClient = {
+        add: jest.fn().mockReturnValue(mockTorrent),
+        destroy: jest.fn(),
+        on: jest.fn()
+      };
+
+      // Set up torrent 'ready' event and stream events
+      mockTorrent.on.mockImplementation((event, handler) => {
+        if (event === 'ready') {
+          setTimeout(() => handler(), 10);
+        }
+        return mockTorrent;
+      });
+
+      mockStream.on.mockImplementation((event, handler) => {
+        if (event === 'data') {
+          setTimeout(() => handler(Buffer.from('test content')), 20);
+        } else if (event === 'end') {
+          setTimeout(() => handler(), 30);
+        }
+        return mockStream;
+      });
+
+      // Inject mocked WebTorrent client
+      (client as any).webTorrentClient = mockWebTorrentClient;
+
+      // Test: File size (512 bytes) is within limit (1024 bytes)
+      const result = await client.downloadAsBuffer('magnet:?xt=urn:btih:test&dn=small-file.txt', {
+        maxFileSizeBytes: 1024 // 1KB limit
+      });
+
+      expect(result).toBeInstanceOf(Buffer);
+      expect(result.toString()).toBe('test content');
+      expect(mockTorrent.destroy).toHaveBeenCalled();
+    });
+
+    it('should not apply size limit to HTTP downloads', async () => {
+      // Mock large response
+      const largeContent = 'X'.repeat(2048); // 2KB content
+      mockResponse.headers = { 'content-length': '2048' };
+      mockResponse.on.mockImplementation((event, handler) => {
+        if (event === 'data') {
+          setTimeout(() => handler(Buffer.from(largeContent)), 10);
+        } else if (event === 'end') {
+          setTimeout(() => handler(), 20);
+        }
+        return mockResponse;
+      });
+
+      const client = new FileClient();
+      
+      // Test: HTTP download should ignore maxFileSizeBytes
+      const result = await client.downloadAsBuffer('http://example.com/large-file.txt', {
+        maxFileSizeBytes: 1024 // 1KB limit - should be ignored for HTTP
+      });
+
+      expect(result.toString()).toBe(largeContent);
+    });
+  });
 });

@@ -17,6 +17,7 @@ interface Logger {
 export interface DownloadOptions {
   timeout?: number;
   onProgress?: (downloaded: number, total: number) => void;
+  maxFileSizeBytes?: number; // Maximum allowed file size for downloads (in bytes)
 }
 
 export interface FileClientOptions {
@@ -69,7 +70,7 @@ export class FileClient implements IFileClient {
 
     // Check if this is a WebTorrent magnet URI
     if (url.startsWith("magnet:")) {
-      return this.downloadViaWebTorrent(url);
+      return this.downloadViaWebTorrent(url, options);
     }
 
     // For HTTP/HTTPS URLs, use direct download
@@ -130,7 +131,7 @@ export class FileClient implements IFileClient {
         );
         if (magnetUri) {
           this.logger.debug(`🧲 Attempting WebTorrent download via magnet URI`);
-          return await this.downloadViaWebTorrent(magnetUri);
+          return await this.downloadViaWebTorrent(magnetUri, options);
         } else {
           this.logger.warn(`⚠️ No magnet URI found for file ${filename}`);
         }
@@ -154,7 +155,7 @@ export class FileClient implements IFileClient {
   /**
    * Download a file via WebTorrent
    */
-  private async downloadViaWebTorrent(magnetUri: string): Promise<Buffer> {
+  private async downloadViaWebTorrent(magnetUri: string, options: DownloadOptions = {}): Promise<Buffer> {
     this.logger.debug(`🧲 Starting WebTorrent download...`);
 
     // Initialize WebTorrent client if not already done
@@ -184,7 +185,7 @@ export class FileClient implements IFileClient {
           torrent.destroy();
         }
         reject(new Error("WebTorrent download timeout"));
-      }, this.options.timeout);
+      }, options.timeout || this.options.timeout);
 
       torrent.on("ready", () => {
         this.logger.debug(
@@ -193,7 +194,20 @@ export class FileClient implements IFileClient {
 
         if (torrent.files.length === 0) {
           clearTimeout(timeout);
+          torrent.destroy();
           reject(new Error("No files in torrent"));
+          return;
+        }
+
+        // Check file size against maximum allowed size
+        if (options.maxFileSizeBytes && torrent.length > options.maxFileSizeBytes) {
+          clearTimeout(timeout);
+          torrent.destroy();
+          const fileSizeMB = (torrent.length / (1024 * 1024)).toFixed(2);
+          const maxSizeMB = (options.maxFileSizeBytes / (1024 * 1024)).toFixed(2);
+          reject(new Error(
+            `File size (${fileSizeMB} MB) exceeds maximum allowed size (${maxSizeMB} MB). Download cancelled.`
+          ));
           return;
         }
 

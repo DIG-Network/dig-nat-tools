@@ -133,6 +133,11 @@ async function discoverAndDownload() {
     // 1. Direct HTTP (fastest)
     // 2. WebTorrent (P2P fallback)
     
+    // Download with file size limit (for WebTorrent downloads)
+    const limitedBuffer = await client.downloadFile(storeId, filename, {
+      maxFileSizeBytes: 10 * 1024 * 1024 // Limit to 10MB
+    });
+    
   } catch (error) {
     console.error('Download failed:', error);
   } finally {
@@ -421,6 +426,7 @@ new FileClient(options?: {
 interface DownloadOptions {
   timeout?: number;  // Timeout in milliseconds (default: 30000)
   onProgress?: (downloaded: number, total: number) => void;  // Progress callback
+  maxFileSizeBytes?: number;  // Maximum allowed file size for WebTorrent downloads (in bytes)
 }
 
 interface HostCapabilities {
