@@ -602,7 +602,18 @@ export class FileHost implements IFileHost {
             reject(new Error("WebTorrent seeding timeout"));
           }, 30000); // 30 second timeout for seeding
 
-          this.webTorrentClient!.seed(filePath, (torrent) => {
+          // Seed with custom trackers if configured
+          const seedOptions = this.options.trackers && this.options.trackers.length > 0 
+            ? { announce: this.options.trackers }
+            : undefined;
+
+          if (seedOptions) {
+            this.logger.debug(`🔧 Using custom trackers for seeding: ${this.options.trackers!.join(', ')}`);
+          } else {
+            this.logger.debug(`🔧 Using default trackers for seeding`);
+          }
+
+          this.webTorrentClient!.seed(filePath, seedOptions, (torrent) => {
             clearTimeout(seedTimeout);
             const magnetURI = torrent.magnetURI;
             this.magnetUris.set(filename, magnetURI);

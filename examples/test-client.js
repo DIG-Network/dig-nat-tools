@@ -18,9 +18,7 @@ async function startClient() {
     // Custom WebTorrent trackers (optional) - replace unreliable public trackers
     trackers: [
       'ws://nostalgiagame.go.ro:8000',        // Your custom WebSocket tracker
-      'http://nostalgiagame.go.ro:8000/announce', // Your custom HTTP tracker
-      'wss://tracker.openwebtorrent.com', // Reliable public tracker
-      'udp://tracker.opentrackr.org:1337' // Reliable public tracker
+      'http://nostalgiagame.go.ro:8000/announce' // Your custom HTTP tracker
     ]
   });
 
