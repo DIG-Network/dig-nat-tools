@@ -563,6 +563,12 @@ export class FileHost implements IFileHost {
     const filename = filePath.split(/[/\\]/).pop()!;
     this.logger.debug(`� File name: ${filename}`);
 
+    // Check if file is already being shared
+    if (this.sharedFiles.has(filename) && this.magnetUris.has(filename)) {
+      this.logger.debug(`📄 File ${filename} is already being shared, skipping re-seeding`);
+      return filename;
+    }
+
     // Track this filename as a shared file with its full path
     this.sharedFiles.set(filename, filePath);
 

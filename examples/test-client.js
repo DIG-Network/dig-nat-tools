@@ -134,6 +134,9 @@ async function startClient() {
           console.log('📭 No files available for download from this peer');
         }
       }
+      
+      // Show status after each check
+      console.log(`📊 Status: ${downloadedFiles.size} files completed, ${downloadingFiles.size} files in progress\n`);
     };
 
     // Run initial check
@@ -148,18 +151,11 @@ async function startClient() {
       }
     }, 10000); // Every 10 seconds
 
-    console.log(`📊 Downloaded files tracking: ${downloadedFiles.size} files completed`);
-    console.log(`📊 Currently downloading: ${downloadingFiles.size} files in progress`);
-
     // Keep running until interrupted
     await new Promise(() => {}); // Run forever
     
   } catch (error) {
     console.error('❌ Error in client:', error);
-    // Clean up intervals
-    if (typeof checkInterval !== 'undefined') {
-      clearInterval(checkInterval);
-    }
   } finally {
     // Clean up
     await client.destroy();
