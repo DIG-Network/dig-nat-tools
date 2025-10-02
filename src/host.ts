@@ -33,6 +33,7 @@ export interface HostOptions {
     peers: string[]; // Gun.js peer URLs
     namespace?: string; // Registry namespace
   };
+  trackers?: string[]; // Custom WebTorrent trackers
 }
 
 export class FileHost implements IFileHost {
@@ -335,7 +336,20 @@ export class FileHost implements IFileHost {
     ) {
       try {
         this.logger.debug(`🔄 Initializing WebTorrent client...`);
-        this.webTorrentClient = new WebTorrent();
+        
+        // Initialize WebTorrent with custom trackers if provided, otherwise use defaults
+        if (this.options.trackers && this.options.trackers.length > 0) {
+          this.webTorrentClient = new WebTorrent({
+            tracker: {
+              announce: this.options.trackers
+            }
+          });
+          this.logger.debug(`🔧 Using custom trackers: ${this.options.trackers.join(', ')}`);
+        } else {
+          // Use default WebTorrent configuration (includes built-in reliable trackers)
+          this.webTorrentClient = new WebTorrent();
+          this.logger.debug(`🔧 Using default WebTorrent trackers`);
+        }
 
         // Fix EventEmitter warning when seeding multiple torrents
         // WebTorrent reuses a single DHT instance, causing listener count to exceed default limit

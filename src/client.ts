@@ -25,6 +25,7 @@ export interface FileClientOptions {
   namespace?: string; // Gun.js namespace
   timeout?: number; // Download timeout
   logger?: Logger; // Optional logger for debug output
+  trackers?: string[]; // Custom WebTorrent trackers
 }
 
 export class FileClient implements IFileClient {
@@ -271,13 +272,24 @@ export class FileClient implements IFileClient {
       );
       
       try {
-        this.webTorrentClient = new WebTorrent();
+        // Initialize WebTorrent with custom trackers if provided, otherwise use defaults
+        if (this.options.trackers && this.options.trackers.length > 0) {
+          this.webTorrentClient = new WebTorrent({
+            tracker: {
+              announce: this.options.trackers
+            }
+          });
+        } else {
+          // Use default WebTorrent configuration (includes built-in reliable trackers)
+          this.webTorrentClient = new WebTorrent();
+        }
         
         // Log client status (using safe property access)
         this.logger.debug(`🔧 WebTorrent client created:`, {
           activeTorrents: this.webTorrentClient.torrents.length,
           clientType: 'WebTorrent',
-          initialized: !!this.webTorrentClient
+          initialized: !!this.webTorrentClient,
+          trackers: this.options.trackers || 'default reliable trackers'
         });
 
       } catch (error) {
