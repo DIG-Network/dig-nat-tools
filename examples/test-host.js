@@ -24,7 +24,15 @@ async function runExample() {
     gun: {
       peers: ['http://nostalgiagame.go.ro:30878/gun'],
       namespace: 'dig-nat-tools-test'
-    }
+    },
+    
+    // Custom WebTorrent trackers (optional) - uncomment to use your own tracker
+    trackers: [
+      'ws://localhost:8000',              // Your custom WebSocket tracker
+      'http://localhost:8000/announce',   // Your custom HTTP tracker
+      'wss://tracker.openwebtorrent.com',       // Backup reliable tracker
+      'udp://tracker.opentrackr.org:1337'       // Backup reliable tracker
+    ]
   });
 
   // Declare testFiles in function scope so it's accessible everywhere

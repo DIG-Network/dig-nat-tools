@@ -4,7 +4,9 @@ jest.mock('node:crypto');
 jest.mock('node:os');
 jest.mock('express');
 jest.mock('webtorrent');
-jest.mock('nat-upnp');
+jest.mock('nat-upnp', () => ({
+  createClient: jest.fn()
+}));
 jest.mock('public-ip');
 jest.mock('../src/registry/gun-registry');
 
@@ -14,6 +16,8 @@ import * as crypto from 'node:crypto';
 import * as os from 'node:os';
 import express from 'express';
 import WebTorrent from 'webtorrent';
+import natUpnp from 'nat-upnp';
+import { publicIpv4 } from 'public-ip';
 import { GunRegistry } from '../src/registry/gun-registry';
 
 // Mock implementations
@@ -23,6 +27,7 @@ const mockOs = os as jest.Mocked<typeof os>;
 const mockExpress = express as jest.MockedFunction<typeof express>;
 const MockWebTorrent = WebTorrent as jest.MockedClass<typeof WebTorrent>;
 const MockGunRegistry = GunRegistry as jest.MockedClass<typeof GunRegistry>;
+const mockPublicIpv4 = publicIpv4 as jest.MockedFunction<typeof publicIpv4>;
 
 // Mock express app
 const mockApp = {
@@ -43,13 +48,32 @@ const mockWebTorrentInstance = {
   seed: jest.fn(),
   get: jest.fn(),
   destroy: jest.fn(),
-  on: jest.fn()
+  on: jest.fn(),
+  setMaxListeners: jest.fn(),
+  ready: true // Mark as ready to avoid delays
 };
 
 // Mock torrent
 const mockTorrent = {
   magnetURI: 'magnet:?xt=urn:btih:test-hash&dn=test-file',
   destroy: jest.fn()
+};
+
+// Mock UPnP client
+const mockUpnpClient = {
+  portMapping: jest.fn((options: any, callback: (err: Error | null) => void) => {
+    // Simulate successful port mapping
+    setTimeout(() => callback(null), 0);
+  }),
+  externalIp: jest.fn((callback: (err: Error | null, ip?: string) => void) => {
+    // Simulate getting external IP
+    setTimeout(() => callback(null, '203.0.113.0'), 0);
+  }),
+  portUnmapping: jest.fn((options: any, callback: (err: Error | null) => void) => {
+    // Simulate successful port unmapping
+    setTimeout(() => callback(null), 0);
+  }),
+  close: jest.fn()
 };
 
 // Mock GunRegistry instance
@@ -96,8 +120,12 @@ describe('FileHost', () => {
     
     // Setup WebTorrent mocks
     MockWebTorrent.mockImplementation(() => mockWebTorrentInstance as any);
-    mockWebTorrentInstance.seed.mockImplementation((file: any, callback: any) => {
-      setTimeout(() => callback(mockTorrent), 0);
+    mockWebTorrentInstance.seed.mockImplementation((file: any, options: any, callback: any) => {
+      // Handle both cases: seed(file, callback) and seed(file, options, callback)
+      const actualCallback = typeof options === 'function' ? options : callback;
+      if (actualCallback) {
+        setTimeout(() => actualCallback(mockTorrent), 0);
+      }
     });
     
     // Setup fs mocks
@@ -120,8 +148,17 @@ describe('FileHost', () => {
       }]
     });
     
+    // Setup nat-upnp mocks
+    (natUpnp.createClient as jest.Mock).mockReturnValue(mockUpnpClient);
+    
+    // Setup public-ip mocks
+    mockPublicIpv4.mockResolvedValue('203.0.113.0'); // Use a test IP address
+    
     // Setup GunRegistry mocks
     MockGunRegistry.mockImplementation(() => mockGunRegistryInstance as any);
+    
+    // Speed up WebTorrent ready check for all instances in tests
+    jest.spyOn(FileHost.prototype as any, 'waitForWebTorrentReady').mockResolvedValue(undefined);
     
     fileHost = new FileHost({ port: 3000 });
   });
@@ -264,7 +301,7 @@ describe('FileHost', () => {
 
         expect(mockApp.listen).toHaveBeenCalled();
         expect(MockWebTorrent).toHaveBeenCalled();
-        expect(capabilities.directHttp?.available).toBeUndefined(); // UPnP fails so directHttp is not set
+        expect(capabilities.directHttp?.available).toBe(true); // UPnP succeeds in mock so directHttp is available
         expect(capabilities.webTorrent?.available).toBe(true);
       }, 10000);
 
@@ -502,7 +539,7 @@ describe('FileHost', () => {
 
         const url = await hostWithHttp.getFileUrl(hash);
 
-        expect(url).toBe(`http://192.168.1.100:3000/files/${hash}`);
+        expect(url).toBe(`http://203.0.113.0:3000/files/${hash}`);
         
         await hostWithHttp.stop();
       }, 15000);

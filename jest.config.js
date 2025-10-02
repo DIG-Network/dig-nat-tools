@@ -5,6 +5,7 @@ export default {
   testMatch: ['**/__tests__/**/*.ts', '**/?(*.)+(spec|test).ts'],
   transform: {
     '^.+\\.ts$': ['ts-jest', {
+      useESM: true,
       tsconfig: {
         types: ['jest', 'node'],
         module: 'esnext'
@@ -23,10 +24,5 @@ export default {
   transformIgnorePatterns: [
     'node_modules/(?!(public-ip|gun)/)'
   ],
-  extensionsToTreatAsEsm: ['.ts'],
-  globals: {
-    'ts-jest': {
-      useESM: true
-    }
-  }
+  extensionsToTreatAsEsm: ['.ts']
 };

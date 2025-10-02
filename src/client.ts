@@ -25,6 +25,7 @@ export interface FileClientOptions {
   namespace?: string; // Gun.js namespace
   timeout?: number; // Download timeout
   logger?: Logger; // Optional logger for debug output
+  trackers?: string[]; // Custom WebTorrent trackers
 }
 
 export class FileClient implements IFileClient {
@@ -38,6 +39,7 @@ export class FileClient implements IFileClient {
       peers: options.peers || ["http://nostalgiagame.go.ro:30878/gun"],
       namespace: options.namespace || "dig-nat-tools",
       timeout: options.timeout || 30000,
+      trackers: options.trackers, // Store custom trackers
     };
 
     // Create a default logger that only shows warnings and errors if none provided
@@ -271,13 +273,24 @@ export class FileClient implements IFileClient {
       );
       
       try {
-        this.webTorrentClient = new WebTorrent();
+        // Initialize WebTorrent with custom trackers if provided, otherwise use defaults
+        if (this.options.trackers && this.options.trackers.length > 0) {
+          this.webTorrentClient = new WebTorrent({
+            tracker: {
+              announce: this.options.trackers
+            }
+          });
+        } else {
+          // Use default WebTorrent configuration (includes built-in reliable trackers)
+          this.webTorrentClient = new WebTorrent();
+        }
         
         // Log client status (using safe property access)
         this.logger.debug(`🔧 WebTorrent client created:`, {
           activeTorrents: this.webTorrentClient.torrents.length,
           clientType: 'WebTorrent',
-          initialized: !!this.webTorrentClient
+          initialized: !!this.webTorrentClient,
+          trackers: this.options.trackers || 'default reliable trackers'
         });
 
       } catch (error) {
@@ -301,7 +314,18 @@ export class FileClient implements IFileClient {
 
       let torrent: WebTorrent.Torrent | null = null;
       try {
-        torrent = this.webTorrentClient!.add(magnetUri);
+        // If custom trackers are configured, override the magnet URI trackers
+        if (this.options.trackers && this.options.trackers.length > 0) {
+          // Add torrent with custom tracker override
+          torrent = this.webTorrentClient!.add(magnetUri, {
+            announce: this.options.trackers
+          });
+          this.logger.debug(`🔧 Using custom trackers for torrent: ${this.options.trackers.join(', ')}`);
+        } else {
+          // Use default behavior (trackers from magnet URI)
+          torrent = this.webTorrentClient!.add(magnetUri);
+          this.logger.debug(`🔧 Using trackers from magnet URI`);
+        }
       } catch (error) {
         this.logger.error("❌ Failed to add torrent:", {
           ...this.serializeError(error),

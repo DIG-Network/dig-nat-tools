@@ -13,7 +13,13 @@ async function startClient() {
   const client = new FileClient({
     peers: ['http://nostalgiagame.go.ro:30878/gun'], // Connect to deployed relay
     namespace: 'dig-nat-tools-test', // Use same namespace as host
-    timeout: 600000 // 10 minute timeout (600 seconds) - increased from 5 minutes
+    timeout: 600000, // 10 minute timeout (600 seconds) - increased from 5 minutes
+    
+    // Custom WebTorrent trackers (optional) - replace unreliable public trackers
+    trackers: [
+      'ws://nostalgiagame.go.ro:8000',        // Your custom WebSocket tracker
+      'http://nostalgiagame.go.ro:8000/announce' // Your custom HTTP tracker
+    ]
   });
 
   try {
