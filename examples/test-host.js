@@ -84,20 +84,20 @@ async function runExample() {
 
     // Re-announce all files every 5 seconds
     let announceCount = 0;
-    const announceInterval = setInterval(async () => {
-      try {
-        announceCount++;
-        console.log(`📢 Re-announcing ${sharedFiles.length} files #${announceCount} at ${new Date().toLocaleTimeString()}`);
+    // const announceInterval = setInterval(async () => {
+    //   try {
+    //     announceCount++;
+    //     console.log(`📢 Re-announcing ${sharedFiles.length} files #${announceCount} at ${new Date().toLocaleTimeString()}`);
         
-        // Re-share all files to trigger re-announcement
-        for (const fileInfo of sharedFiles) {
-          await host.shareFile(fileInfo.path);
-        }
-        console.log(`✅ All ${sharedFiles.length} files re-announced`);
-      } catch (error) {
-        console.error('❌ Error re-announcing files:', error.message);
-      }
-    }, 5000); // Every 5 seconds
+    //     // Re-share all files to trigger re-announcement
+    //     for (const fileInfo of sharedFiles) {
+    //       await host.shareFile(fileInfo.path);
+    //     }
+    //     console.log(`✅ All ${sharedFiles.length} files re-announced`);
+    //   } catch (error) {
+    //     console.error('❌ Error re-announcing files:', error.message);
+    //   }
+    // }, 5000); // Every 5 seconds
 
     // Handle graceful shutdown
     process.on('SIGINT', async () => {

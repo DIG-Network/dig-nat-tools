@@ -337,6 +337,11 @@ export class FileHost implements IFileHost {
         this.logger.debug(`🔄 Initializing WebTorrent client...`);
         this.webTorrentClient = new WebTorrent();
 
+        // Fix EventEmitter warning when seeding multiple torrents
+        // WebTorrent reuses a single DHT instance, causing listener count to exceed default limit
+        this.webTorrentClient.setMaxListeners(0); // Disable limit
+        this.logger.debug(`🔧 Set WebTorrent maxListeners to unlimited for multiple torrents`);
+
         // Add error handling for the WebTorrent client
         this.webTorrentClient.on("error", (err: string | Error) => {
           this.logger.error("❌ WebTorrent client error:", err);
