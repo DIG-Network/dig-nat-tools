@@ -27,6 +27,10 @@ async function runExample() {
     }
   });
 
+  // Declare testFiles in function scope so it's accessible everywhere
+  let testFiles = [];
+  let sharedFiles = [];
+
   try {
     // Start the host - this will now:
     // 1. Start the HTTP server locally
@@ -52,18 +56,25 @@ async function runExample() {
       console.log('❌ WebTorrent not available');
     }
 
-    // Create a test file
-    const testFilePath = 'test-file.txt';
-    const testContent = `Hello from FileHost! Generated at ${new Date().toISOString()}`;
-    fs.writeFileSync(testFilePath, testContent);
+    // Create 10 different test files
+    console.log('\n📝 Creating 10 test files...');
+    for (let i = 1; i <= 10; i++) {
+      const testFilePath = `test-file-${i}.txt`;
+      const testContent = `Hello from FileHost! This is file #${i} generated at ${new Date().toISOString()}.\nFile size: ${Math.random().toString(36).repeat(50 + i * 10)}`;
+      fs.writeFileSync(testFilePath, testContent);
+      testFiles.push(testFilePath);
+      console.log(`✅ Created: ${testFilePath} (${testContent.length} bytes)`);
+    }
 
-    console.log('\n📤 Sharing test file...');
-    const filename = await host.shareFile(testFilePath);
-    console.log('File name:', filename);
+    console.log('\n📤 Sharing all 10 test files...');
+    for (const testFilePath of testFiles) {
+      const filename = await host.shareFile(testFilePath);
+      const fileUrl = await host.getFileUrl(filename);
+      sharedFiles.push({ path: testFilePath, filename, url: fileUrl });
+      console.log(`📤 Shared: ${filename} -> ${fileUrl}`);
+    }
 
-    // Get the file URL
-    const fileUrl = await host.getFileUrl(filename);
-    console.log('File URL:', fileUrl);
+    console.log(`\n✅ Successfully shared ${sharedFiles.length} files!`);
 
     // If directHttp is available, the URL will use the public IP
     // If not, it will be a magnet URI for WebTorrent
@@ -71,18 +82,20 @@ async function runExample() {
     console.log('\n⏳ Host running indefinitely... Re-announcing file every 5 seconds');
     console.log('Press Ctrl+C to stop\n');
 
-    // Re-announce the file share every 5 seconds
+    // Re-announce all files every 5 seconds
     let announceCount = 0;
     const announceInterval = setInterval(async () => {
       try {
         announceCount++;
-        console.log(`📢 Re-announcing file share #${announceCount} at ${new Date().toLocaleTimeString()}`);
+        console.log(`📢 Re-announcing ${sharedFiles.length} files #${announceCount} at ${new Date().toLocaleTimeString()}`);
         
-        // Re-share the file to trigger re-announcement
-        await host.shareFile(testFilePath);
-        console.log(`✅ File re-announced (filename: ${filename})`);
+        // Re-share all files to trigger re-announcement
+        for (const fileInfo of sharedFiles) {
+          await host.shareFile(fileInfo.path);
+        }
+        console.log(`✅ All ${sharedFiles.length} files re-announced`);
       } catch (error) {
-        console.error('❌ Error re-announcing file:', error.message);
+        console.error('❌ Error re-announcing files:', error.message);
       }
     }, 5000); // Every 5 seconds
 
@@ -91,10 +104,16 @@ async function runExample() {
       console.log('\n🛑 Received interrupt signal, shutting down...');
       clearInterval(announceInterval);
       await host.stop();
-      try {
-        fs.unlinkSync('test-file.txt');
-      } catch (e) {
-        // Ignore cleanup errors
+      
+      // Clean up all test files
+      console.log('🧹 Cleaning up test files...');
+      for (const testFilePath of testFiles) {
+        try {
+          fs.unlinkSync(testFilePath);
+          console.log(`🗑️ Deleted: ${testFilePath}`);
+        } catch (e) {
+          // Ignore cleanup errors
+        }
       }
       process.exit(0);
     });
@@ -108,11 +127,17 @@ async function runExample() {
     console.log('\n🛑 Stopping host...');
     await host.stop();
     
-    // Clean up test file
-    try {
-      fs.unlinkSync('test-file.txt');
-    } catch (e) {
-      // Ignore cleanup errors
+    // Clean up all test files
+    if (testFiles && testFiles.length > 0) {
+      console.log('🧹 Cleaning up test files...');
+      for (const testFilePath of testFiles) {
+        try {
+          fs.unlinkSync(testFilePath);
+          console.log(`🗑️ Deleted: ${testFilePath}`);
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+      }
     }
   }
 }
