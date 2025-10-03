@@ -43,7 +43,8 @@ const mockWebTorrentInstance = {
   seed: jest.fn(),
   get: jest.fn(),
   destroy: jest.fn(),
-  on: jest.fn()
+  on: jest.fn(),
+  setMaxListeners: jest.fn()
 };
 
 // Mock torrent
