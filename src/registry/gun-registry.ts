@@ -42,7 +42,7 @@ export class GunRegistry {
 
   constructor(options: GunRegistryOptions = {}) {
     this.options = {
-      peers: options.peers || ["http://nostalgiagame.go.ro:30878/gun"],
+      peers: options.peers || ["http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun"],
       namespace: options.namespace || "dig-nat-tools",
       webrtc: options.webrtc || {
         iceServers: [

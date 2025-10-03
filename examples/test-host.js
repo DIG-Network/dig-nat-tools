@@ -22,7 +22,7 @@ async function runExample() {
     ttl: 3600, // UPnP mapping TTL: 1 hour
     storeId: 'test-host-2',
     gun: {
-      peers: ['http://nostalgiagame.go.ro:30878/gun'],
+      peers: ['http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun'],
       namespace: 'dig-nat-tools-test'
     }
   });

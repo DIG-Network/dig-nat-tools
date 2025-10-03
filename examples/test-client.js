@@ -11,13 +11,13 @@ async function startClient() {
   
   // Initialize FileClient with Gun.js configuration
   const client = new FileClient({
-    peers: ['http://nostalgiagame.go.ro:30878/gun'], // Connect to deployed relay
+    peers: ['http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun'], // Connect to deployed relay
     namespace: 'dig-nat-tools-test', // Use same namespace as host
     timeout: 600000 // 10 minute timeout (600 seconds) - increased from 5 minutes
   });
 
   try {
-    console.log('🔗 Connecting to Gun.js relay at http://nostalgiagame.go.ro:30878/gun...');
+    console.log('🔗 Connecting to Gun.js relay at http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun...');
     console.log('📡 Using namespace: dig-nat-tools-test');
     console.log('🔄 Searching for available peers...');
     

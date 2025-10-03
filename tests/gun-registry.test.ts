@@ -64,7 +64,7 @@ describe('GunRegistry', () => {
     it('should initialize with default options', () => {
       registry = new GunRegistry();
       expect(mockGun).toHaveBeenCalledWith({
-        peers: ["http://nostalgiagame.go.ro:30878/gun"],
+        peers: ["http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun"],
         rtc: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },

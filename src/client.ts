@@ -35,7 +35,7 @@ export class FileClient implements IFileClient {
 
   constructor(options: FileClientOptions = {}) {
     this.options = {
-      peers: options.peers || ["http://nostalgiagame.go.ro:30878/gun"],
+      peers: options.peers || ["http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun"],
       namespace: options.namespace || "dig-nat-tools",
       timeout: options.timeout || 30000,
     };
