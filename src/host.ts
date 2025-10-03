@@ -380,7 +380,7 @@ export class FileHost implements IFileHost {
       );
     }
 
-    this.logger.info(`🎉 FileHost initialized successfully with methods:`, {
+    this.logger.debug(`🎉 FileHost initialized successfully with methods:`, {
       directHttp: capabilities.directHttp?.available || false,
       webTorrent: capabilities.webTorrent?.available || false,
     });
