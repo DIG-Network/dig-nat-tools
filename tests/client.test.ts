@@ -92,7 +92,6 @@ describe('FileClient', () => {
       expect(result.toString()).toBe('test data chunk');
       expect(mockHttp.get).toHaveBeenCalledWith(
         'http://example.com/file.txt',
-        { timeout: 30000 },
         expect.any(Function)
       );
     });
@@ -110,27 +109,11 @@ describe('FileClient', () => {
       expect(result).toBeInstanceOf(Buffer);
       expect(mockHttps.get).toHaveBeenCalledWith(
         'https://example.com/file.txt',
-        { timeout: 30000 },
         expect.any(Function)
       );
     });
 
-    it('should use custom timeout option', async () => {
-      mockURL.mockImplementation((url) => ({
-        protocol: 'http:',
-        toString: () => url
-      }) as any);
 
-      const promise = FileClient.downloadAsBufferStatic('http://example.com/file.txt', { timeout: 10000 });
-      
-      await promise;
-      
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        'http://example.com/file.txt',
-        { timeout: 10000 },
-        expect.any(Function)
-      );
-    });
 
     it('should call onProgress callback when content-length is available', async () => {
       const onProgress = jest.fn();
@@ -231,30 +214,7 @@ describe('FileClient', () => {
         .rejects.toThrow('Network error');
     });
 
-    it('should reject on timeout', async () => {
-      mockURL.mockImplementation((url) => ({
-        protocol: 'http:',
-        toString: () => url
-      }) as any);
 
-      // Override the mock to not call the response callback
-      mockHttp.get.mockImplementation((_url, _options, _callback) => {
-        // Don't call the callback, just return request that will trigger timeout
-        return mockRequest;
-      });
-
-      mockRequest.on.mockImplementation((event, handler) => {
-        if (event === 'timeout') {
-          setTimeout(() => handler(), 10);
-        }
-        return mockRequest;
-      });
-
-      await expect(FileClient.downloadAsBufferStatic('http://example.com/file.txt'))
-        .rejects.toThrow('Download timed out');
-      
-      expect(mockRequest.destroy).toHaveBeenCalled();
-    });
   });
 
   describe('downloadAsStream', () => {
@@ -269,7 +229,6 @@ describe('FileClient', () => {
       expect(result).toBe(mockResponse);
       expect(mockHttp.get).toHaveBeenCalledWith(
         'http://example.com/file.txt',
-        { timeout: 30000 },
         expect.any(Function)
       );
     });
@@ -285,25 +244,11 @@ describe('FileClient', () => {
       expect(result).toBe(mockResponse);
       expect(mockHttps.get).toHaveBeenCalledWith(
         'https://example.com/file.txt',
-        { timeout: 30000 },
         expect.any(Function)
       );
     });
 
-    it('should use custom timeout option', async () => {
-      mockURL.mockImplementation((url) => ({
-        protocol: 'http:',
-        toString: () => url
-      }) as any);
 
-      await FileClient.downloadAsStreamStatic('http://example.com/file.txt', { timeout: 15000 });
-      
-      expect(mockHttp.get).toHaveBeenCalledWith(
-        'http://example.com/file.txt',
-        { timeout: 15000 },
-        expect.any(Function)
-      );
-    });
 
     it('should reject when response status is not 200', async () => {
       mockURL.mockImplementation((url) => ({
@@ -341,30 +286,7 @@ describe('FileClient', () => {
         .rejects.toThrow('Connection refused');
     });
 
-    it('should reject on timeout', async () => {
-      mockURL.mockImplementation((url) => ({
-        protocol: 'http:',
-        toString: () => url
-      }) as any);
 
-      // Override the mock to not call the response callback
-      mockHttp.get.mockImplementation((_url, _options, _callback) => {
-        // Don't call the callback, just return request that will trigger timeout
-        return mockRequest;
-      });
-
-      mockRequest.on.mockImplementation((event, handler) => {
-        if (event === 'timeout') {
-          setTimeout(() => handler(), 10);
-        }
-        return mockRequest;
-      });
-
-      await expect(FileClient.downloadAsStreamStatic('http://example.com/file.txt'))
-        .rejects.toThrow('Download timed out');
-      
-      expect(mockRequest.destroy).toHaveBeenCalled();
-    });
   });
 
   describe('isServerOnline', () => {
@@ -511,16 +433,16 @@ describe('FileClient', () => {
       expect(result).toBe(false);
     });
 
-    it('should return false on timeout', async () => {
+    it('should return false on error', async () => {
       mockURL.mockImplementation((path, baseUrl) => ({
         protocol: 'http:',
         toString: () => `${baseUrl}/status`
       }) as any);
 
       mockRequest.on.mockImplementation((event, handler) => {
-        if (event === 'timeout') {
-          // Call the timeout handler immediately for testing
-          handler();
+        if (event === 'error') {
+          // Call the error handler immediately for testing
+          handler(new Error('Network error'));
         }
         return mockRequest;
       });
@@ -528,7 +450,6 @@ describe('FileClient', () => {
       const result = await FileClient.isServerOnlineStatic('http://example.com:3000');
       
       expect(result).toBe(false);
-      expect(mockRequest.destroy).toHaveBeenCalled();
     });
 
     it('should return false when URL constructor throws error', async () => {

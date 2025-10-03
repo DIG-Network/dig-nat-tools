@@ -15,7 +15,6 @@ interface Logger {
 }
 
 export interface DownloadOptions {
-  timeout?: number;
   onProgress?: (downloaded: number, total: number) => void;
   maxFileSizeBytes?: number; // Maximum allowed file size for downloads (in bytes)
 }
@@ -23,7 +22,6 @@ export interface DownloadOptions {
 export interface FileClientOptions {
   peers?: string[]; // Gun.js peer URLs
   namespace?: string; // Gun.js namespace
-  timeout?: number; // Download timeout
   logger?: Logger; // Optional logger for debug output
 }
 
@@ -37,7 +35,6 @@ export class FileClient implements IFileClient {
     this.options = {
       peers: options.peers || ["http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun"],
       namespace: options.namespace || "dig-nat-tools",
-      timeout: options.timeout || 30000,
     };
 
     // Create a default logger that only shows warnings and errors if none provided
@@ -311,35 +308,12 @@ export class FileClient implements IFileClient {
         return;
       }
 
-      // Timeout handler with more details
-      const timeoutMs = options.timeout || this.options.timeout;
-      const timeout = setTimeout(() => {
-        this.logger.error("⏰ WebTorrent download timeout:", {
-          timeoutMs: timeoutMs,
-          torrentName: torrent?.name,
-          torrentLength: torrent?.length,
-          filesCount: torrent?.files?.length,
-          peersCount: torrent?.numPeers,
-          downloaded: torrent?.downloaded,
-          uploaded: torrent?.uploaded,
-          downloadSpeed: torrent?.downloadSpeed,
-          progress: torrent?.progress,
-          magnetUri: magnetUri.substring(0, 100) + '...'
-        });
-        
-        if (torrent) {
-          torrent.destroy();
-        }
-        reject(new Error(`WebTorrent download timeout after ${timeoutMs}ms`));
-      }, timeoutMs);
-
       torrent.on("ready", () => {
         this.logger.debug(
           `✅ Torrent ready! File: ${torrent!.name}, Size: ${torrent!.length} bytes, Files: ${torrent!.files.length}`
         );
 
         if (torrent!.files.length === 0) {
-          clearTimeout(timeout);
           torrent!.destroy();
           this.logger.error("❌ No files in torrent", {
             name: torrent!.name,
@@ -352,7 +326,6 @@ export class FileClient implements IFileClient {
 
         // Check file size against maximum allowed size
         if (options.maxFileSizeBytes && torrent!.length > options.maxFileSizeBytes) {
-          clearTimeout(timeout);
           torrent!.destroy();
           const fileSizeMB = (torrent!.length / (1024 * 1024)).toFixed(2);
           const maxSizeMB = (options.maxFileSizeBytes / (1024 * 1024)).toFixed(2);
@@ -376,7 +349,6 @@ export class FileClient implements IFileClient {
         });
 
         stream.on("end", () => {
-          clearTimeout(timeout);
           const buffer = Buffer.concat(chunks);
           this.logger.debug(
             `✅ WebTorrent download completed! ${buffer.length} bytes`
@@ -388,7 +360,6 @@ export class FileClient implements IFileClient {
         });
 
         stream.on("error", (error: unknown) => {
-          clearTimeout(timeout);
           torrent!.destroy();
           this.logger.error("❌ Stream error during download:", {
             ...this.serializeError(error),
@@ -401,8 +372,7 @@ export class FileClient implements IFileClient {
 
       // Enhanced torrent error handling
       torrent.on("error", (error: unknown) => {
-        clearTimeout(timeout);
-        this.logger.error(`❌ WebTorrent torrent error:`, {
+        this.logger.debug(`❌ WebTorrent torrent error:`, {
           ...this.serializeError(error),
           magnetUri: magnetUri.substring(0, 100) + '...',
           infoHash: torrent?.infoHash,
@@ -413,13 +383,13 @@ export class FileClient implements IFileClient {
 
       // Add additional torrent event listeners for debugging
       torrent.on("warning", (warning: unknown) => {
-        this.logger.warn("⚠️ WebTorrent warning:", {
+        this.logger.debug("⚠️ WebTorrent warning:", {
           ...this.serializeError(warning)
         });
       });
 
       torrent.on("noPeers", () => {
-        this.logger.warn("⚠️ No peers found for torrent", {
+        this.logger.debug("⚠️ No peers found for torrent", {
           magnetUri: magnetUri.substring(0, 100) + '...',
           infoHash: torrent?.infoHash
         });
@@ -492,7 +462,7 @@ export class FileClient implements IFileClient {
     url: string,
     options: DownloadOptions = {}
   ): Promise<Buffer> {
-    const { timeout = 30000, onProgress } = options;
+    const { onProgress } = options;
 
     return new Promise<Buffer>((resolve, reject) => {
       // Parse the URL
@@ -503,7 +473,6 @@ export class FileClient implements IFileClient {
 
       const req = protocol.get(
         url,
-        { timeout },
         (res: http.IncomingMessage) => {
           if (res.statusCode !== 200) {
             return reject(
@@ -538,11 +507,6 @@ export class FileClient implements IFileClient {
       req.on("error", (err: Error) => {
         reject(err);
       });
-
-      req.on("timeout", () => {
-        req.destroy();
-        reject(new Error("Download timed out"));
-      });
     });
   }
 
@@ -554,10 +518,8 @@ export class FileClient implements IFileClient {
    */
   public static async downloadAsStreamStatic(
     url: string,
-    options: DownloadOptions = {}
+    _options: DownloadOptions = {}
   ): Promise<Readable> {
-    const { timeout = 30000 } = options;
-
     return new Promise<Readable>((resolve, reject) => {
       // Parse the URL
       const parsedUrl = new URL(url);
@@ -567,7 +529,6 @@ export class FileClient implements IFileClient {
 
       const req = protocol.get(
         url,
-        { timeout },
         (res: http.IncomingMessage) => {
           if (res.statusCode !== 200) {
             return reject(
@@ -583,11 +544,6 @@ export class FileClient implements IFileClient {
 
       req.on("error", (err: Error) => {
         reject(err);
-      });
-
-      req.on("timeout", () => {
-        req.destroy();
-        reject(new Error("Download timed out"));
       });
     });
   }
@@ -634,11 +590,6 @@ export class FileClient implements IFileClient {
         );
 
         req.on("error", () => {
-          resolve(false);
-        });
-
-        req.on("timeout", () => {
-          req.destroy();
           resolve(false);
         });
       } catch {

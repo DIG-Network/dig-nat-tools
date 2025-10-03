@@ -455,17 +455,12 @@ export class FileHost implements IFileHost {
       throw new Error("WebTorrent client not initialized");
     }
 
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error("WebTorrent initialization timeout"));
-      }, 10000); // 10 second timeout
-
+    return new Promise((resolve) => {
       // WebTorrent is ready when it's initialized and can accept operations
       // We'll give it a small delay to ensure it's fully initialized
       this.logger.debug(`⏳ Waiting for WebTorrent client to be ready...`);
 
       setTimeout(() => {
-        clearTimeout(timeout);
         this.logger.debug(`🎯 WebTorrent client is ready`);
         resolve();
       }, 1000); // Give WebTorrent 1 second to initialize properly
@@ -586,13 +581,8 @@ export class FileHost implements IFileHost {
         this.logger.debug(`🔄 Starting WebTorrent seeding for ${filename}...`);
 
         // Seed the file from its original location and wait for the torrent to be ready
-        await new Promise<void>((resolve, reject) => {
-          const seedTimeout = setTimeout(() => {
-            reject(new Error("WebTorrent seeding timeout"));
-          }, 30000); // 30 second timeout for seeding
-
+        await new Promise<void>((resolve) => {
           this.webTorrentClient!.seed(filePath, (torrent) => {
-            clearTimeout(seedTimeout);
             const magnetURI = torrent.magnetURI;
             this.magnetUris.set(filename, magnetURI);
             this.logger.debug(`🧲 WebTorrent seeding started for ${filename}`);

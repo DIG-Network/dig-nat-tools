@@ -1,6 +1,23 @@
+// Set up console.log filtering before importing Gun to suppress welcome message
+const originalConsoleLog = console.log;
+console.log = (...args: unknown[]): void => {
+  const message = args.join(' ');
+  // Block Gun.js welcome message specifically
+  if (!message.includes('Hello wonderful person') && 
+      !message.includes('Thanks for using GUN') &&
+      !message.includes('chat.gun.eco')) {
+    originalConsoleLog(...args);
+  }
+};
+
 import Gun from "gun";
 import "gun/lib/webrtc.js";
 import { HostCapabilities } from "../interfaces";
+
+// Restore console.log after Gun modules are loaded
+setTimeout(() => {
+  console.log = originalConsoleLog;
+}, 500);
 
 // Import Logger from dig-node if available, otherwise define a minimal interface
 interface Logger {
@@ -80,6 +97,7 @@ export class GunRegistry {
         radisk: false,
         axe: false,
       });
+      
       this.isGunAvailable = true;
       this.logger.debug("Gun.js registry initialized with WebRTC and mesh networking");
       this.logger.debug(`🔧 WebRTC enabled with ${this.options.webrtc?.iceServers?.length || 0} ICE servers`);
