@@ -3,6 +3,7 @@ import https from "node:https";
 import WebTorrent from "webtorrent";
 import { URL } from "node:url";
 import { Readable } from "node:stream";
+import { EventEmitter } from "node:events";
 import { IFileClient, HostCapabilities } from "./interfaces";
 import { GunRegistry } from "./registry/gun-registry";
 
@@ -25,13 +26,23 @@ export interface FileClientOptions {
   logger?: Logger; // Optional logger for debug output
 }
 
-export class FileClient implements IFileClient {
+export interface DownloadProgressEvent {
+  downloaded: number; // Total bytes downloaded
+  downloadSpeed: number; // Current download speed in bytes/second
+  progress: number; // Progress as a decimal between 0 and 1
+  name: string; // Torrent/file name
+  magnetUri: string; // The magnet URI being downloaded
+}
+
+export class FileClient extends EventEmitter implements IFileClient {
   private gunRegistry: GunRegistry;
   private webTorrentClient: WebTorrent.Instance | null = null;
   private options: FileClientOptions;
   private logger: Logger;
 
   constructor(options: FileClientOptions = {}) {
+    super(); // Call EventEmitter constructor
+    
     this.options = {
       peers: options.peers || ["http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun"],
       namespace: options.namespace || "dig-nat-tools",
@@ -393,6 +404,26 @@ export class FileClient implements IFileClient {
           magnetUri: magnetUri.substring(0, 100) + '...',
           infoHash: torrent?.infoHash
         });
+      });
+
+      // Add download progress event emission
+      torrent.on("download", (_bytes: number) => {
+        const progressData: DownloadProgressEvent = {
+          downloaded: torrent!.downloaded,
+          downloadSpeed: torrent!.downloadSpeed,
+          progress: torrent!.progress * 100,
+          name: torrent!.name || 'Unknown',
+          magnetUri: magnetUri
+        };
+
+        this.logger.debug(`📊 Download progress: ${(progressData.progress * 100).toFixed(1)}% - ${progressData.name}`, {
+          downloaded: `${(progressData.downloaded / (1024 * 1024)).toFixed(2)}MB`,
+          speed: `${(progressData.downloadSpeed / (1024 * 1024)).toFixed(2)}MB/s`,
+          progress: `${(progressData.progress * 100).toFixed(1)}%`
+        });
+
+        // Emit the download event that external code can listen to
+        this.emit('download', progressData);
       });
     });
   }

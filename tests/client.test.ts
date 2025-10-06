@@ -540,6 +540,9 @@ describe('FileClient', () => {
       const mockTorrent = {
         name: 'small-file.txt',
         length: 512, // 512 bytes file
+        downloaded: 0,
+        downloadSpeed: 1024,
+        progress: 0,
         files: [{ 
           name: 'small-file.txt',
           createReadStream: jest.fn().mockReturnValue(mockStream)
