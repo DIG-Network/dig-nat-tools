@@ -34,6 +34,13 @@ export interface DownloadProgressEvent {
   magnetUri: string; // The magnet URI being downloaded
 }
 
+export interface MetadataEvent {
+  name: string; // Torrent/file name
+  size: number; // Total size in bytes
+  magnetUri: string; // The magnet URI
+  infoHash: string; // The torrent info hash
+}
+
 export class FileClient extends EventEmitter implements IFileClient {
   private gunRegistry: GunRegistry;
   private webTorrentClient: WebTorrent.Instance | null = null;
@@ -319,6 +326,21 @@ export class FileClient extends EventEmitter implements IFileClient {
         return;
       }
 
+      // Add metadata event emission
+      torrent.on("metadata", () => {
+        this.logger.debug(`📋 Torrent metadata ready: ${torrent!.name}, Size: ${torrent!.length} bytes`);
+        
+        const metadataData: MetadataEvent = {
+          name: torrent!.name || 'Unknown',
+          size: torrent!.length,
+          magnetUri: magnetUri,
+          infoHash: torrent!.infoHash || 'Unknown'
+        };
+
+        // Emit the metadata event that external code can listen to
+        this.emit('metadata', metadataData);
+      });
+
       torrent.on("ready", () => {
         this.logger.debug(
           `✅ Torrent ready! File: ${torrent!.name}, Size: ${torrent!.length} bytes, Files: ${torrent!.files.length}`
@@ -410,7 +432,7 @@ export class FileClient extends EventEmitter implements IFileClient {
       torrent.on("download", (_bytes: number) => {
         const progressData: DownloadProgressEvent = {
           downloaded: torrent!.downloaded,
-          downloadSpeed: torrent!.downloadSpeed,
+          downloadSpeed: torrent!.downloadSpeed * 100,
           progress: torrent!.progress * 100,
           name: torrent!.name || 'Unknown',
           magnetUri: magnetUri
