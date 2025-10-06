@@ -54,7 +54,7 @@ export class FileClient extends EventEmitter implements IFileClient {
     super(); // Call EventEmitter constructor
     
     // Increase max listeners to prevent warnings during testing/multiple usage
-    this.setMaxListeners(20);
+    this.setMaxListeners(0);
     
     this.options = {
       peers: options.peers || ["http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun"],
@@ -322,7 +322,7 @@ export class FileClient extends EventEmitter implements IFileClient {
         this.webTorrentClient = new WebTorrent();
         
         // Increase max listeners for the WebTorrent client to prevent warnings
-        this.webTorrentClient.setMaxListeners(20);
+        this.webTorrentClient.setMaxListeners(0);
         
         // Log client status (using safe property access)
         this.logger.debug(`🔧 WebTorrent client created:`, {

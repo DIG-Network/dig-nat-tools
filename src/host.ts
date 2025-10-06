@@ -628,11 +628,7 @@ export class FileHost implements IFileHost {
     if (this.webTorrentClient && this.magnetUris.has(filename)) {
       try {
         const magnetURI = this.magnetUris.get(filename);
-        const torrent = this.webTorrentClient.get(magnetURI!);
-        if (torrent && typeof torrent === "object" && "destroy" in torrent) {
-          (torrent as { destroy(): void }).destroy();
-          this.logger.debug(`🧲 Stopped WebTorrent seeding for ${filename}`);
-        }
+        this.webTorrentClient.remove(magnetURI!);
         this.magnetUris.delete(filename);
       } catch (error) {
         this.logger.warn(`⚠️ Error stopping WebTorrent seeding:`, error);

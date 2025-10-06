@@ -44,7 +44,9 @@ const mockWebTorrentInstance = {
   get: jest.fn(),
   destroy: jest.fn(),
   on: jest.fn(),
-  setMaxListeners: jest.fn()
+  setMaxListeners: jest.fn(),
+  add: jest.fn(),
+  remove: jest.fn()
 };
 
 // Mock torrent
@@ -432,8 +434,7 @@ describe('FileHost', () => {
         
         host.unshareFile(filename);
 
-        expect(mockWebTorrentInstance.get).toHaveBeenCalledWith(mockTorrent.magnetURI);
-        expect(mockTorrentInstance.destroy).toHaveBeenCalled();
+        expect(mockWebTorrentInstance.remove).toHaveBeenCalled();
       }, 10000);
     });
 
