@@ -41,6 +41,9 @@ export interface MetadataEvent {
   infoHash: string; // The torrent info hash
 }
 
+// Global flag to ensure we only add the uncaught exception handler once
+let globalErrorHandlerAdded = false;
+
 export class FileClient extends EventEmitter implements IFileClient {
   private gunRegistry: GunRegistry;
   private webTorrentClient: WebTorrent.Instance | null = null;
@@ -49,6 +52,9 @@ export class FileClient extends EventEmitter implements IFileClient {
 
   constructor(options: FileClientOptions = {}) {
     super(); // Call EventEmitter constructor
+    
+    // Increase max listeners to prevent warnings during testing/multiple usage
+    this.setMaxListeners(20);
     
     this.options = {
       peers: options.peers || ["http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun"],
@@ -236,6 +242,33 @@ export class FileClient extends EventEmitter implements IFileClient {
   }
 
   /**
+   * Safely destroy a torrent with error handling for WebTorrent internal issues
+   */
+  private safeTorrentDestroy(torrent: WebTorrent.Torrent): void {
+    try {
+      torrent.destroy();
+    } catch (error) {
+      const errorCode = (error as unknown as { code?: string }).code;
+      if (errorCode === 'ERR_INVALID_ARG_TYPE' && error instanceof Error && error.message.includes('listener')) {
+        this.logger.warn("⚠️ WebTorrent internal error during torrent destroy (handled):", {
+          message: error.message,
+          code: errorCode,
+          torrentName: torrent.name || 'Unknown',
+          infoHash: torrent.infoHash || 'Unknown'
+        });
+      } else {
+        this.logger.error("❌ Error destroying torrent:", {
+          ...this.serializeError(error),
+          torrentName: torrent.name || 'Unknown',
+          infoHash: torrent.infoHash || 'Unknown'
+        });
+        // Re-throw non-listener errors as they might be important
+        throw error;
+      }
+    }
+  }
+
+  /**
    * Parse magnet URI for debugging purposes
    */
   private parseMagnetUri(magnetUri: string): Record<string, unknown> {
@@ -288,6 +321,9 @@ export class FileClient extends EventEmitter implements IFileClient {
       try {
         this.webTorrentClient = new WebTorrent();
         
+        // Increase max listeners for the WebTorrent client to prevent warnings
+        this.webTorrentClient.setMaxListeners(20);
+        
         // Log client status (using safe property access)
         this.logger.debug(`🔧 WebTorrent client created:`, {
           activeTorrents: this.webTorrentClient.torrents.length,
@@ -307,6 +343,26 @@ export class FileClient extends EventEmitter implements IFileClient {
           activeTorrents: this.webTorrentClient?.torrents?.length || 0
         });
       });
+
+      // Add global error handling for uncaught WebTorrent internal errors (only once)
+      if (!globalErrorHandlerAdded) {
+        globalErrorHandlerAdded = true;
+        process.on('uncaughtException', (error) => {
+          const errorCode = (error as unknown as { code?: string }).code;
+          if (error.message && error.message.includes('listener') && errorCode === 'ERR_INVALID_ARG_TYPE') {
+            // Use console.warn directly since we can't access logger from global scope
+            console.warn("⚠️ WebTorrent internal event listener error (handled):", {
+              message: error.message,
+              code: errorCode,
+              stack: error.stack?.split('\n').slice(0, 5).join('\n') // Truncate stack trace
+            });
+            // Don't re-throw this specific error as it's a WebTorrent internal cleanup issue
+          } else {
+            // Re-throw other uncaught exceptions
+            throw error;
+          }
+        });
+      }
 
       this.logger.debug(`✅ WebTorrent client initialized`);
     }
@@ -347,7 +403,7 @@ export class FileClient extends EventEmitter implements IFileClient {
         );
 
         if (torrent!.files.length === 0) {
-          torrent!.destroy();
+          this.safeTorrentDestroy(torrent!);
           this.logger.error("❌ No files in torrent", {
             name: torrent!.name,
             infoHash: torrent!.infoHash,
@@ -359,7 +415,7 @@ export class FileClient extends EventEmitter implements IFileClient {
 
         // Check file size against maximum allowed size
         if (options.maxFileSizeBytes && torrent!.length > options.maxFileSizeBytes) {
-          torrent!.destroy();
+          this.safeTorrentDestroy(torrent!);
           const fileSizeMB = (torrent!.length / (1024 * 1024)).toFixed(2);
           const maxSizeMB = (options.maxFileSizeBytes / (1024 * 1024)).toFixed(2);
           this.logger.warn(`⚠️ File too large: ${fileSizeMB}MB > ${maxSizeMB}MB`);
@@ -388,12 +444,12 @@ export class FileClient extends EventEmitter implements IFileClient {
           );
 
           // Destroy torrent to clean up
-          torrent!.destroy();
+          this.safeTorrentDestroy(torrent!);
           resolve(buffer);
         });
 
         stream.on("error", (error: unknown) => {
-          torrent!.destroy();
+          this.safeTorrentDestroy(torrent!);
           this.logger.error("❌ Stream error during download:", {
             ...this.serializeError(error),
             fileName: file.name,
@@ -431,7 +487,7 @@ export class FileClient extends EventEmitter implements IFileClient {
       // Add download progress event emission
       torrent.on("download", (_bytes: number) => {
         const progressData: DownloadProgressEvent = {
-          downloaded: torrent!.downloaded,
+          downloaded: torrent!.downloaded * 100,
           downloadSpeed: torrent!.downloadSpeed * 100,
           progress: torrent!.progress * 100,
           name: torrent!.name || 'Unknown',
@@ -656,9 +712,31 @@ export class FileClient extends EventEmitter implements IFileClient {
    */
   public async destroy(): Promise<void> {
     if (this.webTorrentClient) {
-      this.webTorrentClient.destroy();
-      this.webTorrentClient = null;
-      this.logger.debug("✅ WebTorrent client destroyed");
+      try {
+        // First destroy all active torrents safely
+        if (this.webTorrentClient.torrents) {
+          for (const torrent of this.webTorrentClient.torrents) {
+            this.safeTorrentDestroy(torrent);
+          }
+        }
+        
+        // Then destroy the client
+        this.webTorrentClient.destroy();
+        this.webTorrentClient = null;
+        this.logger.debug("✅ WebTorrent client destroyed");
+      } catch (error) {
+        const errorCode = (error as unknown as { code?: string }).code;
+        if (errorCode === 'ERR_INVALID_ARG_TYPE' && error instanceof Error && error.message.includes('listener')) {
+          this.logger.warn("⚠️ WebTorrent cleanup error (handled):", {
+            message: error.message,
+            code: errorCode
+          });
+        } else {
+          this.logger.error("❌ Error destroying WebTorrent client:", this.serializeError(error));
+          throw error;
+        }
+        this.webTorrentClient = null;
+      }
     }
   }
 }
