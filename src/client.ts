@@ -170,7 +170,7 @@ export class FileClient extends EventEmitter implements IFileClient {
         .join(", ") || "None"
     }`;
     
-    this.logger.error(`❌ Failed to download file ${filename} from peer ${storeId}:`, {
+    this.logger.debug(`❌ Failed to download file ${filename} from peer ${storeId}:`, {
       storeId: storeId,
       filename: filename,
       peerCapabilities: {
