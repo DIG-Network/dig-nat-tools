@@ -153,7 +153,7 @@ export class FileClient extends EventEmitter implements IFileClient {
           });
         }
       } catch (error) {
-        this.logger.warn(`⚠️ WebTorrent connection failed:`, {
+        this.logger.debug(`⚠️ WebTorrent connection failed:`, {
           ...this.serializeError(error),
           filename: filename,
           storeId: storeId
