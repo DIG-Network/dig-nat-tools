@@ -18,7 +18,8 @@ await esbuild.build({
     'src/client.ts',
     'src/relay.ts',
     'src/interfaces.ts',
-    'src/registry/gun-registry.ts'
+    'src/registry/gun-registry.ts',
+    'src/webtorrent-manager.ts',
   ],
   outdir: 'dist',
   format: 'esm',

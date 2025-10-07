@@ -6,7 +6,7 @@ import { publicIpv4 } from "public-ip";
 import natUpnp from "nat-upnp";
 import { IFileHost, HostCapabilities } from "./interfaces";
 import { GunRegistry } from "./registry/gun-registry";
-import WebTorrent from "webtorrent";
+import { webTorrentManager } from "./webtorrent-manager";
 
 // Import Logger interface to match gun-registry pattern
 interface Logger {
@@ -40,7 +40,6 @@ export class FileHost implements IFileHost {
   private server: http.Server | null = null;
   private connectionMode: (typeof ConnectionMode)[keyof typeof ConnectionMode];
   private port: number;
-  private webTorrentClient: WebTorrent.Instance | null = null;
   private magnetUris: Map<string, string> = new Map(); // filename -> magnetURI
   private sharedFiles: Map<string, string> = new Map(); // filename -> filePath
   private options: HostOptions;
@@ -334,27 +333,14 @@ export class FileHost implements IFileHost {
       this.connectionMode === ConnectionMode.WEBTORRENT_ONLY
     ) {
       try {
-        this.logger.debug(`🔄 Initializing WebTorrent client on port 30987...`);
-        this.webTorrentClient = new WebTorrent({
-          dht: { port: 30987 },
-          tracker: { port: 30987 }
-        });
+        this.logger.debug(`🔄 Initializing shared WebTorrent manager...`);
+        
+        // Initialize the shared WebTorrent manager
+        if (!webTorrentManager.isAvailable()) {
+          await webTorrentManager.initialize(this.logger);
+        }
 
-        // Fix EventEmitter warning when seeding multiple torrents
-        // WebTorrent reuses a single DHT instance, causing listener count to exceed default limit
-        this.webTorrentClient.setMaxListeners(0); // Disable limit
-        this.logger.debug(`🔧 Set WebTorrent maxListeners to unlimited for multiple torrents`);
-
-        // Add error handling for the WebTorrent client
-        this.webTorrentClient.on("error", (err: string | Error) => {
-          this.logger.error("❌ WebTorrent client error:", err);
-          // Don't throw here, just log the error
-        });
-
-        // Wait for WebTorrent to be ready
-        await this.waitForWebTorrentReady();
-
-        this.logger.debug(`✅ WebTorrent client initialized and ready`);
+        this.logger.debug(`✅ Shared WebTorrent manager initialized and ready`);
 
         capabilities.webTorrent = {
           available: true,
@@ -447,25 +433,7 @@ export class FileHost implements IFileHost {
     }
   }
 
-  /**
-   * Wait for WebTorrent client to be ready
-   */
-  private async waitForWebTorrentReady(): Promise<void> {
-    if (!this.webTorrentClient) {
-      throw new Error("WebTorrent client not initialized");
-    }
 
-    return new Promise((resolve) => {
-      // WebTorrent is ready when it's initialized and can accept operations
-      // We'll give it a small delay to ensure it's fully initialized
-      this.logger.debug(`⏳ Waiting for WebTorrent client to be ready...`);
-
-      setTimeout(() => {
-        this.logger.debug(`🎯 WebTorrent client is ready`);
-        resolve();
-      }, 1000); // Give WebTorrent 1 second to initialize properly
-    });
-  }
 
   /**
    * Start HTTP server
@@ -507,16 +475,7 @@ export class FileHost implements IFileHost {
     // Remove UPnP port mapping
     await this.removeUpnpPortMapping();
 
-    // Stop WebTorrent client
-    if (this.webTorrentClient) {
-      try {
-        this.webTorrentClient.destroy();
-        this.webTorrentClient = null;
-        this.logger.debug("✅ WebTorrent client stopped");
-      } catch (error) {
-        this.logger.warn("⚠️ Error stopping WebTorrent client:", error);
-      }
-    }
+    // Note: We don't destroy the shared WebTorrent manager here since it might be used by other instances
 
     // Unregister from Gun.js registry
     if (this.gunRegistry) {
@@ -575,21 +534,17 @@ export class FileHost implements IFileHost {
     // Track this filename as a shared file with its full path
     this.sharedFiles.set(filename, filePath);
 
-    // If WebTorrent is available, seed the file
-    if (this.webTorrentClient) {
+    // If WebTorrent is available, seed the file using the shared manager
+    if (webTorrentManager.isAvailable()) {
       try {
-        this.logger.debug(`🔄 Starting WebTorrent seeding for ${filename}...`);
+        this.logger.debug(`🔄 Starting WebTorrent seeding for ${filename} via shared manager...`);
 
-        // Seed the file from its original location and wait for the torrent to be ready
-        await new Promise<void>((resolve) => {
-          this.webTorrentClient!.seed(filePath, (torrent) => {
-            const magnetURI = torrent.magnetURI;
-            this.magnetUris.set(filename, magnetURI);
-            this.logger.debug(`🧲 WebTorrent seeding started for ${filename}`);
-            this.logger.debug(`   Magnet URI: ${magnetURI}`);
-            resolve();
-          });
-        });
+        // Use the shared manager to seed the file
+        const magnetURI = await webTorrentManager.seedFile(filePath);
+        this.magnetUris.set(filename, magnetURI);
+        
+        this.logger.debug(`🧲 WebTorrent seeding started for ${filename}`);
+        this.logger.debug(`   Magnet URI: ${magnetURI}`);
 
         // Update capabilities in Gun.js registry with new magnet URI
         if (this.gunRegistry && this.capabilities) {
@@ -624,12 +579,14 @@ export class FileHost implements IFileHost {
     const filePath = this.sharedFiles.get(filename);
     this.sharedFiles.delete(filename);
 
-    // Remove from WebTorrent seeding
-    if (this.webTorrentClient && this.magnetUris.has(filename)) {
+    // Remove from WebTorrent seeding using the shared manager
+    if (webTorrentManager.isAvailable() && this.magnetUris.has(filename)) {
       try {
         const magnetURI = this.magnetUris.get(filename);
-        this.webTorrentClient.remove(magnetURI!);
-        this.magnetUris.delete(filename);
+        if (magnetURI) {
+          webTorrentManager.removeTorrent(magnetURI);
+          this.magnetUris.delete(filename);
+        }
       } catch (error) {
         this.logger.warn(`⚠️ Error stopping WebTorrent seeding:`, error);
       }

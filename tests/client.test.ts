@@ -27,6 +27,25 @@ jest.mock('node:url', () => ({
   URL: jest.fn()
 }));
 
+// Mock WebTorrent manager
+const mockWebTorrentManager = {
+  isAvailable: jest.fn().mockReturnValue(false),
+  initialize: jest.fn().mockResolvedValue(undefined),
+  downloadFile: jest.fn(),
+  seedFile: jest.fn(),
+  removeTorrent: jest.fn(),
+  getActiveTorrentsCount: jest.fn().mockReturnValue(0),
+  on: jest.fn(),
+  off: jest.fn(),
+  destroy: jest.fn().mockResolvedValue(undefined)
+};
+
+jest.mock('../src/webtorrent-manager', () => ({
+  webTorrentManager: mockWebTorrentManager,
+  DownloadProgressEvent: {},
+  MetadataEvent: {}
+}));
+
 import { FileClient } from '../src/client';
 import { URL } from 'node:url';
 
@@ -488,103 +507,39 @@ describe('FileClient', () => {
     it('should reject WebTorrent downloads exceeding maxFileSizeBytes', async () => {
       const client = new FileClient();
       
-      // Mock WebTorrent client and torrent
-      const mockTorrent = {
-        name: 'large-file.txt',
-        length: 2048, // 2KB file
-        files: [{ 
-          name: 'large-file.txt',
-          createReadStream: jest.fn().mockReturnValue({
-            on: jest.fn()
-          })
-        }],
-        on: jest.fn(),
-        destroy: jest.fn()
-      };
+      // Mock the WebTorrent manager to simulate file size exceeding limit
+      mockWebTorrentManager.downloadFile.mockRejectedValue(
+        new Error('File size (2.00 MB) exceeds maximum allowed size (1.00 MB). Download cancelled.')
+      );
 
-      const mockWebTorrentClient = {
-        add: jest.fn().mockReturnValue(mockTorrent),
-        destroy: jest.fn(),
-        on: jest.fn()
-      };
-
-      // Set up torrent 'ready' event to trigger immediately with file size check
-      mockTorrent.on.mockImplementation((event, handler) => {
-        if (event === 'ready') {
-          setTimeout(() => handler(), 10);
-        }
-        return mockTorrent;
-      });
-
-      // Inject mocked WebTorrent client
-      (client as any).webTorrentClient = mockWebTorrentClient;
-
-      // Test: File size (2048 bytes) exceeds limit (1024 bytes)
       await expect(
-        client.downloadAsBuffer('magnet:?xt=urn:btih:test&dn=large-file.txt', {
-          maxFileSizeBytes: 1024 // 1KB limit
+        client.downloadAsBuffer('magnet:?xt=urn:btih:test-hash', {
+          maxFileSizeBytes: 1024 * 1024 // 1MB limit
         })
-      ).rejects.toThrow('File size (0.00 MB) exceeds maximum allowed size (0.00 MB)');
+      ).rejects.toThrow('File size (2.00 MB) exceeds maximum allowed size (1.00 MB)');
 
-      expect(mockTorrent.destroy).toHaveBeenCalled();
+      expect(mockWebTorrentManager.downloadFile).toHaveBeenCalledWith(
+        'magnet:?xt=urn:btih:test-hash',
+        1024 * 1024
+      );
     });
 
     it('should allow WebTorrent downloads within maxFileSizeBytes', async () => {
       const client = new FileClient();
       
-      // Mock WebTorrent client and torrent
-      const mockStream = {
-        on: jest.fn()
-      };
+      // Mock the WebTorrent manager to return successful download
+      const testBuffer = Buffer.from('test content');
+      mockWebTorrentManager.downloadFile.mockResolvedValue(testBuffer);
 
-      const mockTorrent = {
-        name: 'small-file.txt',
-        length: 512, // 512 bytes file
-        downloaded: 0,
-        downloadSpeed: 1024,
-        progress: 0,
-        files: [{ 
-          name: 'small-file.txt',
-          createReadStream: jest.fn().mockReturnValue(mockStream)
-        }],
-        on: jest.fn(),
-        destroy: jest.fn()
-      };
-
-      const mockWebTorrentClient = {
-        add: jest.fn().mockReturnValue(mockTorrent),
-        destroy: jest.fn(),
-        on: jest.fn()
-      };
-
-      // Set up torrent 'ready' event and stream events
-      mockTorrent.on.mockImplementation((event, handler) => {
-        if (event === 'ready') {
-          setTimeout(() => handler(), 10);
-        }
-        return mockTorrent;
+      const result = await client.downloadAsBuffer('magnet:?xt=urn:btih:test-hash', {
+        maxFileSizeBytes: 1024 * 1024 // 1MB limit
       });
 
-      mockStream.on.mockImplementation((event, handler) => {
-        if (event === 'data') {
-          setTimeout(() => handler(Buffer.from('test content')), 20);
-        } else if (event === 'end') {
-          setTimeout(() => handler(), 30);
-        }
-        return mockStream;
-      });
-
-      // Inject mocked WebTorrent client
-      (client as any).webTorrentClient = mockWebTorrentClient;
-
-      // Test: File size (512 bytes) is within limit (1024 bytes)
-      const result = await client.downloadAsBuffer('magnet:?xt=urn:btih:test&dn=small-file.txt', {
-        maxFileSizeBytes: 1024 // 1KB limit
-      });
-
-      expect(result).toBeInstanceOf(Buffer);
-      expect(result.toString()).toBe('test content');
-      expect(mockTorrent.destroy).toHaveBeenCalled();
+      expect(result).toBe(testBuffer);
+      expect(mockWebTorrentManager.downloadFile).toHaveBeenCalledWith(
+        'magnet:?xt=urn:btih:test-hash',
+        1024 * 1024
+      );
     });
 
     it('should not apply size limit to HTTP downloads', async () => {

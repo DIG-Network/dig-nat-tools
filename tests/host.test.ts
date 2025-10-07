@@ -8,6 +8,23 @@ jest.mock('nat-upnp');
 jest.mock('public-ip');
 jest.mock('../src/registry/gun-registry');
 
+// Mock WebTorrent manager
+const mockWebTorrentManager = {
+  isAvailable: jest.fn().mockReturnValue(true),
+  initialize: jest.fn().mockResolvedValue(undefined),
+  downloadFile: jest.fn(),
+  seedFile: jest.fn().mockResolvedValue('magnet:?xt=urn:btih:test-hash&dn=test-file'),
+  removeTorrent: jest.fn().mockReturnValue(true),
+  getActiveTorrentsCount: jest.fn().mockReturnValue(0),
+  on: jest.fn(),
+  off: jest.fn(),
+  destroy: jest.fn().mockResolvedValue(undefined)
+};
+
+jest.mock('../src/webtorrent-manager', () => ({
+  webTorrentManager: mockWebTorrentManager
+}));
+
 import { FileHost, ConnectionMode } from '../src/host';
 import * as fs from 'node:fs';
 import * as crypto from 'node:crypto';
@@ -125,6 +142,13 @@ describe('FileHost', () => {
     
     // Setup GunRegistry mocks
     MockGunRegistry.mockImplementation(() => mockGunRegistryInstance as any);
+    
+    // Reset WebTorrent manager mocks
+    mockWebTorrentManager.isAvailable.mockReturnValue(false);
+    mockWebTorrentManager.initialize.mockImplementation(async () => {
+      // Simulate the manager becoming available after initialization
+      mockWebTorrentManager.isAvailable.mockReturnValue(true);
+    });
     
     fileHost = new FileHost({ port: 3000 });
   });
@@ -255,7 +279,7 @@ describe('FileHost', () => {
         
         const capabilities = await host.start();
 
-        expect(MockWebTorrent).toHaveBeenCalled();
+        expect(mockWebTorrentManager.initialize).toHaveBeenCalled();
         expect(capabilities.webTorrent).toBeDefined();
         expect(capabilities.webTorrent?.available).toBe(true);
       }, 10000);
@@ -266,7 +290,7 @@ describe('FileHost', () => {
         const capabilities = await host.start();
 
         expect(mockApp.listen).toHaveBeenCalled();
-        expect(MockWebTorrent).toHaveBeenCalled();
+        expect(mockWebTorrentManager.initialize).toHaveBeenCalled();
         expect(capabilities.directHttp?.available).toBeUndefined(); // UPnP fails so directHttp is not set
         expect(capabilities.webTorrent?.available).toBe(true);
       }, 10000);
@@ -282,13 +306,16 @@ describe('FileHost', () => {
       });
 
       it('should throw error when WebTorrent fails in WEBTORRENT_ONLY mode', async () => {
-        MockWebTorrent.mockImplementation(() => {
-          throw new Error('WebTorrent init failed');
-        });
+        mockWebTorrentManager.initialize.mockRejectedValue(new Error('WebTorrent init failed'));
 
         const host = new FileHost({ connectionMode: ConnectionMode.WEBTORRENT_ONLY });
         
         await expect(host.start()).rejects.toThrow('WebTorrent-only mode requested but WebTorrent failed');
+        
+        // Reset for other tests
+        mockWebTorrentManager.initialize.mockImplementation(async () => {
+          mockWebTorrentManager.isAvailable.mockReturnValue(true);
+        });
       });
 
       it('should register with gun registry when available', async () => {
@@ -323,7 +350,9 @@ describe('FileHost', () => {
         
         await host.stop();
 
-        expect(mockWebTorrentInstance.destroy).toHaveBeenCalled();
+        // Note: The shared WebTorrent manager is not destroyed by individual host stops
+        // This is expected behavior since the manager might be used by other instances
+        expect(mockWebTorrentManager.initialize).toHaveBeenCalled();
       }, 10000);
 
       it('should unregister from gun registry', async () => {
@@ -384,7 +413,7 @@ describe('FileHost', () => {
 
         await host.shareFile('/test/file.txt');
 
-        expect(mockWebTorrentInstance.seed).toHaveBeenCalled();
+        expect(mockWebTorrentManager.seedFile).toHaveBeenCalledWith('/test/file.txt');
       }, 10000);
 
       it('should update gun registry with magnet URIs', async () => {
@@ -429,12 +458,9 @@ describe('FileHost', () => {
         
         const filename = await host.shareFile('/test/file.txt');
         
-        const mockTorrentInstance = { destroy: jest.fn() };
-        mockWebTorrentInstance.get.mockReturnValue(mockTorrentInstance as any);
-        
         host.unshareFile(filename);
 
-        expect(mockWebTorrentInstance.remove).toHaveBeenCalled();
+        expect(mockWebTorrentManager.removeTorrent).toHaveBeenCalledWith('magnet:?xt=urn:btih:test-hash&dn=test-file');
       }, 10000);
     });
 
@@ -525,10 +551,19 @@ describe('FileHost', () => {
       });
 
       it('should throw error when no connection methods available', async () => {
-        const filename = await fileHost.shareFile('/test/file.txt');
+        // Mock WebTorrent as not available for this test
+        mockWebTorrentManager.isAvailable.mockReturnValue(false);
+        
+        const host = new FileHost({ connectionMode: ConnectionMode.HTTP_ONLY });
+        // Don't start the host so no HTTP server is available
+        
+        const filename = await host.shareFile('/test/file.txt');
 
-        await expect(fileHost.getFileUrl(filename))
+        await expect(host.getFileUrl(filename))
           .rejects.toThrow('is not available via any connection method');
+          
+        // Reset for other tests
+        mockWebTorrentManager.isAvailable.mockReturnValue(true);
       });
     });
   });
