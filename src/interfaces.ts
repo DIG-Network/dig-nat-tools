@@ -53,9 +53,9 @@ export interface IFileHost {
    * Remove a shared file by its filename
    * @param filename filename of the file to unshare
    * @param deleteFile Whether to delete the original file from disk (default: false)
-   * @returns True if file was found and removed from tracking, false otherwise
+   * @returns Promise that resolves to true if file was found and removed from tracking, false otherwise
    */
-  unshareFile(filename: string, deleteFile?: boolean): boolean;
+  unshareFile(filename: string, deleteFile?: boolean): Promise<boolean>;
 
   /**
    * Get a list of currently shared filenames

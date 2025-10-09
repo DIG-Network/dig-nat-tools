@@ -433,21 +433,21 @@ describe('FileHost', () => {
       it('should unshare a file', async () => {
         const hash = await fileHost.shareFile('/test/file.txt');
         
-        const result = fileHost.unshareFile(hash);
+        const result = await fileHost.unshareFile(hash);
 
         expect(result).toBe(true);
         expect(fileHost.getSharedFiles()).not.toContain(hash);
       });
 
-      it('should return false for non-existent file', () => {
-        const result = fileHost.unshareFile('non-existent-file.txt');
+      it('should return false for non-existent file', async () => {
+        const result = await fileHost.unshareFile('non-existent-file.txt');
         expect(result).toBe(false);
       });
 
       it('should delete file when deleteFile is true', async () => {
         const filename = await fileHost.shareFile('/test/file.txt');
         
-        fileHost.unshareFile(filename, true);
+        await fileHost.unshareFile(filename, true);
 
         expect(mockFs.unlinkSync).toHaveBeenCalledWith('/test/file.txt');
       });
@@ -458,7 +458,7 @@ describe('FileHost', () => {
         
         const filename = await host.shareFile('/test/file.txt');
         
-        host.unshareFile(filename);
+        await host.unshareFile(filename);
 
         expect(mockWebTorrentManager.removeTorrent).toHaveBeenCalledWith('magnet:?xt=urn:btih:test-hash&dn=test-file');
       }, 10000);

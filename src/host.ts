@@ -572,7 +572,7 @@ export class FileHost implements IFileHost {
    * Remove a shared file
    * This removes the file from both HTTP and WebTorrent sharing
    */
-  public unshareFile(filename: string, deleteFile: boolean = false): boolean {
+  public async unshareFile(filename: string, deleteFile: boolean = false): Promise<boolean> {
     this.logger.debug(`📤 Unsharing file: ${filename}`);
 
     const wasShared = this.sharedFiles.has(filename);
@@ -589,6 +589,25 @@ export class FileHost implements IFileHost {
         }
       } catch (error) {
         this.logger.warn(`⚠️ Error stopping WebTorrent seeding:`, error);
+      }
+    }
+
+    // Update Gun.js registry to remove the unshared file's magnet URI
+    if (this.gunRegistry && this.capabilities && wasShared) {
+      try {
+        this.logger.debug(`🔄 Updating Gun.js registry after unsharing ${filename}...`);
+
+        // Update the current capabilities with the updated magnet URI list
+        if (this.capabilities.webTorrent) {
+          this.capabilities.webTorrent.magnetUris = Array.from(
+            this.magnetUris.values()
+          );
+        }
+
+        await this.gunRegistry.register(this.capabilities);
+        this.logger.debug(`✅ Updated Gun.js registry after unsharing ${filename}`);
+      } catch (error) {
+        this.logger.warn(`⚠️ Failed to update Gun.js registry after unsharing:`, error);
       }
     }
 

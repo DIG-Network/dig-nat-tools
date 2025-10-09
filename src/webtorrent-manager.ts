@@ -99,10 +99,7 @@ class WebTorrentManager extends EventEmitter {
     this.logger.debug("🚀 Initializing shared WebTorrent client...");
 
     try {
-      this.webTorrentClient = new WebTorrent({
-        dht: { port: 30987 },
-        tracker: { port: 30987 }
-      });
+      this.webTorrentClient = new WebTorrent();
 
       // Set unlimited max listeners for the WebTorrent client (if method exists)
       if (typeof this.webTorrentClient.setMaxListeners === 'function') {
