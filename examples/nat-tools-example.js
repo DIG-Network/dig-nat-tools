@@ -8,6 +8,7 @@
  */
 
 import { NatTools } from '../dist/index.js';
+import { webTorrentManager } from '../dist/webtorrent-manager.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -19,6 +20,9 @@ const CONFIG = {
   discoveryIntervalMs: 30000, // 30 seconds
   peers: ['http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun']
 };
+
+// Track files currently being downloaded to prevent duplicates
+const downloadingFiles = new Set();
 
 // Create a simple logger
 const logger = {
@@ -175,36 +179,54 @@ async function discoverAndDownload(natTools) {
         const displayNameMatch = magnetUri.match(/dn=([^&]+)/);
         const displayName = displayNameMatch ? decodeURIComponent(displayNameMatch[1]) : `file-${Date.now()}`;
 
-        logger.info(`📥 Downloading: ${displayName}...`);
-
-        // Download the file
-        const buffer = await natTools.downloadFromMagnet(magnetUri, CONFIG.maxFileSize);
-
-        // Calculate hash of downloaded content
-        const contentHash = crypto.createHash('sha256').update(buffer).digest('hex');
-
-        // Check if we already have this content
-        if (existingFiles.has(contentHash)) {
-          logger.info(`⏭️ Already have file with hash ${contentHash.substring(0, 16)}...`);
+        // Check if already downloading
+        if (downloadingFiles.has(magnetUri)) {
+          logger.debug(`⏳ Already downloading: ${displayName}`);
           continue;
         }
 
-        // Save the file with the display name or content hash
-        const fileName = displayName.endsWith('.dig') ? displayName : `${contentHash}.dig`;
-        const filePath = path.join(CONFIG.digDirectory, fileName);
-        fs.writeFileSync(filePath, buffer);
+        // Mark as downloading
+        downloadingFiles.add(magnetUri);
 
-        logger.info(`✅ Downloaded: ${fileName} (${buffer.length} bytes)`);
+        logger.info(`📥 Downloading: ${displayName}...`);
 
-        // Add to existing files set
-        existingFiles.add(contentHash);
-
-        // Optionally seed the downloaded file
         try {
-          await natTools.seedFile(filePath);
-          logger.info(`🌱 Now seeding downloaded file: ${fileName}`);
-        } catch (error) {
-          logger.warn(`⚠️ Could not seed downloaded file:`, error.message);
+          // Download the file
+          const buffer = await natTools.downloadFromMagnet(magnetUri);
+
+          // Calculate hash of downloaded content
+          const contentHash = crypto.createHash('sha256').update(buffer).digest('hex');
+
+          // Check if we already have this content
+          if (existingFiles.has(contentHash)) {
+            logger.info(`⏭️ Already have file with hash ${contentHash.substring(0, 16)}...`);
+            downloadingFiles.delete(magnetUri);
+            continue;
+          }
+
+          // Save the file with the display name or content hash
+          const fileName = displayName.endsWith('.dig') ? displayName : `${contentHash}.dig`;
+          const filePath = path.join(CONFIG.digDirectory, fileName);
+          fs.writeFileSync(filePath, buffer);
+
+          logger.info(`✅ Downloaded: ${fileName} (${buffer.length} bytes)`);
+
+          // Add to existing files set
+          existingFiles.add(contentHash);
+
+          // Remove from downloading set
+          downloadingFiles.delete(magnetUri);
+
+          // Optionally seed the downloaded file
+          try {
+            await natTools.seedFile(filePath);
+            logger.info(`🌱 Now seeding downloaded file: ${fileName}`);
+          } catch (error) {
+            logger.warn(`⚠️ Could not seed downloaded file:`, error.message);
+          }
+        } catch (downloadError) {
+          downloadingFiles.delete(magnetUri);
+          throw downloadError;
         }
 
       } catch (error) {
@@ -241,6 +263,22 @@ async function main() {
     logger.info('🔧 Initializing NAT Tools...');
     await natTools.initialize();
     logger.info('✅ NAT Tools initialized');
+
+    // Set up download progress tracking
+    let currentDownload = null;
+    webTorrentManager.on('metadata', (data) => {
+      currentDownload = data.name;
+      logger.info(`📋 Metadata received: ${data.name} (${(data.size / 1024 / 1024).toFixed(2)} MB)`);
+    });
+
+    webTorrentManager.on('download', (data) => {
+      if (data.progress > 0) {
+        const progressPercent = (data.progress * 100).toFixed(1);
+        const downloadedMB = (data.downloaded / 1024 / 1024).toFixed(2);
+        const speedMBps = (data.downloadSpeed / 1024 / 1024).toFixed(2);
+        logger.info(`📊 Progress: ${progressPercent}% | ${downloadedMB} MB | ${speedMBps} MB/s - ${data.name}`);
+      }
+    });
 
     // Check availability
     const webTorrentAvailable = natTools.isWebTorrentAvailable();
