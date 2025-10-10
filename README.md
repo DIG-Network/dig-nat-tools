@@ -24,6 +24,75 @@ A TypeScript package that provides peer-to-peer file sharing capabilities using 
 npm install dig-nat-tools
 ```
 
+## Quick Start: Simplified NAT Tools
+
+The simplified `NatTools` interface provides an easy way to share and discover files using WebTorrent and Gun.js registry:
+
+### Basic Usage
+
+```typescript
+import { NatTools } from 'dig-nat-tools';
+
+// Create and initialize NAT tools
+const natTools = new NatTools({
+  peers: ['http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun'],
+  namespace: 'my-app'
+});
+
+await natTools.initialize();
+
+// Seed a file and share its magnet URI
+const result = await natTools.seedFile('/path/to/file.txt');
+console.log('Magnet URI:', result.magnetUri);
+console.log('Info Hash:', result.infoHash);
+
+// Discover magnet URIs from other peers (from last 1 minute)
+const magnetUris = await natTools.discoverMagnetUris(60000);
+console.log('Found', magnetUris.length, 'files');
+
+// Download a file from a magnet URI
+const buffer = await natTools.downloadFromMagnet(magnetUris[0]);
+console.log('Downloaded', buffer.length, 'bytes');
+
+// Cleanup
+await natTools.destroy();
+```
+
+### Running the NAT Tools Example
+
+The package includes a complete example that automatically shares and discovers files:
+
+1. **Build the project:**
+   ```bash
+   npm install
+   npm run build
+   ```
+
+2. **Run the NAT tools example:**
+   ```bash
+   node examples/nat-tools-example.js
+   ```
+
+The example will:
+- Seed all `*.dig` files from `~/.dig` directory
+- Share their magnet URIs via Gun.js registry
+- Periodically discover magnet URIs from other peers
+- Download files that you don't already have
+- Automatically seed downloaded files
+
+You can create test files:
+```bash
+# On Windows
+mkdir %USERPROFILE%\.dig
+echo "Test content" > %USERPROFILE%\.dig\test.dig
+
+# On Linux/Mac
+mkdir -p ~/.dig
+echo "Test content" > ~/.dig/test.dig
+```
+
+## Installation
+
 ## Running the Example
 
 To test the package with the included example:
@@ -290,6 +359,90 @@ async function checkServer(baseUrl: string) {
 ```
 
 ## API Documentation
+
+### NatTools (Simplified Interface)
+
+The simplified interface for magnet URI sharing and WebTorrent operations.
+
+#### Constructor
+
+```typescript
+import { NatTools } from 'dig-nat-tools';
+
+new NatTools(options?: {
+  peers?: string[];        // Gun.js peer URLs (default: ['http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun'])
+  namespace?: string;      // Registry namespace (default: 'dig-nat-tools')
+  logger?: Logger;         // Custom logger
+  webrtc?: {
+    iceServers?: Array<{ urls: string | string[] }>;
+  };
+})
+```
+
+#### Methods
+
+- `initialize(): Promise<void>` - Initialize WebTorrent and Gun.js registry
+- `seedFile(filePath: string, nodeId?: string): Promise<SeedResult>` - Seed a file and share its magnet URI
+- `unseedFile(filePath: string): Promise<boolean>` - Stop seeding a file and remove from registry
+- `downloadFromMagnet(magnetUri: string, maxFileSizeBytes?: number): Promise<Buffer>` - Download a file from magnet URI
+- `discoverMagnetUris(maxAgeMs?: number): Promise<string[]>` - Discover magnet URIs (default: 60000ms = 1 minute)
+- `getSeededFiles(): Map<string, string>` - Get map of file paths to magnet URIs
+- `getActiveTorrentsCount(): number` - Get count of active torrents
+- `isWebTorrentAvailable(): boolean` - Check if WebTorrent is available
+- `isRegistryAvailable(): boolean` - Check if Gun.js registry is available
+- `destroy(): Promise<void>` - Clean up resources
+
+#### Return Types
+
+```typescript
+interface SeedResult {
+  filePath: string;      // Path to the seeded file
+  magnetUri: string;     // Magnet URI for the file
+  infoHash: string;      // Info hash extracted from magnet URI
+}
+```
+
+#### Example Usage
+
+```typescript
+import { NatTools } from 'dig-nat-tools';
+import * as fs from 'fs';
+
+async function example() {
+  // Create instance
+  const natTools = new NatTools({
+    peers: ['http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun'],
+    namespace: 'my-app'
+  });
+
+  // Initialize
+  await natTools.initialize();
+
+  // Seed a file
+  const result = await natTools.seedFile('./myfile.txt');
+  console.log('Seeded:', result.infoHash);
+
+  // Discover files from other peers
+  const magnetUris = await natTools.discoverMagnetUris(60000);
+  console.log('Discovered', magnetUris.length, 'files');
+
+  // Download a discovered file
+  if (magnetUris.length > 0) {
+    const buffer = await natTools.downloadFromMagnet(magnetUris[0]);
+    fs.writeFileSync('./downloaded.txt', buffer);
+  }
+
+  // Get seeded files
+  const seededFiles = natTools.getSeededFiles();
+  console.log('Seeding', seededFiles.size, 'files');
+
+  // Cleanup
+  await natTools.destroy();
+}
+```
+
+---
+
 ### Gun Relay
 
 You can run a Gun.js relay server using the included `relay.ts` file. This enables decentralized, real-time data sync for your P2P applications.

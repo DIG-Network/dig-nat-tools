@@ -335,4 +335,154 @@ export class GunRegistry {
       throw error;
     }
   }
+
+  /**
+   * Share a magnet URI in the Gun.js registry
+   * @param magnetUri The magnet URI to share
+   * @param nodeId Optional node identifier (defaults to random ID)
+   */
+  public async shareMagnetUri(magnetUri: string, nodeId?: string): Promise<void> {
+    if (!this.isGunAvailable || !this.gun) {
+      throw new Error("Gun.js registry not available");
+    }
+
+    if (!magnetUri || !magnetUri.startsWith('magnet:')) {
+      throw new Error("Valid magnet URI is required");
+    }
+
+    // Extract info hash from magnet URI
+    const infoHashMatch = magnetUri.match(/urn:btih:([a-fA-F0-9]+)/);
+    if (!infoHashMatch) {
+      throw new Error("Could not extract info hash from magnet URI");
+    }
+    const infoHash = infoHashMatch[1].toLowerCase();
+
+    // Use info hash as the key for the magnet URI
+    const magnetData = {
+      magnetUri,
+      infoHash,
+      nodeId: nodeId || `node-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+      timestamp: Date.now()
+    };
+
+    this.logger.debug(`🧲 [GunRegistry] Sharing magnet URI with info hash: ${infoHash}`);
+
+    try {
+      this.gun
+        .get(`${this.options.namespace}-magnets`)
+        .get(infoHash)
+        .put(magnetData);
+
+      this.logger.debug(`✅ [GunRegistry] Successfully shared magnet URI: ${infoHash}`);
+    } catch (error) {
+      this.logger.error(`❌ [GunRegistry] Failed to share magnet URI:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch all available magnet URIs from the Gun.js registry
+   * Only returns magnet URIs that are not older than the specified max age
+   * @param maxAgeMs Maximum age in milliseconds (default: 60000 = 1 minute)
+   * @returns Array of unique magnet URIs
+   */
+  public async fetchMagnetUris(maxAgeMs: number = 60000): Promise<string[]> {
+    if (!this.isGunAvailable || !this.gun) {
+      throw new Error("Gun.js registry not available");
+    }
+
+    this.logger.debug(`🔍 [GunRegistry] Fetching magnet URIs (max age: ${maxAgeMs}ms)`);
+
+    return new Promise((resolve) => {
+      const magnetUris: string[] = [];
+      const cutoffTime = Date.now() - maxAgeMs;
+
+      const timeout = setTimeout(() => {
+        this.logger.debug(`⏰ [GunRegistry] Magnet URI fetch timeout, found ${magnetUris.length} URIs`);
+        resolve(magnetUris);
+      }, 10000); // 10 second timeout
+
+      this.gun!.get(`${this.options.namespace}-magnets`)
+        .once(async (data: Record<string, unknown>) => {
+          this.logger.debug(`📊 [GunRegistry] Magnet data received:`, data);
+
+          if (data) {
+            const allKeys = Object.keys(data).filter(key => key !== "_");
+            this.logger.debug(`🔑 [GunRegistry] Found ${allKeys.length} magnet info hashes`);
+
+            let processedMagnets = 0;
+            const totalMagnets = allKeys.length;
+
+            if (totalMagnets === 0) {
+              clearTimeout(timeout);
+              resolve(magnetUris);
+              return;
+            }
+
+            for (const infoHash of allKeys) {
+              this.gun!.get(`${this.options.namespace}-magnets`)
+                .get(infoHash)
+                .once((magnetData: Record<string, unknown>) => {
+                  processedMagnets++;
+
+                  if (magnetData && magnetData.magnetUri && magnetData.timestamp) {
+                    const timestamp = magnetData.timestamp as number;
+                    
+                    if (timestamp > cutoffTime) {
+                      const magnetUri = magnetData.magnetUri as string;
+                      // Avoid duplicates
+                      if (!magnetUris.includes(magnetUri)) {
+                        magnetUris.push(magnetUri);
+                        this.logger.debug(`✅ [GunRegistry] Added magnet URI: ${infoHash}`);
+                      }
+                    } else {
+                      this.logger.debug(`⏰ [GunRegistry] Skipping stale magnet URI: ${infoHash}`);
+                    }
+                  }
+
+                  // Check if we've processed all magnets
+                  if (processedMagnets >= totalMagnets) {
+                    clearTimeout(timeout);
+                    this.logger.debug(`📋 [GunRegistry] Found ${magnetUris.length} fresh magnet URIs`);
+                    resolve(magnetUris);
+                  }
+                });
+            }
+          } else {
+            clearTimeout(timeout);
+            this.logger.debug(`❌ [GunRegistry] No magnet data found`);
+            resolve(magnetUris);
+          }
+        });
+    });
+  }
+
+  /**
+   * Remove a magnet URI from the Gun.js registry
+   * @param magnetUri The magnet URI to remove
+   */
+  public async unshareMagnetUri(magnetUri: string): Promise<void> {
+    if (!this.isGunAvailable || !this.gun) {
+      throw new Error("Gun.js registry not available");
+    }
+
+    // Extract info hash from magnet URI
+    const infoHashMatch = magnetUri.match(/urn:btih:([a-fA-F0-9]+)/);
+    if (!infoHashMatch) {
+      throw new Error("Could not extract info hash from magnet URI");
+    }
+    const infoHash = infoHashMatch[1].toLowerCase();
+
+    try {
+      this.gun
+        .get(`${this.options.namespace}-magnets`)
+        .get(infoHash)
+        .put(null);
+
+      this.logger.debug(`✅ [GunRegistry] Successfully unshared magnet URI: ${infoHash}`);
+    } catch (error) {
+      this.logger.error(`❌ [GunRegistry] Failed to unshare magnet URI:`, error);
+      throw error;
+    }
+  }
 }

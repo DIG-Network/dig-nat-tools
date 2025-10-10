@@ -18,6 +18,7 @@ await esbuild.build({
     'src/client.ts',
     'src/relay.ts',
     'src/interfaces.ts',
+    'src/nat-tools.ts',
     'src/registry/gun-registry.ts',
     'src/webtorrent-manager.ts',
   ],
