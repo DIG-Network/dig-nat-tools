@@ -339,9 +339,9 @@ export class GunRegistry {
   /**
    * Share a magnet URI in the Gun.js registry
    * @param magnetUri The magnet URI to share
-   * @param nodeId Optional node identifier (defaults to random ID)
+   * @param fileName File name to use as the key (required, must be unique)
    */
-  public async shareMagnetUri(magnetUri: string, nodeId?: string): Promise<void> {
+  public async shareMagnetUri(magnetUri: string, fileName: string): Promise<void> {
     if (!this.isGunAvailable || !this.gun) {
       throw new Error("Gun.js registry not available");
     }
@@ -350,30 +350,26 @@ export class GunRegistry {
       throw new Error("Valid magnet URI is required");
     }
 
-    // Extract info hash from magnet URI
-    const infoHashMatch = magnetUri.match(/urn:btih:([a-fA-F0-9]+)/);
-    if (!infoHashMatch) {
-      throw new Error("Could not extract info hash from magnet URI");
+    if (!fileName) {
+      throw new Error("File name is required");
     }
-    const infoHash = infoHashMatch[1].toLowerCase();
 
-    // Use info hash as the key for the magnet URI
+    // Use fileName as the key for the magnet URI
     const magnetData = {
       magnetUri,
-      infoHash,
-      nodeId: nodeId || `node-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+      fileName: fileName,
       timestamp: Date.now()
     };
 
-    this.logger.debug(`🧲 [GunRegistry] Sharing magnet URI with info hash: ${infoHash}`);
+    this.logger.debug(`🧲 [GunRegistry] Sharing magnet URI with fileName: ${fileName}`);
 
     try {
       this.gun
         .get(`${this.options.namespace}-magnets`)
-        .get(infoHash)
+        .get(fileName)
         .put(magnetData);
 
-      this.logger.debug(`✅ [GunRegistry] Successfully shared magnet URI: ${infoHash}`);
+      this.logger.debug(`✅ [GunRegistry] Successfully shared magnet URI: ${fileName}`);
     } catch (error) {
       this.logger.error(`❌ [GunRegistry] Failed to share magnet URI:`, error);
       throw error;
@@ -408,7 +404,7 @@ export class GunRegistry {
 
           if (data) {
             const allKeys = Object.keys(data).filter(key => key !== "_");
-            this.logger.debug(`🔑 [GunRegistry] Found ${allKeys.length} magnet info hashes`);
+            this.logger.debug(`🔑 [GunRegistry] Found ${allKeys.length} magnet file entries`);
 
             let processedMagnets = 0;
             const totalMagnets = allKeys.length;
@@ -419,9 +415,9 @@ export class GunRegistry {
               return;
             }
 
-            for (const infoHash of allKeys) {
+            for (const fileName of allKeys) {
               this.gun!.get(`${this.options.namespace}-magnets`)
-                .get(infoHash)
+                .get(fileName)
                 .once((magnetData: Record<string, unknown>) => {
                   processedMagnets++;
 
@@ -430,13 +426,14 @@ export class GunRegistry {
                     
                     if (timestamp > cutoffTime) {
                       const magnetUri = magnetData.magnetUri as string;
+                      const storedFileName = magnetData.fileName as string;
                       // Avoid duplicates
                       if (!magnetUris.includes(magnetUri)) {
                         magnetUris.push(magnetUri);
-                        this.logger.debug(`✅ [GunRegistry] Added magnet URI: ${infoHash}`);
+                        this.logger.debug(`✅ [GunRegistry] Added magnet URI for file: ${storedFileName}`);
                       }
                     } else {
-                      this.logger.debug(`⏰ [GunRegistry] Skipping stale magnet URI: ${infoHash}`);
+                      this.logger.debug(`⏰ [GunRegistry] Skipping stale magnet URI for file: ${fileName}`);
                     }
                   }
 
@@ -459,29 +456,26 @@ export class GunRegistry {
 
   /**
    * Remove a magnet URI from the Gun.js registry
-   * @param magnetUri The magnet URI to remove
+   * @param fileName The file name to remove
    */
-  public async unshareMagnetUri(magnetUri: string): Promise<void> {
+  public async unshareMagnetUri(fileName: string): Promise<void> {
     if (!this.isGunAvailable || !this.gun) {
       throw new Error("Gun.js registry not available");
     }
 
-    // Extract info hash from magnet URI
-    const infoHashMatch = magnetUri.match(/urn:btih:([a-fA-F0-9]+)/);
-    if (!infoHashMatch) {
-      throw new Error("Could not extract info hash from magnet URI");
+    if (!fileName) {
+      throw new Error("File name is required");
     }
-    const infoHash = infoHashMatch[1].toLowerCase();
 
     try {
       this.gun
         .get(`${this.options.namespace}-magnets`)
-        .get(infoHash)
+        .get(fileName)
         .put(null);
 
-      this.logger.debug(`✅ [GunRegistry] Successfully unshared magnet URI: ${infoHash}`);
+      this.logger.debug(`✅ [GunRegistry] Successfully unshared magnet URI for file: ${fileName}`);
     } catch (error) {
-      this.logger.error(`❌ [GunRegistry] Failed to unshare magnet URI:`, error);
+      this.logger.error(`❌ [GunRegistry] Failed to unshare magnet URI for file ${fileName}:`, error);
       throw error;
     }
   }

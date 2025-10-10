@@ -41,11 +41,6 @@ const natTools = new NatTools({
 
 await natTools.initialize();
 
-// Seed a file and share its magnet URI
-const result = await natTools.seedFile('/path/to/file.txt');
-console.log('Magnet URI:', result.magnetUri);
-console.log('Info Hash:', result.infoHash);
-
 // Discover magnet URIs from other peers (from last 1 minute)
 const magnetUris = await natTools.discoverMagnetUris(60000);
 console.log('Found', magnetUris.length, 'files');
@@ -388,6 +383,7 @@ new NatTools(options?: {
 - `unseedFile(filePath: string): Promise<boolean>` - Stop seeding a file and remove from registry
 - `downloadFromMagnet(magnetUri: string, maxFileSizeBytes?: number): Promise<Buffer>` - Download a file from magnet URI
 - `discoverMagnetUris(maxAgeMs?: number): Promise<string[]>` - Discover magnet URIs (default: 60000ms = 1 minute)
+- `rebroadcastMagnetUris(): Promise<number>` - Rebroadcast all seeded magnet URIs to refresh timestamps (call periodically)
 - `getSeededFiles(): Map<string, string>` - Get map of file paths to magnet URIs
 - `getActiveTorrentsCount(): number` - Get count of active torrents
 - `isWebTorrentAvailable(): boolean` - Check if WebTorrent is available
@@ -437,6 +433,12 @@ async function example() {
   // Get seeded files
   const seededFiles = natTools.getSeededFiles();
   console.log('Seeding', seededFiles.size, 'files');
+
+  // Periodically rebroadcast magnet URIs to keep them fresh (every 30 seconds)
+  setInterval(async () => {
+    const count = await natTools.rebroadcastMagnetUris();
+    console.log('Rebroadcast', count, 'magnet URIs');
+  }, 30000);
 
   // Cleanup
   await natTools.destroy();

@@ -16,9 +16,7 @@ import crypto from 'crypto';
 // Configuration
 const CONFIG = {
   digDirectory: path.join(os.homedir(), '.dig'),
-  downloadDirectory: path.join(os.homedir(), '.dig', 'downloads'),
   discoveryIntervalMs: 30000, // 30 seconds
-  maxFileSize: 100 * 1024 * 1024, // 100 MB
   peers: ['http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun']
 };
 
@@ -86,7 +84,6 @@ async function seedAllDigFiles(natTools) {
       seededFiles.push(result);
 
       logger.info(`✅ Seeded: ${fileName}`);
-      logger.info(`   Info Hash: ${result.infoHash}`);
     } catch (error) {
       logger.error(`❌ Failed to seed ${path.basename(filePath)}:`, error.message);
     }
@@ -141,10 +138,10 @@ async function discoverAndDownload(natTools) {
 
     // Get existing file hashes in download directory
     const existingFiles = new Set();
-    if (fs.existsSync(CONFIG.downloadDirectory)) {
-      const downloadedFiles = fs.readdirSync(CONFIG.downloadDirectory);
+    if (fs.existsSync(CONFIG.digDirectory)) {
+      const downloadedFiles = fs.readdirSync(CONFIG.digDirectory);
       downloadedFiles.forEach(file => {
-        const filePath = path.join(CONFIG.downloadDirectory, file);
+        const filePath = path.join(CONFIG.digDirectory, file);
         if (fs.statSync(filePath).isFile()) {
           try {
             const hash = calculateFileHash(filePath);
@@ -167,18 +164,18 @@ async function discoverAndDownload(natTools) {
     logger.info(`📥 Found ${newMagnetUris.length} new files to download`);
 
     // Ensure download directory exists
-    if (!fs.existsSync(CONFIG.downloadDirectory)) {
-      fs.mkdirSync(CONFIG.downloadDirectory, { recursive: true });
+    if (!fs.existsSync(CONFIG.digDirectory)) {
+      fs.mkdirSync(CONFIG.digDirectory, { recursive: true });
     }
 
     // Download new files
     for (const magnetUri of newMagnetUris) {
       try {
-        // Extract info hash for filename
-        const infoHashMatch = magnetUri.match(/urn:btih:([a-fA-F0-9]+)/);
-        const infoHash = infoHashMatch ? infoHashMatch[1] : `unknown-${Date.now()}`;
+        // Extract display name from magnet URI (dn parameter) or use timestamp
+        const displayNameMatch = magnetUri.match(/dn=([^&]+)/);
+        const displayName = displayNameMatch ? decodeURIComponent(displayNameMatch[1]) : `file-${Date.now()}`;
 
-        logger.info(`📥 Downloading: ${infoHash.substring(0, 16)}...`);
+        logger.info(`📥 Downloading: ${displayName}...`);
 
         // Download the file
         const buffer = await natTools.downloadFromMagnet(magnetUri, CONFIG.maxFileSize);
@@ -192,9 +189,9 @@ async function discoverAndDownload(natTools) {
           continue;
         }
 
-        // Save the file
-        const fileName = `${infoHash}.dig`;
-        const filePath = path.join(CONFIG.downloadDirectory, fileName);
+        // Save the file with the display name or content hash
+        const fileName = displayName.endsWith('.dig') ? displayName : `${contentHash}.dig`;
+        const filePath = path.join(CONFIG.digDirectory, fileName);
         fs.writeFileSync(filePath, buffer);
 
         logger.info(`✅ Downloaded: ${fileName} (${buffer.length} bytes)`);
@@ -228,7 +225,7 @@ async function main() {
   logger.info('🚀 NAT Tools Example Starting');
   logger.info('='.repeat(60));
   logger.info(`📂 Dig directory: ${CONFIG.digDirectory}`);
-  logger.info(`📥 Download directory: ${CONFIG.downloadDirectory}`);
+  logger.info(`📥 Download directory: ${CONFIG.digDirectory}`);
   logger.info(`🔄 Discovery interval: ${CONFIG.discoveryIntervalMs}ms`);
   logger.info('='.repeat(60));
 

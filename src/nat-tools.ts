@@ -23,7 +23,6 @@ export interface NatToolsOptions {
 export interface SeedResult {
   filePath: string;
   magnetUri: string;
-  infoHash: string;
 }
 
 /**
@@ -76,10 +75,9 @@ export class NatTools {
   /**
    * Seed a file and share its magnet URI via Gun.js registry
    * @param filePath Path to the file to seed
-   * @param nodeId Optional node identifier
    * @returns Object containing file path, magnet URI, and info hash
    */
-  public async seedFile(filePath: string, nodeId?: string): Promise<SeedResult> {
+  public async seedFile(filePath: string): Promise<SeedResult> {
     if (!this.isInitialized) {
       throw new Error("NatTools not initialized. Call initialize() first.");
     }
@@ -93,23 +91,20 @@ export class NatTools {
     // Seed the file via WebTorrent
     const magnetUri = await webTorrentManager.seedFile(filePath);
 
-    // Extract info hash
-    const infoHashMatch = magnetUri.match(/urn:btih:([a-fA-F0-9]+)/);
-    const infoHash = infoHashMatch ? infoHashMatch[1] : 'unknown';
+    // Get the filename
+    const fileName = path.basename(filePath);
 
     // Store in our local map
     this.seededMagnetUris.set(filePath, magnetUri);
 
-    // Share magnet URI via Gun.js registry
-    await this.registry.shareMagnetUri(magnetUri, nodeId);
+    // Share magnet URI via Gun.js registry with fileName
+    await this.registry.shareMagnetUri(magnetUri, fileName);
 
-    this.logger.info(`✅ File seeded and shared: ${path.basename(filePath)}`);
-    this.logger.debug(`   Info Hash: ${infoHash}`);
+    this.logger.info(`✅ File seeded and shared: ${fileName}`);
 
     return {
       filePath,
-      magnetUri,
-      infoHash
+      magnetUri
     };
   }
 
@@ -126,16 +121,18 @@ export class NatTools {
     }
 
     try {
+      const fileName = path.basename(filePath);
+
       // Remove from WebTorrent
       webTorrentManager.removeTorrent(magnetUri);
 
-      // Remove from Gun.js registry
-      await this.registry.unshareMagnetUri(magnetUri);
+      // Remove from Gun.js registry using fileName
+      await this.registry.unshareMagnetUri(fileName);
 
       // Remove from our local map
       this.seededMagnetUris.delete(filePath);
 
-      this.logger.info(`✅ Stopped seeding: ${path.basename(filePath)}`);
+      this.logger.info(`✅ Stopped seeding: ${fileName}`);
       return true;
     } catch (error) {
       this.logger.error(`❌ Error unseeding file:`, error);
@@ -235,10 +232,11 @@ export class NatTools {
 
     for (const [filePath, magnetUri] of this.seededMagnetUris) {
       try {
+        const fileName = path.basename(filePath);
         // Re-share the magnet URI to update its timestamp in the registry
-        await this.registry.shareMagnetUri(magnetUri);
+        await this.registry.shareMagnetUri(magnetUri, fileName);
         successCount++;
-        this.logger.debug(`  ✅ Rebroadcast: ${path.basename(filePath)}`);
+        this.logger.debug(`  ✅ Rebroadcast: ${fileName}`);
       } catch (error) {
         this.logger.warn(`  ⚠️ Failed to rebroadcast ${path.basename(filePath)}:`, error);
       }
