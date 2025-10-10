@@ -215,6 +215,41 @@ export class NatTools {
   }
 
   /**
+   * Rebroadcast all currently seeded magnet URIs to refresh their timestamps
+   * This should be called periodically to keep magnet URIs fresh in the registry
+   * @returns Number of magnet URIs successfully rebroadcast
+   */
+  public async rebroadcastMagnetUris(): Promise<number> {
+    if (!this.isInitialized) {
+      throw new Error("NatTools not initialized. Call initialize() first.");
+    }
+
+    if (this.seededMagnetUris.size === 0) {
+      this.logger.debug("No magnet URIs to rebroadcast");
+      return 0;
+    }
+
+    this.logger.debug(`📡 Rebroadcasting ${this.seededMagnetUris.size} magnet URIs...`);
+
+    let successCount = 0;
+
+    for (const [filePath, magnetUri] of this.seededMagnetUris) {
+      try {
+        // Re-share the magnet URI to update its timestamp in the registry
+        await this.registry.shareMagnetUri(magnetUri);
+        successCount++;
+        this.logger.debug(`  ✅ Rebroadcast: ${path.basename(filePath)}`);
+      } catch (error) {
+        this.logger.warn(`  ⚠️ Failed to rebroadcast ${path.basename(filePath)}:`, error);
+      }
+    }
+
+    this.logger.debug(`✅ Rebroadcast ${successCount}/${this.seededMagnetUris.size} magnet URIs`);
+
+    return successCount;
+  }
+
+  /**
    * Clean up resources
    */
   public async destroy(): Promise<void> {

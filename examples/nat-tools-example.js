@@ -97,6 +97,28 @@ async function seedAllDigFiles(natTools) {
 }
 
 /**
+ * Rebroadcast all currently seeded magnet URIs
+ */
+async function rebroadcastMagnetUris(natTools) {
+  try {
+    const seededFiles = natTools.getSeededFiles();
+    
+    if (seededFiles.size === 0) {
+      logger.debug('No files to rebroadcast');
+      return;
+    }
+
+    logger.info(`📡 Rebroadcasting ${seededFiles.size} magnet URIs...`);
+
+    const count = await natTools.rebroadcastMagnetUris();
+    
+    logger.info(`✅ Rebroadcast ${count} magnet URIs successfully`);
+  } catch (error) {
+    logger.error('❌ Error during rebroadcast:', error.message);
+  }
+}
+
+/**
  * Discover and download new files
  */
 async function discoverAndDownload(natTools) {
@@ -238,12 +260,16 @@ async function main() {
     await seedAllDigFiles(natTools);
 
     logger.info('='.repeat(60));
-    logger.info('🔄 Starting periodic discovery...');
+    logger.info('🔄 Starting periodic discovery and rebroadcast...');
     logger.info('   Press Ctrl+C to stop');
     logger.info('='.repeat(60));
 
-    // Start periodic discovery and download
-    const discoveryInterval = setInterval(async () => {
+    // Start periodic discovery, download, and rebroadcast
+    const periodicInterval = setInterval(async () => {
+      // Rebroadcast magnet URIs to keep them fresh
+      await rebroadcastMagnetUris(natTools);
+      
+      // Discover and download new files
       await discoverAndDownload(natTools);
     }, CONFIG.discoveryIntervalMs);
 
@@ -253,7 +279,7 @@ async function main() {
     // Handle graceful shutdown
     process.on('SIGINT', async () => {
       logger.info('\n\n🛑 Shutting down gracefully...');
-      clearInterval(discoveryInterval);
+      clearInterval(periodicInterval);
 
       try {
         await natTools.destroy();

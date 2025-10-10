@@ -76,8 +76,10 @@ The package includes a complete example that automatically shares and discovers 
 The example will:
 - Seed all `*.dig` files from `~/.dig` directory
 - Share their magnet URIs via Gun.js registry
-- Periodically discover magnet URIs from other peers
-- Download files that you don't already have
+- **Every 30 seconds:**
+  - Rebroadcast all seeded magnet URIs (to keep them fresh in the registry)
+  - Discover magnet URIs from other peers
+  - Download files that you don't already have
 - Automatically seed downloaded files
 
 You can create test files:
