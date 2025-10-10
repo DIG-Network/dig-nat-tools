@@ -99,10 +99,7 @@ class WebTorrentManager extends EventEmitter {
     this.logger.debug("🚀 Initializing shared WebTorrent client...");
 
     try {
-      this.webTorrentClient = new WebTorrent({
-        dht: { port: 30987 },
-        tracker: { port: 30987 }
-      });
+      this.webTorrentClient = new WebTorrent();
 
       // Set unlimited max listeners for the WebTorrent client (if method exists)
       if (typeof this.webTorrentClient.setMaxListeners === 'function') {
@@ -180,11 +177,16 @@ class WebTorrentManager extends EventEmitter {
   }
 
   /**
-   * Download a file via WebTorrent
+   * Download a file via WebTorrent (event-driven)
+   * Listen to 'download-complete', 'download-error', 'metadata', and 'download' events
+   * @param magnetUri The magnet URI to download
+   * @param maxFileSizeBytes Optional maximum file size limit
    */
-  public async downloadFile(magnetUri: string, maxFileSizeBytes?: number): Promise<Buffer> {
+  public downloadFile(magnetUri: string, maxFileSizeBytes?: number): void {
     if (!this.isInitialized || !this.webTorrentClient) {
-      throw new Error("WebTorrent manager not initialized. Call initialize() first.");
+      const error = new Error("WebTorrent manager not initialized. Call initialize() first.");
+      this.emit('download-error', { magnetUri, error });
+      throw error;
     }
 
     this.logger.debug(`🧲 Starting WebTorrent download...`);
@@ -197,6 +199,7 @@ class WebTorrentManager extends EventEmitter {
         type: typeof magnetUri,
         length: magnetUri?.length || 0
       });
+      this.emit('download-error', { magnetUri, error });
       throw error;
     }
 
@@ -204,141 +207,101 @@ class WebTorrentManager extends EventEmitter {
     const magnetInfo = this.parseMagnetUri(magnetUri);
     this.logger.debug("🔍 Magnet URI info:", magnetInfo);
 
-    return new Promise<Buffer>((resolve, reject) => {
-      this.logger.debug(`🔄 Adding torrent from magnet URI: ${magnetUri.substring(0, 100)}...`);
+    this.logger.debug(`🔄 Adding torrent from magnet URI: ${magnetUri.substring(0, 100)}...`);
 
-      let torrent: WebTorrent.Torrent | null = null;
-      try {
-        torrent = this.webTorrentClient!.add(magnetUri);
-      } catch (error) {
-        this.logger.error("❌ Failed to add torrent:", {
-          ...this.serializeError(error),
-          magnetUri: magnetUri.substring(0, 100) + '...'
-        });
-        reject(error);
-        return;
-      }
+    // Use the callback form of add() for event-driven approach
+    this.webTorrentClient.add(magnetUri, (torrent) => {
+      this.logger.info(`📦 Torrent added: ${torrent.name || 'Unknown'}, size: ${torrent.length} bytes`);
+      // Check file size after metadata is received
+      // torrent.on("ready", () => {
+      //   this.logger.info(
+      //     `✅ Torrent ready! File: ${torrent.name}, Size: ${torrent.length} bytes, Files: ${torrent.files.length}`
+      //   );
 
-      // Add metadata event emission
-      torrent.on("metadata", () => {
-        this.logger.debug(`📋 Torrent metadata ready: ${torrent!.name}, Size: ${torrent!.length} bytes`);
-        
-        const metadataData: MetadataEvent = {
-          name: torrent!.name || 'Unknown',
-          size: torrent!.length,
-          magnetUri: magnetUri,
-          infoHash: torrent!.infoHash || 'Unknown'
-        };
+      //   if (torrent.files.length === 0) {
+      //     const error = new Error("No files in torrent");
+      //     this.logger.error("❌ No files in torrent", {
+      //       name: torrent.name,
+      //       infoHash: torrent.infoHash,
+      //       magnetUri: magnetUri.substring(0, 100) + '...'
+      //     });
+      //     this.emit('download-error', { magnetUri, error });
+      //     this.safeTorrentDestroy(torrent);
+      //     return;
+      //   }
 
-        // Emit the metadata event that external code can listen to
-        this.emit('metadata', metadataData);
+      //   // Check file size against maximum allowed size
+      //   if (maxFileSizeBytes && torrent.length > maxFileSizeBytes) {
+      //     const fileSizeMB = (torrent.length / (1024 * 1024)).toFixed(2);
+      //     const maxSizeMB = (maxFileSizeBytes / (1024 * 1024)).toFixed(2);
+      //     const error = new Error(
+      //       `File size (${fileSizeMB} MB) exceeds maximum allowed size (${maxSizeMB} MB). Download cancelled.`
+      //     );
+      //     this.logger.warn(`⚠️ File too large: ${fileSizeMB}MB > ${maxSizeMB}MB`);
+      //     this.emit('download-error', { magnetUri, error });
+      //     this.safeTorrentDestroy(torrent);
+      //     return;
+      //   }
+
+      //   // Use the 'done' event which fires when all pieces are downloaded
+      //   // This handles both fresh downloads and already-complete torrents
+      //   torrent.on("done", () => {
+      //     this.logger.info(`🎉 Torrent download complete: ${torrent.name}`);
+
+      //     const file = torrent.files[0]; // Get the first file
+      //     const chunks: Buffer[] = [];
+
+      //     this.logger.debug(`📥 Reading file data: ${file.name} (${file.length} bytes)...`);
+
+      //     // Create a stream to read the file
+      //     const stream = file.createReadStream();
+
+      //     stream.on("data", (chunk: Buffer) => {
+      //       chunks.push(chunk);
+      //     });
+
+      //     stream.on("end", () => {
+      //       const buffer = Buffer.concat(chunks);
+      //       this.logger.debug(
+      //         `✅ File read completed! ${buffer.length} bytes`
+      //       );
+
+      //       // Emit download complete event with buffer
+      //       this.emit('download-complete', {
+      //         magnetUri,
+      //         buffer,
+      //         name: torrent.name || 'Unknown',
+      //         size: buffer.length
+      //       });
+
+      //       // Destroy torrent to clean up
+      //       this.safeTorrentDestroy(torrent);
+      //     });
+
+      //     stream.on("error", (error: unknown) => {
+      //       this.logger.error("❌ Stream error during file read:", {
+      //         ...this.serializeError(error),
+      //         fileName: file.name,
+      //         fileLength: file.length
+      //       });
+      //       this.emit('download-error', { magnetUri, error });
+      //       this.safeTorrentDestroy(torrent);
+      //     });
+      //   });
+      // });
+      torrent.on('upload', (bytes) => {
+        this.logger.debug(`⬆️ Uploaded ${bytes} bytes`);
       });
 
-      torrent.on("ready", () => {
-        this.logger.debug(
-          `✅ Torrent ready! File: ${torrent!.name}, Size: ${torrent!.length} bytes, Files: ${torrent!.files.length}`
-        );
-
-        if (torrent!.files.length === 0) {
-          this.safeTorrentDestroy(torrent!);
-          this.logger.error("❌ No files in torrent", {
-            name: torrent!.name,
-            infoHash: torrent!.infoHash,
-            magnetUri: magnetUri.substring(0, 100) + '...'
-          });
-          reject(new Error("No files in torrent"));
-          return;
-        }
-
-        // Check file size against maximum allowed size
-        if (maxFileSizeBytes && torrent!.length > maxFileSizeBytes) {
-          this.safeTorrentDestroy(torrent!);
-          const fileSizeMB = (torrent!.length / (1024 * 1024)).toFixed(2);
-          const maxSizeMB = (maxFileSizeBytes / (1024 * 1024)).toFixed(2);
-          this.logger.warn(`⚠️ File too large: ${fileSizeMB}MB > ${maxSizeMB}MB`);
-          reject(new Error(
-            `File size (${fileSizeMB} MB) exceeds maximum allowed size (${maxSizeMB} MB). Download cancelled.`
-          ));
-          return;
-        }
-
-        const file = torrent!.files[0]; // Get the first file
-        const chunks: Buffer[] = [];
-
-        this.logger.debug(`📥 Starting download of ${file.name} (${file.length} bytes)...`);
-
-        // Create a stream to read the file
-        const stream = file.createReadStream();
-
-        stream.on("data", (chunk: Buffer) => {
-          chunks.push(chunk);
-        });
-
-        stream.on("end", () => {
-          const buffer = Buffer.concat(chunks);
-          this.logger.debug(
-            `✅ WebTorrent download completed! ${buffer.length} bytes`
-          );
-
-          // Destroy torrent to clean up
-          this.safeTorrentDestroy(torrent!);
-          resolve(buffer);
-        });
-
-        stream.on("error", (error: unknown) => {
-          this.safeTorrentDestroy(torrent!);
-          this.logger.error("❌ Stream error during download:", {
-            ...this.serializeError(error),
-            fileName: file.name,
-            fileLength: file.length
-          });
-          reject(error);
-        });
+      torrent.on('wire', (wire, addr) => {
+        this.logger.debug(`⬆️ New peer connected: ${addr}`);
       });
 
-      // Enhanced torrent error handling
-      torrent.on("error", (error: unknown) => {
-        this.logger.debug(`❌ WebTorrent torrent error:`, {
-          ...this.serializeError(error),
-          magnetUri: magnetUri.substring(0, 100) + '...',
-          infoHash: torrent?.infoHash,
-          torrentName: torrent?.name
-        });
-        reject(error);
-      });
-
-      // Add additional torrent event listeners for debugging
-      torrent.on("warning", (warning: unknown) => {
-        this.logger.debug("⚠️ WebTorrent warning:", {
-          ...this.serializeError(warning)
-        });
-      });
-
-      torrent.on("noPeers", () => {
-        this.logger.debug("⚠️ No peers found for torrent", {
-          magnetUri: magnetUri.substring(0, 100) + '...',
-          infoHash: torrent?.infoHash
-        });
-      });
-
-      // Add download progress event emission
-      torrent.on("download", (_bytes: number) => {
-        const progressData: DownloadProgressEvent = {
-          downloaded: torrent!.downloaded,
-          downloadSpeed: torrent!.downloadSpeed,
-          progress: torrent!.progress,
-          name: torrent!.name || 'Unknown',
-          magnetUri: magnetUri
-        };
-
-        this.logger.debug(`📊 Download progress: ${(progressData.progress * 100).toFixed(1)}% - ${progressData.name}`, {
-          downloaded: `${(progressData.downloaded / (1024 * 1024)).toFixed(2)}MB`,
-          speed: `${(progressData.downloadSpeed / (1024 * 1024)).toFixed(2)}MB/s`,
-          progress: `${(progressData.progress * 100).toFixed(1)}%`
-        });
-
-        // Emit the download event that external code can listen to
-        this.emit('download', progressData);
+      torrent.on('download', (bytes) => {
+        this.logger.debug(`⬇️ Downloaded ${bytes} bytes`);
+        this.logger.debug(`📦 Total downloaded: ${torrent.downloaded} bytes`);
+        this.logger.debug(`⚡ Download speed: ${torrent.downloadSpeed} bytes/sec`);
+        this.logger.debug(`📈 Progress: ${torrent.progress} %`);
       });
     });
   }

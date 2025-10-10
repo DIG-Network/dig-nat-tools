@@ -17,12 +17,46 @@ import crypto from 'crypto';
 // Configuration
 const CONFIG = {
   digDirectory: path.join(os.homedir(), '.dig'),
-  discoveryIntervalMs: 30000, // 30 seconds
+  discoveryIntervalMs: 30000, // 5 minutes
   peers: ['http://dig-relay-prod.eba-2cmanxbe.us-east-1.elasticbeanstalk.com/gun']
 };
 
 // Track files currently being downloaded to prevent duplicates
 const downloadingFiles = new Set();
+const downloadQueue = []; // Queue for pending downloads
+let currentDownload = null; // Track current download
+
+/**
+ * Process the next download in the queue
+ */
+function processNextDownload(natTools) {
+  // If already downloading or queue is empty, do nothing
+  if (currentDownload !== null || downloadQueue.length === 0) {
+    return;
+  }
+
+  // Get the next download from the queue
+  const { magnetUri, displayName, existingFiles } = downloadQueue.shift();
+  currentDownload = magnetUri;
+  downloadingFiles.add(magnetUri);
+
+  logger.info(`\n📥 Starting download: ${displayName} (${downloadQueue.length} remaining in queue)`);
+
+  // Fire-and-forget: just start the download
+  // Events will be handled by the global listeners set up in main()
+  natTools.downloadFromMagnet(magnetUri);
+}
+
+/**
+ * Add a download to the queue and start processing if not already downloading
+ */
+function queueDownload(natTools, magnetUri, displayName, existingFiles) {
+  downloadQueue.push({ magnetUri, displayName, existingFiles });
+  logger.info(`📋 Queued: ${displayName} (queue size: ${downloadQueue.length})`);
+  
+  // Start processing if not already downloading
+  processNextDownload(natTools);
+}
 
 // Create a simple logger
 const logger = {
@@ -165,73 +199,38 @@ async function discoverAndDownload(natTools) {
       return;
     }
 
-    logger.info(`📥 Found ${newMagnetUris.length} new files to download`);
-
     // Ensure download directory exists
     if (!fs.existsSync(CONFIG.digDirectory)) {
       fs.mkdirSync(CONFIG.digDirectory, { recursive: true });
     }
 
-    // Download new files
+    logger.info(`📥 Found ${newMagnetUris.length} new files to download`);
+    logger.info(`🔄 Adding to sequential download queue...`);
+
+    // Create a set of magnet URIs already in the queue
+    const queuedMagnetUris = new Set(downloadQueue.map(item => item.magnetUri));
+
+    // Queue all new downloads
+    let addedCount = 0;
     for (const magnetUri of newMagnetUris) {
-      try {
-        // Extract display name from magnet URI (dn parameter) or use timestamp
-        const displayNameMatch = magnetUri.match(/dn=([^&]+)/);
-        const displayName = displayNameMatch ? decodeURIComponent(displayNameMatch[1]) : `file-${Date.now()}`;
-
-        // Check if already downloading
-        if (downloadingFiles.has(magnetUri)) {
-          logger.debug(`⏳ Already downloading: ${displayName}`);
-          continue;
-        }
-
-        // Mark as downloading
-        downloadingFiles.add(magnetUri);
-
-        logger.info(`📥 Downloading: ${displayName}...`);
-
-        try {
-          // Download the file
-          const buffer = await natTools.downloadFromMagnet(magnetUri);
-
-          // Calculate hash of downloaded content
-          const contentHash = crypto.createHash('sha256').update(buffer).digest('hex');
-
-          // Check if we already have this content
-          if (existingFiles.has(contentHash)) {
-            logger.info(`⏭️ Already have file with hash ${contentHash.substring(0, 16)}...`);
-            downloadingFiles.delete(magnetUri);
-            continue;
-          }
-
-          // Save the file with the display name or content hash
-          const fileName = displayName.endsWith('.dig') ? displayName : `${contentHash}.dig`;
-          const filePath = path.join(CONFIG.digDirectory, fileName);
-          fs.writeFileSync(filePath, buffer);
-
-          logger.info(`✅ Downloaded: ${fileName} (${buffer.length} bytes)`);
-
-          // Add to existing files set
-          existingFiles.add(contentHash);
-
-          // Remove from downloading set
-          downloadingFiles.delete(magnetUri);
-
-          // Optionally seed the downloaded file
-          try {
-            await natTools.seedFile(filePath);
-            logger.info(`🌱 Now seeding downloaded file: ${fileName}`);
-          } catch (error) {
-            logger.warn(`⚠️ Could not seed downloaded file:`, error.message);
-          }
-        } catch (downloadError) {
-          downloadingFiles.delete(magnetUri);
-          throw downloadError;
-        }
-
-      } catch (error) {
-        logger.error(`❌ Failed to download file:`, error.message);
+      // Skip if already downloading, in queue, or we already have it seeded
+      if (downloadingFiles.has(magnetUri) || queuedMagnetUris.has(magnetUri)) {
+        continue;
       }
+
+      // Extract display name from magnet URI (dn parameter) or use timestamp
+      const displayNameMatch = magnetUri.match(/dn=([^&]+)/);
+      const displayName = displayNameMatch ? decodeURIComponent(displayNameMatch[1]) : `file-${Date.now()}`;
+
+      // Add to queue
+      queueDownload(natTools, magnetUri, displayName, existingFiles);
+      addedCount++;
+    }
+
+    if (addedCount > 0) {
+      logger.info(`✅ Added ${addedCount} new downloads to queue`);
+    } else {
+      logger.info(`ℹ️ No new downloads to add (all are already downloading or queued)`);
     }
 
   } catch (error) {
@@ -264,10 +263,8 @@ async function main() {
     await natTools.initialize();
     logger.info('✅ NAT Tools initialized');
 
-    // Set up download progress tracking
-    let currentDownload = null;
+    // Set up download event handlers
     webTorrentManager.on('metadata', (data) => {
-      currentDownload = data.name;
       logger.info(`📋 Metadata received: ${data.name} (${(data.size / 1024 / 1024).toFixed(2)} MB)`);
     });
 
@@ -278,6 +275,65 @@ async function main() {
         const speedMBps = (data.downloadSpeed / 1024 / 1024).toFixed(2);
         logger.info(`📊 Progress: ${progressPercent}% | ${downloadedMB} MB | ${speedMBps} MB/s - ${data.name}`);
       }
+    });
+
+    // Handle download completion
+    webTorrentManager.on('download-complete', async (data) => {
+      logger.info(`✅ Download complete: ${data.name} (${data.size} bytes)`);
+
+      try {
+        // Calculate hash of downloaded content
+        const contentHash = crypto.createHash('sha256').update(data.buffer).digest('hex');
+
+        // Find the display name from the magnet URI
+        const displayNameMatch = data.magnetUri.match(/dn=([^&]+)/);
+        const displayName = displayNameMatch ? decodeURIComponent(displayNameMatch[1]) : `file-${Date.now()}`;
+
+        // Save the file with the display name or content hash
+        const fileName = displayName.endsWith('.dig') ? displayName : `${contentHash}.dig`;
+        const filePath = path.join(CONFIG.digDirectory, fileName);
+
+        // Check if we already have this file
+        if (fs.existsSync(filePath)) {
+          logger.info(`⏭️ File already exists: ${fileName}`);
+        } else {
+          fs.writeFileSync(filePath, data.buffer);
+          logger.info(`💾 Saved file: ${fileName}`);
+
+          // Optionally seed the downloaded file
+          try {
+            await natTools.seedFile(filePath);
+            logger.info(`🌱 Now seeding downloaded file: ${fileName}`);
+          } catch (error) {
+            logger.warn(`⚠️ Could not seed downloaded file:`, error.message);
+          }
+        }
+      } catch (error) {
+        logger.error(`❌ Error processing downloaded file:`, error.message);
+      } finally {
+        // Remove from downloading set
+        downloadingFiles.delete(data.magnetUri);
+        if (currentDownload === data.magnetUri) {
+          currentDownload = null;
+        }
+
+        // Process next download in queue
+        setImmediate(() => processNextDownload(natTools));
+      }
+    });
+
+    // Handle download errors
+    webTorrentManager.on('download-error', (data) => {
+      logger.error(`❌ Download failed: ${data.magnetUri.substring(0, 50)}...`, data.error);
+
+      // Remove from downloading set
+      downloadingFiles.delete(data.magnetUri);
+      if (currentDownload === data.magnetUri) {
+        currentDownload = null;
+      }
+
+      // Process next download in queue
+      setImmediate(() => processNextDownload(natTools));
     });
 
     // Check availability

@@ -141,23 +141,30 @@ export class NatTools {
   }
 
   /**
-   * Download a file from a magnet URI
+   * Download a file from a magnet URI (fire-and-forget, listen to events from webTorrentManager)
    * @param magnetUri The magnet URI to download
    * @param maxFileSizeBytes Optional maximum file size limit
-   * @returns Buffer containing the downloaded file
+   * 
+   * Events emitted by webTorrentManager:
+   * - 'download-metadata': When metadata is received
+   * - 'download-progress': During download
+   * - 'download-complete': When download finishes successfully
+   * - 'download-error': If download fails
    */
-  public async downloadFromMagnet(magnetUri: string, maxFileSizeBytes?: number): Promise<Buffer> {
+  public downloadFromMagnet(magnetUri: string, maxFileSizeBytes?: number): void {
     if (!this.isInitialized) {
       throw new Error("NatTools not initialized. Call initialize() first.");
     }
 
-    this.logger.info(`📥 Downloading from magnet URI...`);
+    this.logger.info(`📥 Starting download from magnet URI...`);
 
-    const buffer = await webTorrentManager.downloadFile(magnetUri, maxFileSizeBytes);
-
-    this.logger.info(`✅ Download completed: ${buffer.length} bytes`);
-
-    return buffer;
+    // Fire-and-forget: just start the download
+    // Consumers should listen to webTorrentManager events:
+    // - 'download-complete' 
+    // - 'download-error'
+    // - 'download' (progress)
+    // - 'metadata'
+    webTorrentManager.downloadFile(magnetUri, maxFileSizeBytes);
   }
 
   /**
